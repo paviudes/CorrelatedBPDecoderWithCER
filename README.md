@@ -63,7 +63,7 @@ Here is a description of the parameters.
 
 | Argument Name                     | Mandatory / Default Value       | Description                                                                                   |
 |----------------------------------|-------------------------------|-----------------------------------------------------------------------------------------------|
-| `errors_filename`                 | Optional                       | Path to a file containing precomputed error samples.                                          |
+| `errors_filename`                 | Optional                       | Name of the file containing precomputed error. Do not include the `.txt` extension and ensure that the file is placed in `./../data/errors_filename.txt`.|
 | `ballistic_per_qubit_error_prob`  | Optional                       | Probability of an error on each qubit in the Ballistic error model.                           |
 | `ballistic_neighbour_error_prob`  | Optional                       | Probability of flipping neighboring qubits given a qubit error.                               |
 | `num_error_samples`               | Optional                       | Number of error samples to generate.                                                          |
@@ -74,3 +74,8 @@ Here is a description of the parameters.
 | `--weight_soft_constraint`        | Optional, default = 0.8       | Multiplicative factor for messages from soft constraint checks to vertices.                  |
 | `--debug`                         | Optional, default = false     | Enable debug mode with extra diagnostics.                                                    |
 | `--verbose`                       | Optional, default = false     | Enable verbose logging of BP progress.                                                       |
+
+### Example
+```
+julia --project="./../" quantum_BP_test.jl --errors_filename 10000_sample_errors_th2_p95 --n_iterations_of_BP 1 --rounds_per_BP 1 --weight_soft_constraint 0.9
+```
