@@ -63,7 +63,7 @@ Here is a description of the parameters.
 
 | Argument Name                     | Mandatory / Default Value       | Description                                                                                   |
 |----------------------------------|-------------------------------|-----------------------------------------------------------------------------------------------|
-| `errors_filename`                 | Optional                       | Name of the file containing precomputed error. Do not include the `.txt` extension and ensure that the file is placed in `./../data/errors_filename.txt`.|
+| `errors_filename`                 | Optional                       | Name of the file containing precomputed error. Do not include the `.txt` extension and ensure that the file is placed in `./../data/<errors_filename>.txt`.|
 | `ballistic_per_qubit_error_prob`  | Optional                       | Probability of an error on each qubit in the Ballistic error model.                           |
 | `ballistic_neighbour_error_prob`  | Optional                       | Probability of flipping neighboring qubits given a qubit error.                               |
 | `num_error_samples`               | Optional                       | Number of error samples to generate.                                                          |
