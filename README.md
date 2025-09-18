@@ -42,9 +42,9 @@ cd /path/to/CorrelatedBPDecoderWithCER.jl/expts
     --errors_filename <error_file_name> \
     --n_iterations_of_BP <number_of_BP_iterations> \
     --rounds_per_BP <number_of_BP_rounds_per_iteration> \
-    [--llr_convergence_threshold <threshold>] \
-    [--llr_confidence_threshold <threshold>] \
-    [--weight_soft_constraint <factor>]
+    --llr_convergence_threshold <threshold> \
+    --llr_confidence_threshold <threshold> \
+    --weight_soft_constraint <factor>
     ```
 
     - Using the Ballistic error model.
@@ -54,9 +54,9 @@ cd /path/to/CorrelatedBPDecoderWithCER.jl/expts
     --ballistic_neighbour_error_prob <neighbour_error_probability> \
     --n_iterations_of_BP <number_of_BP_iterations> \
     --rounds_per_BP <number_of_BP_rounds_per_iteration> \
-    [--llr_convergence_threshold <threshold>] \
-    [--llr_confidence_threshold <threshold>] \
-    [--weight_soft_constraint <factor>]
+    --llr_convergence_threshold <threshold> \
+    --llr_confidence_threshold <threshold> \
+    --weight_soft_constraint <factor>
     ```
 
 Here is a description of the parameters.
@@ -69,11 +69,11 @@ Here is a description of the parameters.
 | `num_error_samples`               | Optional                       | Number of error samples to generate.                                                          |
 | `n_iterations_of_BP`              | Mandatory                      | Number of iterations of the belief propagation algorithm.                                     |
 | `rounds_per_BP`                   | Mandatory                      | Number of BP rounds per iteration.                                                            |
-| `--llr_convergence_threshold`     | Optional, default = 1e-6      | Threshold for change in LLR to assume convergence.                                            |
-| `--llr_confidence_threshold`      | Optional, default = 4.0       | Threshold to be confident of a bit probability based on its LLR.                              |
-| `--weight_soft_constraint`        | Optional, default = 0.8       | Multiplicative factor for messages from soft constraint checks to vertices.                  |
-| `--debug`                         | Optional, default = false     | Enable debug mode with extra diagnostics.                                                    |
-| `--verbose`                       | Optional, default = false     | Enable verbose logging of BP progress.                                                       |
+| `llr_convergence_threshold`     | Optional, default = 1e-6      | Threshold for change in LLR to assume convergence.                                            |
+| `llr_confidence_threshold`      | Optional, default = 4.0       | Threshold to be confident of a bit probability based on its LLR.                              |
+| `weight_soft_constraint`        | Optional, default = 0.8       | Multiplicative factor for messages from soft constraint checks to vertices.                  |
+| `debug`                         | Optional, default = false     | Enable debug mode with extra diagnostics.                                                    |
+| `verbose`                       | Optional, default = false     | Enable verbose logging of BP progress.                                                       |
 
 ### Example
 ```
