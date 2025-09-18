@@ -1,0 +1,39 @@
+# Julia compiled files
+*.jl.cov
+*.ji
+*.o
+*.so
+*.dylib
+*.dll
+
+# Logs and temporary directories
+logs/**
+log/**
+tmp/**
+temp/**
+data/**
+
+# Julia package artifacts
+/.julia/artifacts/
+/.julia/packages/
+
+# Project-specific artifacts
+Manifest.toml  # optional: ignore if you want others to resolve deps themselves
+*.toml.bk
+
+# macOS files
+.DS_Store
+
+# Linux files
+*~
+
+# Editor files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Backup files
+*.bak
+*.swp
+*.swo
