@@ -313,15 +313,100 @@ function get_confident_bits(llrs::Vector{Float64}, confidence_threshold::Float64
     return confident_bits
 end
 
+function trim_constraints(H::Matrix{Int}, syndrome::Vector{Int}, soft_constraint_start::Int, confidence_threshold::Float64)::Tuple{Matrix{Int}, Vector{Int}, Vector{Int}, Vector{Float64}}
+    """
+    Reduce the number of constraints by removing any rows from the parity-check matrix that can be solved explicitly, and the corresponding syndrome bits.
+    This is because for such constraints the running of BP is trivial.
+    These are:
+        1. Rows in H amongst the soft constraints that have exactly one non-zero entry.
+            - This means that one of the variables is fixed. So the row can be removed.
+        2. Rows in H amongst the hard constraints that have exactly one non-zero entry.
+            - This means that the corresponding variable can be directly inferred from the syndrome.
+            - Specifically, if H[i, j] = 1 for i ≥ `soft_constraint_start` and all other entries in row i are 0, then the value of variable j can be set to syndrome[i].
+            - In other words, we set the LLR of variable j to a very high positive value if syndrome[i] = 0, or a very high negative value if syndrome[i] = 1.
+            - After setting this variable, we can remove row i and column j from H, and also remove the corresponding entry from the syndrome.
+            - We can also remove any row in the soft constraint part that has a 1 in column j, and update the syndrome accordingly.
+        3. We have to run this iteratively until no more such rows exist.
+    """
+    llrs = Float64[]
+    fixed_bits = Int[]
+    updated_H = copy(H)
+    updated_syndrome = copy(syndrome)
+    # counter = 1 # Debugging variable
+    # Identify rows with exactly one non-zero entry in the soft constraint part, and set those rows to zero.
+    for row in eachindex(updated_H[:, 1])
+        if (row >= soft_constraint_start) && (count(!iszero, updated_H[row, :]) == 1)
+            updated_H[row, :] .= 0
+            updated_syndrome[row] = 0
+        end
+    end
+    # Now we will iteratively find rows in the hard constraint part that have exactly one non-zero entry, and fix the corresponding variable.
+    while (n_single_one_rows = count(row -> count(!iszero, row) == 1, eachrow(updated_H[1:soft_constraint_start-1, :]))) > 0
+        # Find rows with exactly one non-zero entry
+        single_one_rows = findall(row -> count(!iszero, row) == 1, eachrow(updated_H[1:soft_constraint_start-1, :]))
+        # We need to fix the corresponding variable based on the syndrome.
+        # Get the columns corresponding to these rows that have a single one.
+        bits_to_fix = unique([findfirst(x -> x != 0, updated_H[row, :]) for row in single_one_rows])
+        
+        # println("Iteration $(counter): Found $(length(single_one_rows)) rows with a single one. Bits to fix: ", bits_to_fix)
+        # counter += 1 # Debugging variable
+
+        # Add all the bits in `bits_to_fix` to `fixed_bits`
+        append!(fixed_bits, bits_to_fix)
+        # We will set the LLR of these bits to a very high positive value if syndrome[row] = 0, or a very high negative value if syndrome[row] = 1.
+        for (row, bit) in zip(single_one_rows, bits_to_fix)
+            if syndrome[row] == 0
+                push!(llrs, confidence_threshold)  # Very high positive value
+            else
+                push!(llrs, -confidence_threshold)  # Very high negative value
+            end
+            # We have to look for other rows that have a one in this column and update the syndrome accordingly.
+            for r in eachindex(updated_H[:, 1])
+                if ((updated_H[r, bit] == 1) && (r != row))
+                    updated_syndrome[r] = (updated_syndrome[r] + updated_syndrome[row]) % 2
+                    # If this row is a soft constraint, we can just set it to zero, since we have fixed the variable.
+                    if r >= soft_constraint_start
+                        updated_H[r, :] .= 0
+                        updated_syndrome[r] = 0
+                    end
+                end
+            end
+            # We can set the column to all zeros, since we have fixed the variable.
+            # This is equivalent to removing the row and column, but easier to implement.
+            # However, any other rows that have a one in this column will now have one less one.
+            updated_H[:, bit] .= 0
+            # Since the row is now all zeros, we can also set its syndrome to all zero.
+            updated_syndrome[row] = 0
+        end
+    end
+    # Finally, we will remove any columns that are all zeros, and the corresponding syndrome bits.
+    non_zero_columns = findall(col -> any(x -> x != 0, col), eachcol(updated_H))
+    updated_H = updated_H[:, non_zero_columns]
+    # We don't need to update the syndrome, since we are not removing any rows.
+    return (updated_H, updated_syndrome, fixed_bits, llrs)
+end
+
 function run_bp(parity_check_matrix::Matrix{Int}, soft_constraint_start::Int, syndrome::Vector{Int}, initial_llrs::Vector{Float64}, max_interations::Int; llr_convergence_threshold::Float64=1e-6, llr_confidence_threshold::Float64=2.0, weight_soft_constraint::Float64=0.5, verbose::Bool=false, io::IO=stdout)::Tuple{Vector{Float64}, Int}
     """
     Run the belief propagation algorithm on the given parity-check matrix and syndrome.
     Returns the final log-likelihood ratios (LLRs) after running BP.
     """
-    # Remove any zeros rows from the parity-check matrix and corresponding syndrome bits
-    non_zero_rows = findall(row -> any(x -> x != 0, row), eachrow(parity_check_matrix))
-    parity_check_matrix_non_trivial = parity_check_matrix[non_zero_rows, :]
-    syndrome_non_trivial = syndrome[non_zero_rows]
+    # Print the number of ones in each row and column of the non-trivial parity-check matrix
+    # println("Row weights: ", [count(!iszero, row) for row in eachrow(parity_check_matrix)])
+    # println("Column weights: ", [count(!iszero, col) for col in eachcol(parity_check_matrix)])
+    # println("Start of soft constraint: ", soft_constraint_start)
+
+    # Remove any rows from the parity-check matrix that have less than 2 ones, and corresponding syndrome bits
+    non_trivial_rows = findall(row -> count(!iszero, row) > 0, eachrow(parity_check_matrix))
+    n_hard_constraints = count(row -> count(!iszero, row) > 0, eachrow(parity_check_matrix[1:soft_constraint_start-1, :])) # We need to know where the hard constraints end, in the non-trivial parity check matrix.
+    # non_zero_rows = findall(row -> any(x -> x != 0, row), eachrow(parity_check_matrix))
+    parity_check_matrix_non_trivial = parity_check_matrix[non_trivial_rows, :]
+    syndrome_non_trivial = syndrome[non_trivial_rows]
+
+    # Print the number of ones in each row and column of the non-trivial parity-check matrix
+    # println("Row weights: ", [count(!iszero, row) for row in eachrow(parity_check_matrix_non_trivial)])
+    # println("Column weights: ", [count(!iszero, col) for col in eachcol(parity_check_matrix_non_trivial)])
+
     if verbose
         println(io, "Running BP on parity-check matrix of size ", size(parity_check_matrix_non_trivial), " with syndrome ", syndrome_non_trivial)
         println(io, "--------------------------------------------------------")
@@ -329,7 +414,6 @@ function run_bp(parity_check_matrix::Matrix{Int}, soft_constraint_start::Int, sy
         println(io, "--------------------------------------------------------")
     end
     # Create the Tanner graph from the parity-check matrix
-    n_hard_constraints = count(row -> any(x -> x != 0, row), eachrow(parity_check_matrix[1:soft_constraint_start-1, :])) # We need to know where the hard constraints end, in the non-trivial parity check matrix.
     soft_constraint_start = n_hard_constraints + 1
     G = TannerGraph(parity_check_matrix_non_trivial, soft_constraint_start)
     # Initialize messages
@@ -369,10 +453,11 @@ function classical_belief_propagation_decoder(C::ClassicalCode, error::Vector{In
             a. F = { i | |LLR_i| >= llr_confidence_threshold } (the set of confident bits).
             b. U = {1...n} - F (the set of uncertain bits).
             c. H_F = H[:, F], H_U = H[:, U].
-            d. Make a hard decision on the bits in F: recovery_F = {0 if LLR_i >= 0 else 1 for i in F}.
-            e. Update the syndrome: s_U = syndrome - H_F * recovery_F^T (mod 2).
-            f. Run one iteration of BP on the current parity-check matrix H_U and syndrome and obtain the LLRs.
-            g. Update LLR_i for i in U based on the BP output.
+            d. Get rid of rows in H_F that have exactly one non-zero entry, and the corresponding syndrome bits. This is because for such constraints the running of BP is trivial. We can do this iteratively until no more such rows exist.
+            e. Make a hard decision on the bits in F: recovery_F = {0 if LLR_i >= 0 else 1 for i in F}.
+            f. Update the syndrome: s_U = syndrome - H_F * recovery_F^T (mod 2).
+            g. Run one iteration of BP on the current parity-check matrix H_U and syndrome and obtain the LLRs.
+            h. Update LLR_i for i in U based on the BP output.
         3. After exiting the loop, make a hard decision on the remaining bits in U.
     """
     parity_check_matrix = C.H
@@ -401,12 +486,48 @@ function classical_belief_propagation_decoder(C::ClassicalCode, error::Vector{In
         uncertain_bits = setdiff(1:length(llrs), frozen_bits)
         H_U = parity_check_matrix[:, uncertain_bits]
         s_U = mod.(syndrome .+ syndrome_contribution_frozen, 2)
+
+        #=
+        # Debugging prints: print the number of ones in each row and column of the updated parity-check matrix
+        println(length(frozen_bits), " Confident bits: ", frozen_bits)
+        println("Recovery on confident bits: ", recovery_F)
+        println(length(uncertain_bits), " Uncertain bits: ", uncertain_bits)
+        println("Row weights of H_U: ", [count(!iszero, row) for row in eachrow(H_U)])
+        println("Column weights of H_U: ", [count(!iszero, col) for col in eachcol(H_U)])
+        println("Soft constraint start index in H_U: ", C.r + 1)
+        =#
+
+        # Get rid of rows in H_U that have exactly one non-zero entry, and the corresponding syndrome bits.
+        # In other words, if there is only one variable in a parity-check equation, we can directly infer its value from the syndrome.
+        # The bit can be fixed based on the syndrome, and therefore we can add it to the frozen bits.
+        (updated_H_U, updated_free_syndrome, fixed_bit_locations, fixed_bit_llrs) = trim_constraints(
+            H_U,
+            s_U,
+            C.r + 1, # The index where the soft constraints start in H_U
+            llr_confidence_threshold
+        )
+
+        if length(fixed_bit_locations) > 0
+            llrs[uncertain_bits[fixed_bit_locations]] .= fixed_bit_llrs
+            updated_uncertain_bits = setdiff(uncertain_bits, uncertain_bits[fixed_bit_locations])
+            # We need to remove the columns corresponding to the frozen bits. These columns have been set to zero.
+            # nonzero_columns_in_H_U = setdiff(1:size(H_U, 2), uncertain_bits[fixed_bit_locations])
+            # updated_H_U = H_U[:, nonzero_columns_in_H_U]
+        else
+            # updated_H_U = H_U
+            # updated_free_syndrome = s_U
+            updated_uncertain_bits = uncertain_bits
+        end
+        # println("Fixed LLRs: ", llrs)
         
         #=
-        println("Running BP on uncertain bits (U): ", uncertain_bits)
-        println("LLRs for uncertain bits (U): ", llrs[uncertain_bits])
-        println("Syndrome for uncertain bits (U): ", s_U)
-        println("Parity-check matrix for uncertain bits (H_U):\n", H_U)
+        # Debugging prints: print the number of ones in each row and column of the updated parity-check matrix
+        println("After trimming constraints:")
+        println(length(fixed_bit_locations), " fixed bit locations: ", fixed_bit_locations)
+        println("fixed bit llrs: ", fixed_bit_llrs)
+        println(length(updated_free_syndrome), "-bit updated_free_syndrome: ", updated_free_syndrome)
+        println("Row weights of updated H_U: ", [count(!iszero, row) for row in eachrow(updated_H_U)])
+        println("Column weights of updated H_U: ", [count(!iszero, col) for col in eachcol(updated_H_U)])
         =#
 
         if verbose
@@ -415,21 +536,26 @@ function classical_belief_propagation_decoder(C::ClassicalCode, error::Vector{In
             # println(io, "------------------------------------------")
         end
 
-        (new_llrs_U, current_iteration) = run_bp(
-            H_U, # Parity-check matrix for uncertain bits
-            C.r + 1, # The index where the soft constraints start in H_U
-            s_U, # Syndrome for uncertain bits
-            llrs[uncertain_bits], # Initial LLRs for uncertain bits
-            rounds_per_BP; # Number of rounds of BP to run
-            llr_convergence_threshold=llr_convergence_threshold,
-            llr_confidence_threshold=llr_confidence_threshold,
-            weight_soft_constraint=weight_soft_constraint, # Weight for the soft constraint
-            verbose=verbose,
-            io=io
-        )
-        llrs[uncertain_bits] .= new_llrs_U
+        if (length(updated_uncertain_bits) > 0)
+            # println("Updated LLRs for uncertain bits (U): ", llrs[uncertain_bits])
+            (new_llrs_U, current_iteration) = run_bp(
+                updated_H_U, # Parity-check matrix for uncertain bits
+                C.r + 1, # The index where the soft constraints start in H_U
+                updated_free_syndrome, # Syndrome for uncertain bits
+                llrs[updated_uncertain_bits], # Initial LLRs for uncertain bits
+                rounds_per_BP; # Number of rounds of BP to run
+                llr_convergence_threshold=llr_convergence_threshold,
+                llr_confidence_threshold=llr_confidence_threshold,
+                weight_soft_constraint=weight_soft_constraint, # Weight for the soft constraint
+                verbose=verbose,
+                io=io
+            )
+            llrs[updated_uncertain_bits] .= new_llrs_U
+        else
+            current_iteration = 0
+        end
 
-        # println("Updated LLRs for uncertain bits (U): ", llrs[uncertain_bits])
+        # println("Iteration $(i) done ------------------------------------------")
 
         if (verbose)
             println(io, "Confident bits (F): ", frozen_bits)

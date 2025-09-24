@@ -91,7 +91,7 @@ function main(read_from_file::Bool, explicit_error_file::String, ballistic_per_q
 	end
 	
 	# Summary of the experiment
-	stats = DecoderStatistics(errormodel, num_error_samples; failures=is_decoder_failures, num_iterations_BP=n_iterations_of_BP, runtime=time() - start_time)
+	stats = DecoderStatistics(errormodel.name, errormodel.parameters_description, num_error_samples; failures=is_decoder_failures, num_iterations_BP=n_iterations_of_BP, runtime=time() - start_time)
 	save_decoder_statistics(stats)
 
 	print_decoder_statistics(stats; io=stdout)
@@ -248,6 +248,55 @@ function print_arguments(args_dict::Dict{String, Any}; io::IO=stdout)
 	println(io, "----------------------------------------")
 end
 
+function generate_runs_for_ballistic(commands_file::String="./../expts/run_commands.txt")
+	"""
+	Generate commands for running simulations over a range of error parameters for the given error model.
+	These commands are of the form:
+	julia --project="./../" quantum_BP_test.jl <per_qubit_error_prob> <neighbour_error_prob> <num_error_samples> <n_iterations_of_BP> <rounds_per_BP> --llr_convergence_threshold <llr_convergence_threshold> --llr_confidence_threshold <llr_confidence_threshold> --weight_soft_constraint <weight_soft_constraint> --debug <debug> --verbose <verbose>
+	"""
+	# Define values for all the parameters.
+	ballistic_per_qubit_error_probs = 0.01:0.02:0.1
+	ballistic_neighbour_error_probs = 0.01:0.02:0.1
+	n_iterations_of_BP = 5
+	rounds_per_BP = 50
+	num_error_samples = 100
+	llr_convergence_threshold = 1e-6
+	llr_confidence_threshold = 4.0
+	weight_soft_constraint = 0.8
+	debug = false
+	verbose = false
+
+	run_commands = String[]
+	for per_qubit_error_prob in ballistic_per_qubit_error_probs
+		for neighbour_error_prob in ballistic_neighbour_error_probs
+			command = "julia --project=\"./../\" quantum_BP_test.jl --ballistic_per_qubit_error_prob $(per_qubit_error_prob) --ballistic_neighbour_error_prob $(neighbour_error_prob) --num_error_samples $(num_error_samples) --n_iterations_of_BP $(n_iterations_of_BP) --rounds_per_BP $(rounds_per_BP) --llr_convergence_threshold $(llr_convergence_threshold) --llr_confidence_threshold $(llr_confidence_threshold) --weight_soft_constraint $(weight_soft_constraint) --debug $(debug) --verbose $(verbose)"
+			push!(run_commands, command)
+		end
+	end
+
+	# Write the commands to the specified file
+	open(commands_file, "w") do io
+		for cmd in run_commands
+			println(io, cmd)
+		end
+	end
+end
+
+function plot_data()
+    # Define values for the parameters to collect statistics for.
+    error_model_name = "Ballistic_Error_Model"
+    parameter_ranges = Dict(
+        "per_qubit_error_prob" => 0.01:0.02:0.1,
+        "neighbour_error_prob" => 0.01:0.02:0.1
+    )
+	print_collected_data(error_model_name, parameter_ranges; prefix="./../data")
+    # Load the collected statistics into a DataFrame
+    stats_dataframe = collect_decoder_statistics(error_model_name, parameter_ranges; prefix="./../data")
+	# println("Collected DataFrame:\n", stats_dataframe)
+    # Plot the statistics
+    plot_statistics_for_ballistic_error_model(stats_dataframe; prefix="./../plots")
+end
+
 # Run the main function if this script is executed directly
 if abspath(PROGRAM_FILE) == @__FILE__
 	# Create the './../data' and './../logs' directories if they don't exist
@@ -256,6 +305,9 @@ if abspath(PROGRAM_FILE) == @__FILE__
 	end
 	if !isdir("./../logs")
 		mkdir("./../logs")
+	end
+	if !isdir("./../plots")
+		mkdir("./../plots")
 	end
 
 	# Parse command-line arguments

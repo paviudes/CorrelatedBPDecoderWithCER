@@ -3,8 +3,11 @@ using LinearAlgebra
 using Random
 
 abstract type ErrorModel end
-# All error models should include a `sample` method that generates an error vector according to the model.
-sample(model::ErrorModel, n_qubits::Int) = error("The sampling function is not implemented for the error model: $(typeof(model)).")
+# All error models should include the following method
+# 1. `sample`: that generates an error vector according to the model.
+# 2. `sweep_error_parameters`: that returns an iterator over error parameters according to the model.
+sample(model::ErrorModel, _::Int) = throw(NotImplementedError("The sampling function is not implemented for the error model: $(typeof(model))."))
+sweep_error_parameters(model::ErrorModel) = throw(NotImplementedError("The sweep_error_parameters function is not implemented for the error model: $(typeof(model))."))
 
 struct ExplicitErrorModel <: ErrorModel
     name::String
@@ -49,6 +52,15 @@ function sample_error(model::IIDErrorModel, nqubits::Int)::Vector{Int}
     return error_vector
 end
 
+function sweep_error_parameters(model::IIDErrorModel; single_qubit_error_probs::AbstractVector{<:Real}=0.0:0.1:1.0)
+    """
+    Return an iterator over error probabilities from 0.0 to 1.0 in steps of 0.01.
+    """
+    for p in single_qubit_error_probs
+        yield(IIDErrorModel(p; name=model.name))
+    end
+end
+
 struct BallisticErrorModel <: ErrorModel
     """
     A simple ballistic error model where a contiguous block of qubits experiences errors.
@@ -62,6 +74,7 @@ struct BallisticErrorModel <: ErrorModel
     parameters_description::String
     correlations::Matrix{Int}  # Pairs for qubits along which correlated errors can occur.
     connections::Vector{Vector{Int}}  # Adjacency list to specify qubit connectivity.
+    
     function BallisticErrorModel(per_qubit_error_prob::Float64, neighbour_error_prob::Float64; correlations::Matrix{Int}, name::String="Ballistic Error Model")
         if per_qubit_error_prob < 0.0 || per_qubit_error_prob > 1.0
             throw(BoundsError("Error probability must be in [0, 1]."))
@@ -75,7 +88,13 @@ struct BallisticErrorModel <: ErrorModel
             push!(connections[u], v)
             push!(connections[v], u)
         end
-        new(name, nqubits, per_qubit_error_prob, neighbour_error_prob, average_block_size, "per_qubit_error_prob=$(per_qubit_error_prob), neighbour_error_prob=$(neighbour_error_prob)", correlations, connections)
+        new(name, nqubits, per_qubit_error_prob, neighbour_error_prob, average_block_size, "per_qubit_error_prob=$(per_qubit_error_prob),neighbour_error_prob=$(neighbour_error_prob)", correlations, connections)
+    end
+
+    function BallisticErrorModel(per_qubit_error_prob::Float64, neighbour_error_prob::Float64; name::String="Ballistic Error Model")
+        # Default correlations: no correlations
+        correlations = zeros(Int, 0, 2)
+        new(name, 0, per_qubit_error_prob, neighbour_error_prob, 0.0, "per_qubit_error_prob=$(per_qubit_error_prob),neighbour_error_prob=$(neighbour_error_prob)", correlations, Vector{Vector{Int}}())
     end
 end
 
@@ -108,6 +127,17 @@ function sample_errors(model::ErrorModel, nqubits::Int, nsamples::Int)::Matrix{I
         errors[s, :] = sample_error(model, nqubits)
     end
     return errors
+end
+
+function sweep_error_parameters(model::BallisticErrorModel; per_qubit_error_probs::AbstractVector{<:Real}=0.0:0.1:1.0, neighbour_error_probs::AbstractVector{<:Real}=0.0:0.1:1.0)
+    """
+    Return an iterator over pairs of (per_qubit_error_prob, neighbour_error_prob).
+    """
+    for p in per_qubit_error_probs
+        for q in neighbour_error_probs
+            yield(BallisticErrorModel(p, q; correlations=model.correlations, name=model.name))
+        end
+    end
 end
 
 function print_error_model_info(model::ErrorModel; io::IO=stdout)
