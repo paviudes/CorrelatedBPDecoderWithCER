@@ -12,6 +12,7 @@ log/**
 tmp/**
 temp/**
 data/**
+plots/**
 
 # Julia package artifacts
 /.julia/artifacts/
