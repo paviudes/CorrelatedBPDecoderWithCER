@@ -5,6 +5,7 @@ mutable struct BPSettings
     """
     Settings for the Belief Propagation algorithm.
     """
+    algo::String # "SumProduct" or "MinSum"
     n_iterations_of_BP::Int
     rounds_per_BP::Int
     llr_convergence_threshold::Float64
@@ -20,9 +21,12 @@ mutable struct BPSettings
     verbose::Bool
     runtime::Float64
     is_decoder_failure::Bool
-    function BPSettings(n_iterations_of_BP::Int, rounds_per_BP::Int, llr_convergence_threshold::Float64=1e-6, llr_confidence_threshold::Float64=2.0, weight_soft_constraint::Float64=0.5, current_iteration::Int=0, converged::Bool=false, error::Vector{Int}=zeros(Int, 0), syndrome::Vector{Int}=zeros(Int, 0), initial_probabilities::Vector{Float64}=zeros(Float64, 0), final_probabilities::Vector{Float64}=zeros(Float64, 0), verbose::Bool=false, runtime::Float64=0.0, is_decoder_failure::Bool=false)
+    function BPSettings(algo::String, n_iterations_of_BP::Int, rounds_per_BP::Int, llr_convergence_threshold::Float64=1e-6, llr_confidence_threshold::Float64=2.0, weight_soft_constraint::Float64=0.5, current_iteration::Int=0, converged::Bool=false, error::Vector{Int}=zeros(Int, 0), syndrome::Vector{Int}=zeros(Int, 0), initial_probabilities::Vector{Float64}=zeros(Float64, 0), final_probabilities::Vector{Float64}=zeros(Float64, 0), verbose::Bool=false, runtime::Float64=0.0, is_decoder_failure::Bool=false)
+        if !(algo in ("SumProduct", "MinSum"))
+            throw(ArgumentError("Algorithm must be either 'SumProduct' or 'MinSum'."))
+        end
         recovery_hard_decision = get_recovery_using_hard_decision(compute_llrs_from_probabilities(final_probabilities); confidence=0.0)
-        new(n_iterations_of_BP, rounds_per_BP, llr_convergence_threshold, llr_confidence_threshold, weight_soft_constraint, current_iteration, converged, error, syndrome, initial_probabilities, final_probabilities, recovery_hard_decision, verbose, runtime, is_decoder_failure)
+        new(algo, n_iterations_of_BP, rounds_per_BP, llr_convergence_threshold, llr_confidence_threshold, weight_soft_constraint, current_iteration, converged, error, syndrome, initial_probabilities, final_probabilities, recovery_hard_decision, verbose, runtime, is_decoder_failure)
     end
 end
 
@@ -31,6 +35,7 @@ function print_bp_settings(bpset::BPSettings; io::IO=stdout)
     Print the BPSettings in a readable format.
     """
     println(io, "Belief Propagation Settings:")
+    println(io, "Algorithm: ", bpset.algo)
     println(io, "Number of BP Iterations: ", bpset.n_iterations_of_BP)
     println(io, "Rounds per BP Iteration: ", bpset.rounds_per_BP)
     println(io, "LLR Convergence Threshold: ", bpset.llr_convergence_threshold)
@@ -53,6 +58,7 @@ function save_bp_settings(bpset::BPSettings, filename::String)
     Save the BPSettings to a JSON file.
     """
     bpset_dict = Dict(
+        "algo" => bpset.algo,
         "n_iterations_of_BP" => bpset.n_iterations_of_BP,
         "rounds_per_BP" => bpset.rounds_per_BP,
         "llr_convergence_threshold" => bpset.llr_convergence_threshold,
@@ -82,6 +88,7 @@ function load_bp_settings(filename::String)::BPSettings
         JSON.parse(io)
     end
     return BPSettings(
+        bpset_dict["algo"],
         bpset_dict["n_iterations_of_BP"],
         bpset_dict["rounds_per_BP"],
         bpset_dict["llr_convergence_threshold"],
@@ -99,46 +106,66 @@ function load_bp_settings(filename::String)::BPSettings
     )
 end
 
-function get_message_from_check_to_vertex(G::TannerGraph, check::Int, vertex::Int, syndrome_bit::Int, messages_v2c::Matrix{Float64})
+function get_message_from_check_to_vertex(G::TannerGraph, check::Int, vertex::Int, syndrome_bit::Int, messages_v2c::Matrix{Float64}, algo::String)
 	"""
 	Compute the message sent from a check node to a variable node in a Tanner graph.
 	The check node sends a message to the variable node based on the messages it received from all other connected variable nodes.
 	The message indicates the likelihood of the variable node being in a certain state (0 or 1) given the parity-check constraint.
-	m_{c->v} = 2 * atanh(∏_{v' ∈ N(c) - {v}} tanh(m_{v'->c}/2))
+	For Sum-Product:
+        m_{c->v} = 2 * atanh(∏_{v' ∈ N(c) - {v}} tanh(m_{v'->c}/2))
+    For Min-Sum:
+        m_{c->v} = (∏_{v' ∈ N(c) - {v}} sign(m_{v'->c})) * min_{v' ∈ N(c) - {v}} |m_{v'->c}|
 	"""
 
 	# Compute the product of the tanh messages from the neighboring variable nodes
 	product = 1.0
+    minimum_message = Inf
 	for incident_vertex in G.check_neighbors[check]
         if (incident_vertex != vertex)
-		    product *= tanh(messages_v2c[incident_vertex, check] / 2)
+            if (algo == "SumProduct")
+		        product *= tanh(messages_v2c[incident_vertex, check] / 2)
+            elseif (algo == "MinSum")
+                product *= sign(messages_v2c[incident_vertex, check])
+                minimum_message = min(minimum_message, abs(messages_v2c[incident_vertex, check]))
+            else
+                throw(ArgumentError("Unknown algorithm: $algo. Supported algorithms are SumProduct and MinSum."))
+            end
         end
 	end
 
 	# Compute the message from the check node to the variable node
-    message = 2 * atanh(product)
+    if (algo == "SumProduct")
+        message = 2 * atanh(product)
+    elseif (algo == "MinSum")
+        message = product * minimum_message
+    end
     if syndrome_bit == 1
         message = -message
     end
 	return message
 end
 
-function get_message_from_vertex_to_check(G::TannerGraph, vertex::Int, check::Int, initial_llr::Vector{Float64}, messages_c2v::Matrix{Float64})
+function get_message_from_vertex_to_check(G::TannerGraph, vertex::Int, check::Int, initial_llr::Vector{Float64}, messages_c2v::Matrix{Float64}, algo::String)
 	"""
 	Compute the message sent from a variable node to a check node in a Tanner graph.
 	The variable node sends a message to the check node based on the received log-likelihood ratio (LLR) and the messages it received from all other connected check nodes.
 	The message indicates the likelihood of the variable node being in a certain state (0 or 1) given the information from the channel and other checks.
 	m_{v->c} = LLR(v) + ∑_{c' ∈ N(v) - {c}} m_{c'->v}
+    The rule is common to both Sum-Product and Min-Sum algorithms.
 	"""
-	# Compute the sum of the messages from the neighboring check nodes
+    # Compute the sum of the messages from the neighboring check nodes
 	sum_messages = 0.0
 	for incident_check in G.vertex_neighbors[vertex]
         if (incident_check != check)
-		    sum_messages += messages_c2v[incident_check, vertex]
-        end
+            if (algo == "SumProduct") || (algo == "MinSum")
+                sum_messages += messages_c2v[incident_check, vertex]
+            else
+                throw(ArgumentError("Unknown algorithm: $algo. Supported algorithms are 'SumProduct' and 'MinSum'."))
+            end
+		end
 	end
 
-	# Compute the message from the variable node to the check node
+    # Compute the message from the variable node to the check node
 	return initial_llr[vertex] + sum_messages
 end
 
@@ -170,7 +197,7 @@ function compute_probabilities_from_llrs(llrs::Vector{Float64})::Vector{Float64}
     return probabilities
 end
 
-function soft_message_from_check_to_vertex(G::TannerGraph, check::Int, vertex::Int, messages_v2c::Matrix{Float64}, weight_soft_constraint::Float64)
+function soft_message_from_check_to_vertex(G::TannerGraph, check::Int, vertex::Int, messages_v2c::Matrix{Float64}, weight_soft_constraint::Float64, algo::String)
     """
     Pass a message from a check node representing a soft constraint to a variable node in the Tanner graph.
     The difference between a soft constraint and a hard constraint is that a soft constraint allows for some uncertainty or probability in the satisfaction of the constraint.
@@ -182,12 +209,20 @@ function soft_message_from_check_to_vertex(G::TannerGraph, check::Int, vertex::I
 
     where x_i and x_j are the two variable nodes connected to the check node f_k. The check node f_k enforces that the sum of x_i and x_j is even (0), in other words, x_i and x_j are correlated.
 
-    The message from the check node to a variable node (say x_i) is:
-    m_{f_k -> x_i} = log( (α + (1-α) exp(- m_{v_j -> f_k}) ) / (α exp(- m_{v_j -> f_k})) + (1 - α))
-
+    The message from the check node to a variable node (say x_i) for the soft constraint is:
+    1. Sum-Product algorithm:
+        m_{f_k -> x_i} = log( (α + (1-α) exp(- m_{v_j -> f_k}) ) / (α exp(- m_{v_j -> f_k}) + (1 - α)) )
+        For the sake of numerical stability, we can rewrite this as:
+        m_{f_k -> x_i} = 2 atanh (tanh(J) * tanh(m_{v_j -> f_k}/2))
+    2. Min-Sum algorithm:
+        m_{f_k -> x_i} = log( max(α exp(- m_{v_j -> f_k}) , (1-α) (1 - exp(- m_{v_j -> f_k})) ) / max( α (1-exp(- m_{v_j -> f_k})) , (1 - α) ) )
     For the sake of numerical stability, we can rewrite this as:
-    m_{f_k -> x_i} = 2 atanh (tanh(J) * tanh(m_{v_j -> f_k}/2))
-    where J = 1/2 ln(α / (1 - α)).
+        m_{f_k -> x_i} = |m_{v_j -> f_k} + J/2| - |m_{v_j -> f_k} - J/2|
+
+    where
+    - m_{v_j -> f_k} is the message from the other variable node (x_j) to the check node (f_k)
+    - α is a parameter that controls the strength of the correlation. α = 0 is uncorrelated while α = 1 is fully correlated.
+    - J = 1/2 ln(α / (1 - α)).
 
     where m_{v_j -> f_k} is the message from the other variable node (x_j) to the check node (f_k), and α is a parameter that controls the strength of the correlation. α = 0 is uncorrelated while α = 1 is fully correlated.
 
@@ -195,12 +230,18 @@ function soft_message_from_check_to_vertex(G::TannerGraph, check::Int, vertex::I
     """
     neighbor = setdiff(G.check_neighbors[check], [vertex])[1]  # The other variable node connected to the check node
     ising_coupling = 0.5 * log(weight_soft_constraint / (1 - weight_soft_constraint))
-    # Using the numerically stable form
-    message_llr_from_check_to_vertex = 2 * atanh(tanh(ising_coupling) * tanh(messages_v2c[neighbor, check] / 2))
+
+    if (algo == "SumProduct")
+        message_llr_from_check_to_vertex = 2 * atanh(tanh(ising_coupling) * tanh(messages_v2c[neighbor, check] / 2))
+    elseif (algo == "MinSum")
+        message_llr_from_check_to_vertex = abs(messages_v2c[neighbor, check] + ising_coupling / 2) - abs(messages_v2c[neighbor, check] - ising_coupling / 2)
+    else
+        throw(ArgumentError("Unknown algorithm: $algo. Supported algorithms are SumProduct and MinSum."))
+    end
     return message_llr_from_check_to_vertex
 end
 
-function bp_round(G::TannerGraph, llrs_from_previous_round::Vector{Float64}, syndrome::Vector{Int}, messages_v2c::Matrix{Float64}, weight_soft_constraint::Float64)
+function bp_round(G::TannerGraph, initial_llrs::Vector{Float64}, syndrome::Vector{Int}, messages_v2c::Matrix{Float64}, weight_soft_constraint::Float64, algo::String)
     """
     Perform one round of belief propagation on the Tanner graph G with the given initial log-likelihood ratios (LLRs).
     """
@@ -213,12 +254,12 @@ function bp_round(G::TannerGraph, llrs_from_previous_round::Vector{Float64}, syn
         if c < G.soft_constraint_start
             # Hard constraint
             for v in G.check_neighbors[c]
-                messages_c2v[c, v] = get_message_from_check_to_vertex(G, c, v, syndrome[c], messages_v2c)
+                messages_c2v[c, v] = get_message_from_check_to_vertex(G, c, v, syndrome[c], messages_v2c, algo)
             end
         else
             # Soft constraint
             for v in G.check_neighbors[c]
-                messages_c2v[c, v] = soft_message_from_check_to_vertex(G, c, v, messages_v2c, weight_soft_constraint)
+                messages_c2v[c, v] = soft_message_from_check_to_vertex(G, c, v, messages_v2c, weight_soft_constraint, algo)
             end
         end
     end
@@ -226,7 +267,7 @@ function bp_round(G::TannerGraph, llrs_from_previous_round::Vector{Float64}, syn
     # Pass messages from variable nodes to check nodes
     for v in 1:G.nv
         for c in G.vertex_neighbors[v]
-            messages_v2c[v, c] = get_message_from_vertex_to_check(G, v, c, llrs_from_previous_round, messages_c2v)
+            messages_v2c[v, c] = get_message_from_vertex_to_check(G, v, c, initial_llrs, messages_c2v, algo)
         end
     end
 
@@ -234,7 +275,7 @@ function bp_round(G::TannerGraph, llrs_from_previous_round::Vector{Float64}, syn
     updated_llrs = zeros(Float64, G.nv)
     for v in 1:G.nv
         sum_messages = sum(messages_c2v[c, v] for c in G.vertex_neighbors[v])
-        updated_llrs[v] = llrs_from_previous_round[v] + sum_messages
+        updated_llrs[v] = initial_llrs[v] + sum_messages
     end
 
     return (messages_v2c, updated_llrs)
@@ -386,7 +427,7 @@ function trim_constraints(H::Matrix{Int}, syndrome::Vector{Int}, soft_constraint
     return (updated_H, updated_syndrome, fixed_bits, llrs)
 end
 
-function run_bp(parity_check_matrix::Matrix{Int}, soft_constraint_start::Int, syndrome::Vector{Int}, initial_llrs::Vector{Float64}, max_interations::Int; llr_convergence_threshold::Float64=1e-6, llr_confidence_threshold::Float64=2.0, weight_soft_constraint::Float64=0.5, verbose::Bool=false, io::IO=stdout)::Tuple{Vector{Float64}, Int}
+function run_bp(algo::String, parity_check_matrix::Matrix{Int}, soft_constraint_start::Int, syndrome::Vector{Int}, initial_llrs::Vector{Float64}, max_interations::Int; llr_convergence_threshold::Float64=1e-6, llr_confidence_threshold::Float64=2.0, weight_soft_constraint::Float64=0.5, verbose::Bool=false, io::IO=stdout)::Tuple{Vector{Float64}, Int}
     """
     Run the belief propagation algorithm on the given parity-check matrix and syndrome.
     Returns the final log-likelihood ratios (LLRs) after running BP.
@@ -418,11 +459,18 @@ function run_bp(parity_check_matrix::Matrix{Int}, soft_constraint_start::Int, sy
     G = TannerGraph(parity_check_matrix_non_trivial, soft_constraint_start)
     # Initialize messages
     messages_v2c = bp_initialize(G, initial_llrs)
+
+    println("Initialized BP with v2c messages of size ", size(messages_v2c), ": ", messages_v2c)
+
     old_llrs = copy(initial_llrs)
     current_iteration = 1
     stop = false
     while ((stop == false) && (current_iteration <= max_interations))
-        (messages_v2c, new_llrs) = bp_round(G, old_llrs, syndrome_non_trivial, messages_v2c, weight_soft_constraint)
+        (messages_v2c_updated, new_llrs) = bp_round(G, initial_llrs, syndrome_non_trivial, messages_v2c, weight_soft_constraint, algo)
+        #######
+        # Temporary patch
+        # messages_v2c = bp_initialize(G, new_llrs)
+        #######
         if verbose
             println(io, "--------------------------------------------------------")
             println(io, "BP Round $(current_iteration):\nLLRs = ", new_llrs)
@@ -430,14 +478,15 @@ function run_bp(parity_check_matrix::Matrix{Int}, soft_constraint_start::Int, sy
         end
         stop = should_bp_stop(G, old_llrs, new_llrs, syndrome, llr_convergence_threshold, llr_confidence_threshold; verbose=verbose, io=io)
         # Update old LLRs for the next iteration
-        old_llrs = new_llrs
+        old_llrs .= new_llrs
+        messages_v2c .= messages_v2c_updated
         # Increment the iteration counter
         current_iteration += 1
     end
     return (old_llrs, current_iteration-1)
 end
 
-function classical_belief_propagation_decoder(C::ClassicalCode, error::Vector{Int}, syndrome::Vector{Int}, initial_probabilities::Vector{Float64}, rounds_per_BP::Int, n_iterations_of_BP::Int; llr_convergence_threshold::Float64=1e-6, llr_confidence_threshold::Float64=2.0, weight_soft_constraint::Float64=0.5, verbose::Bool=false, io::IO=stdout)::BPSettings
+function classical_belief_propagation_decoder(C::ClassicalCode, error::Vector{Int}, syndrome::Vector{Int}, initial_probabilities::Vector{Float64}, rounds_per_BP::Int, n_iterations_of_BP::Int; algo::String="SumProduct", llr_convergence_threshold::Float64=1e-6, llr_confidence_threshold::Float64=2.0, weight_soft_constraint::Float64=0.5, verbose::Bool=false, io::IO=stdout)::BPSettings
     """
     We want to run BP iteratively, and after each iteration, we want to check if any bits have reached a certain confidence threshold in their LLRs.
     1. After each iteration of BP, we will identify the bits whose LLRs exceed the confidence threshold. These are considered "confident" bits, denoted by the set F. We will fix their values by making a hard decision.
@@ -539,6 +588,7 @@ function classical_belief_propagation_decoder(C::ClassicalCode, error::Vector{In
         if (length(updated_uncertain_bits) > 0)
             # println("Updated LLRs for uncertain bits (U): ", llrs[uncertain_bits])
             (new_llrs_U, current_iteration) = run_bp(
+                algo, # Algorithm to use for BP (:SumProduct or :MinSum)
                 updated_H_U, # Parity-check matrix for uncertain bits
                 C.r + 1, # The index where the soft constraints start in H_U
                 updated_free_syndrome, # Syndrome for uncertain bits
@@ -575,7 +625,7 @@ function classical_belief_propagation_decoder(C::ClassicalCode, error::Vector{In
     end
     # println("Loading all properties into BPSettings struct... in $(rounds_per_BP * n_iterations_of_BP) rounds of BP")
     # Load all the properties into the BPSettings struct
-    bpset = BPSettings(n_iterations_of_BP, rounds_per_BP, llr_convergence_threshold, llr_confidence_threshold, weight_soft_constraint, n_iterations_total, false, error, syndrome, initial_probabilities, final_probabilities, verbose, runtime)
+    bpset = BPSettings(algo, n_iterations_of_BP, rounds_per_BP, llr_convergence_threshold, llr_confidence_threshold, weight_soft_constraint, n_iterations_total, false, error, syndrome, initial_probabilities, final_probabilities, verbose, runtime)
     bpset.recovery_hard_decision = get_recovery_using_hard_decision(final_llrs; confidence=0.0)
     bpset.is_decoder_failure = is_decoder_failure(error, bpset.recovery_hard_decision, C.L)
     return bpset
@@ -595,7 +645,7 @@ function is_decoder_failure(error::Vector{Int}, recovery::Vector{Int}, logical_o
     return false  # No logical error
 end
 
-function quantum_belief_propagation_decoder(Q::QuantumCode, error::Vector{Int}, initial_probabilities::Vector{Float64}, rounds_per_BP::Int, n_iterations_of_BP::Int; llr_convergence_threshold::Float64=1e-6, llr_confidence_threshold::Float64=2.0, weight_soft_constraint::Float64=0.5, verbose::Bool=false, io::IO=stdout)::BPSettings
+function quantum_belief_propagation_decoder(Q::QuantumCode, error::Vector{Int}, initial_probabilities::Vector{Float64}, rounds_per_BP::Int, n_iterations_of_BP::Int; algo::String="SumProduct", llr_convergence_threshold::Float64=1e-6, llr_confidence_threshold::Float64=2.0, weight_soft_constraint::Float64=0.5, verbose::Bool=false, io::IO=stdout)::BPSettings
     """
     Run the belief propagation for a quantum CSS code.
     We will essentially run the classical BP on both the X and Z components separately.
@@ -617,7 +667,7 @@ function quantum_belief_propagation_decoder(Q::QuantumCode, error::Vector{Int}, 
         println(io, "Syndrome X: ", syndrome_X)
         println(io, "Decoding X part:")
     end
-    bpset_X = classical_belief_propagation_decoder(Q.CX, error_Z, syndrome_X, initial_probabilities, rounds_per_BP, n_iterations_of_BP; llr_convergence_threshold=llr_convergence_threshold, llr_confidence_threshold=llr_confidence_threshold, weight_soft_constraint=weight_soft_constraint, verbose=verbose, io=io)
+    bpset_X = classical_belief_propagation_decoder(Q.CX, error_Z, syndrome_X, initial_probabilities, rounds_per_BP, n_iterations_of_BP; algo=algo, llr_convergence_threshold=llr_convergence_threshold, llr_confidence_threshold=llr_confidence_threshold, weight_soft_constraint=weight_soft_constraint, verbose=verbose, io=io)
     if (verbose)
         print_bp_settings(bpset_X; io=io)
     end
@@ -629,7 +679,7 @@ function quantum_belief_propagation_decoder(Q::QuantumCode, error::Vector{Int}, 
         println(io, "Syndrome Z: ", syndrome_Z)
         println(io, "Decoding Z part:")
     end
-    bpset_Z = classical_belief_propagation_decoder(Q.CZ, error_X, syndrome_Z, initial_probabilities, rounds_per_BP, n_iterations_of_BP; llr_convergence_threshold=llr_convergence_threshold, llr_confidence_threshold=llr_confidence_threshold, weight_soft_constraint=weight_soft_constraint, verbose=verbose, io=io)
+    bpset_Z = classical_belief_propagation_decoder(Q.CZ, error_X, syndrome_Z, initial_probabilities, rounds_per_BP, n_iterations_of_BP; algo=algo, llr_convergence_threshold=llr_convergence_threshold, llr_confidence_threshold=llr_confidence_threshold, weight_soft_constraint=weight_soft_constraint, verbose=verbose, io=io)
     if (verbose)
         print_bp_settings(bpset_Z; io=io)
     end
@@ -638,6 +688,7 @@ function quantum_belief_propagation_decoder(Q::QuantumCode, error::Vector{Int}, 
     
     # Load all the properties into the BPSettings struct
     bpset = BPSettings(
+        algo,
         rounds_per_BP,
         n_iterations_of_BP,
         llr_convergence_threshold,

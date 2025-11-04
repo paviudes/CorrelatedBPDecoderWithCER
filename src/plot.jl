@@ -30,7 +30,7 @@ function plot_statistics_for_ballistic_error_model(stats_dataframe::DataFrame; p
                 average_logical_error_rates;
                 label="\$ p = $(site_error_prob)\$",
                 marker=:o,
-                yscale=:log10,
+                # yscale=:log10,
                 linewidth=2,
                 # yerror=std_logical_error_rates
             )
@@ -42,11 +42,4 @@ function plot_statistics_for_ballistic_error_model(stats_dataframe::DataFrame; p
     
     # Close the plot and save it to a file
     savefig(plt, "$(prefix)/ballistic_error_model_plot.pdf")
-end
-
-function print_collected_data(error_model_name::String, parameter_ranges::Dict{String, <:AbstractVector}; prefix::String="./../data")
-    stats_dataframe = collect_decoder_statistics(error_model_name, parameter_ranges; prefix=prefix)
-    for each_stat in stats_dataframe[!, :summary]
-        print_decoder_statistics(each_stat; io=stdout)
-    end
 end

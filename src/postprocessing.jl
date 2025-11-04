@@ -1,44 +1,68 @@
 using LinearAlgebra
 using DataFrames
+using DataStructures
 using CSV
 
 struct DecoderStatistics
     """
     Statistics for the Belief Propagation decoder.
     """
+    algo::String
     error_model_name::String
     error_model_parameters_description::String
     num_samples_per_error_rate::Int
-    num_iterations_BP::Int
+    n_iterations_BP::Int
+    rounds_per_BP::Int
+    weight_soft_constraint::Float64
     num_failures::Int
-    failures::Vector{Bool}
     average_logical_error_rate::Float64
     std_logical_error_rate::Float64
     runtime::Float64
 
-    function DecoderStatistics(error_model_name::String, error_model_parameters_description::String, num_samples_per_error_rate::Int=0; num_failures::Int=0, failures::Vector{Bool}=zeros(Bool, num_samples_per_error_rate), num_iterations_BP::Int=0, runtime::Float64=0.0)
-        if num_samples_per_error_rate < 0
-            error("Number of samples per error rate must be non-negative.")
+    function DecoderStatistics(algo::String, error_model_name::String, error_model_parameters_description::String, num_samples_per_error_rate::Int, num_iterations_BP::Int, num_rounds_per_iteration_BP::Int, weight_soft_constraint::Float64; num_failures::Int=0, failures::Vector{Bool}=zeros(Bool, num_samples_per_error_rate), runtime::Float64=0.0)
+        if !(algo in ("SumProduct", "MinSum"))
+            throw(ArgumentError("Algorithm must be either 'SumProduct' or 'MinSum'."))
         end
-
+        if num_samples_per_error_rate < 0
+            throw(ArgumentError("Number of samples per error rate must be non-negative."))
+        end
         if (num_failures == 0) && (length(failures) > 0)
             num_failures = count(failures)
         end
-
         if (num_samples_per_error_rate == 0) || (num_failures == 0)
-            # warning("Number of failures is zero. Standard deviation will be set to zero.")
+        # warning("Number of failures is zero. Standard deviation will be set to zero.")
             average_logical_error_rate = 0.0
             std_logical_error_rate = 0.0
         else
             average_logical_error_rate = num_failures / num_samples_per_error_rate 
             std_logical_error_rate = compute_std_assuming_bernoulli(average_logical_error_rate, num_iterations_BP)
         end
-        new(error_model_name, error_model_parameters_description, num_samples_per_error_rate, num_iterations_BP, num_failures, failures, average_logical_error_rate, std_logical_error_rate, runtime)
+        new(algo, error_model_name, error_model_parameters_description, num_samples_per_error_rate, num_iterations_BP, num_rounds_per_iteration_BP, weight_soft_constraint, num_failures, average_logical_error_rate, std_logical_error_rate, runtime)
     end
+end
 
-    function DecoderStatistics(error_model_name::String, error_model_parameters_description::String, num_samples_per_error_rate::Int, num_iterations_BP::Int; num_failures::Int=0, failures::Vector{Bool}=zeros(Bool, num_samples_per_error_rate), average_logical_error_rate::Float64=0.0, std_logical_error_rate::Float64=0.0, runtime::Float64=0.0)
-        new(error_model_name, error_model_parameters_description, num_samples_per_error_rate, num_iterations_BP, num_failures, failures, average_logical_error_rate, std_logical_error_rate, runtime)
+function record_decoder_statistics(stats::DecoderStatistics)
+    """
+    Print the statistics in a JSON format so that they can be easily printed into a file using GNU `parallel`.
+    """
+    stats_dict = Dict(
+        name => getfield(stats, name) for name in fieldnames(DecoderStatistics)
+    )
+    println(JSON.json(stats_dict)) # Ensure a newline after the JSON object
+end
+
+"""
+Check that all provided symbols are valid fields of `DecoderStatistics`.
+Throws an ArgumentError if an invalid key is found.
+"""
+function check_valid_fields_DecoderStatistics(keys::Vector{Symbol})::Vector{Symbol}
+    allowed = fieldnames(DecoderStatistics)
+    valid = intersect(keys, allowed)
+    invalid = setdiff(keys, allowed)
+    if !isempty(invalid)
+        @warn ("Invalid keys found: $(collect(invalid))")
     end
+    return valid
 end
 
 function compute_std_assuming_bernoulli(μ::Float64, n::Int)::Float64
@@ -56,134 +80,102 @@ function compute_std_assuming_bernoulli(μ::Float64, n::Int)::Float64
     return σ
 end
 
-function print_decoder_statistics(stats::DecoderStatistics; io::IO=stdout)
+function collect_decoder_statistics(simulation_output_file::String)::DataFrame
     """
-    Print the decoder statistics in a readable format.
+    Collect decoder statistics from simulations with settings.
+    The `output_data_file` is is a text file where each line corresponds to a dictionary specifying all the parameters of a simulation run, which are also parameters that define `DecoderStatistics`.
+    Each line should be a valid dictionary of the form: {`parameter_name1` => `value1`, `parameter_name2` => `value2`, ...}.
     """
-    println(io, "Decoder Statistics:")
-    println(io, "-------------------")
-    println(io, "Error Model: ", stats.error_model_name)
-    println(io, "Error Model Parameters: ", stats.error_model_parameters_description)
-    println(io, "Number of Samples per Error Rate: ", stats.num_samples_per_error_rate)
-    println(io, "Number of BP Iterations: ", stats.num_iterations_BP)
-    println(io, "Number of Failures: ", stats.num_failures)
-    println(io, "Average Logical Error Rate: ", stats.average_logical_error_rate)
-    println(io, "Standard Deviation of Logical Error Rate: ", stats.std_logical_error_rate)
-    println(io, "Runtime: ", stats.runtime)
-end
-
-function get_output_filename(error_model_name::String, error_model_parameters_description::String; prefix::String="./../data")::String
-    """
-    Generate an output filename based on the error model name and parameters.
-    Eg. decoder_stats_Ballistic_Error_Model_per_qubit_error_prob_0_09__neighbour_error_prob_0_03.json
-    """
-    sanitized_name = replace(error_model_name, r"\s+" => "_")
-    sanitized_params = replace(error_model_parameters_description, r"[^\w]" => "_")
-    output_filename = "$(prefix)/decoder_stats_$(sanitized_name)_$(sanitized_params).json"
-    return output_filename
-end
-
-function get_output_filename(stats::DecoderStatistics, prefix::String="./../data")::String
-    """
-    Generate an output filename based on the error model name and parameters.
-    Eg. decoder_stats_Ballistic_Error_Model_per_qubit_error_prob_0_09__neighbour_error_prob_0_03.json
-    """
-    output_filename = get_output_filename(stats.error_model_name, stats.error_model_parameters_description; prefix=prefix)
-    return output_filename
-end
-
-function save_decoder_statistics(stats::DecoderStatistics; outputfile::String=get_output_filename(stats))
-    """
-    Write the decoder statistics to a JSON file.
-    """
-    stats_dict = Dict(
-        "error_mode_name" => stats.error_model_name,
-        "error_model_parameters" => stats.error_model_parameters_description,
-        "num_samples_per_error_rate" => stats.num_samples_per_error_rate,
-        "num_iterations_BP" => stats.num_iterations_BP,
-        "num_failures" => stats.num_failures,
-        "average_logical_error_rate" => stats.average_logical_error_rate,
-        "std_logical_error_rate" => stats.std_logical_error_rate,
-        "runtime" => stats.runtime
-    )
-
-    open(outputfile, "w") do io
-        JSON.print(io, stats_dict)
-    end
-end
-
-function load_decoder_statistics(inputfile::String)::DecoderStatistics
-    """
-    Load decoder statistics from a JSON file.
-    """
-    stats_dict = open(inputfile, "r") do io
-        JSON.parse(io)
-    end
-
-    error_model_name = stats_dict["error_mode_name"]
-    error_model_parameters = stats_dict["error_model_parameters"]
-
-    num_samples_per_error_rate = stats_dict["num_samples_per_error_rate"]
-    num_iterations_BP = stats_dict["num_iterations_BP"]
-    num_failures = stats_dict["num_failures"]
-    average_logical_error_rate = stats_dict["average_logical_error_rate"]
-    std_logical_error_rate = stats_dict["std_logical_error_rate"]
-    runtime = stats_dict["runtime"]
-
-    # Create a DecoderStatistics instance
-    stats = DecoderStatistics(
-        error_model_name,
-        error_model_parameters,
-        num_samples_per_error_rate,
-        num_iterations_BP;
-        num_failures=num_failures,
-        average_logical_error_rate=average_logical_error_rate,
-        std_logical_error_rate=std_logical_error_rate,
-        runtime=runtime
-    )
-
-    return stats
-end
-
-function collect_decoder_statistics(error_model_name::String, parameter_ranges::Dict{String, <:AbstractVector}; prefix::String="./../data")::DataFrame
-    """
-    Collect decoder statistics from simulations with different error model parameters.
-    The `parameter_ranges` dictionary describes the ranges of parameters that have been swept over.
-    It is of the format: Dict("param1" => [val1, val2, ...], "param2" => [val1, val2, ...], ...)
-    This function assumes that the simulations have already been run and their statistics saved in JSON files.
-    We want to read the data from these files and into a Dataframe which has N + 2 columns:
-    where N is the number of parameters, i.e., the keys of `parameter_ranges`.
-    The last two columns are the average logical error rate and its standard deviation.
-    """
-    param_names = collect(keys(parameter_ranges))
-    # Create a dataframe with each column corresponding to a parameter name (key) in `parameter_ranges`
+    # Create an empty DataFrame to store the statistics
+    parameter_names = fieldnames(DecoderStatistics)
+    # Create an empty DataFrame with the field names in `parameter_names` and the corresponding types in `parameter_types`
     stats_dataframe = DataFrame(
-        [Symbol(param) => Float64[] for param in param_names]...,
-        Symbol("summary") => DecoderStatistics[]
+        [name => fieldtype(DecoderStatistics, name)[] for name in parameter_names]...
     )
-    # Iterate over all combinations of parameter values
-    parameter_combinations = Iterators.product(values(parameter_ranges)...)
-    for param_values in parameter_combinations
-        ballistic_error_model = BallisticErrorModel(param_values...)
-        output_filename = get_output_filename(ballistic_error_model.name, ballistic_error_model.parameters_description; prefix=prefix)
-        if isfile(output_filename)
-            stats = load_decoder_statistics(output_filename)
-            new_row = (; [Symbol(k) => v for (k, v) in zip(param_names, param_values)]..., Symbol("summary") => stats)
-            push!(stats_dataframe, new_row)
-        else
-            @warn "File $(output_filename) does not exist. Skipping this parameter set."
-        end
+    # println("Empty DataFrame:\n", stats_dataframe)
+    fp = open(simulation_output_file, "r")
+    for line in eachline(fp)
+        # Interpret the line as a dictionary, where the line is given as a JSON string
+        line_dict = JSON.parse(line)
+        # println("Parsed line dictionary: ", line_dict)
+        # Create a new row in the DataFrame with the values from the dictionary, where the keys correspond to the parameter names
+        new_dataframe_row = DataFrame(
+            [Symbol(name) => [line_dict[name]] for name in keys(line_dict)]...
+        )
+        # println("New DataFrame row:\n", new_dataframe_row)
+        append!(stats_dataframe, new_dataframe_row)
     end
-    save_dataframe(error_model_name, stats_dataframe; prefix=prefix)
+    close(fp)
     return stats_dataframe
 end
 
-function save_dataframe(error_model_name::String, df::DataFrame; prefix::String="./../data")::String
+function save_decoder_dataframe(decoder_stats::DataFrame, output_filename::String="./../data/debankan/explicit_error_model_focused_data.csv")::String
     """
     Save the dataframe to a CSV file.
     """
-    sanitized_error_model_name = replace(error_model_name, r"\s+" => "_")
-    output_filename = "$(prefix)/$(sanitized_error_model_name)_dataframe.csv"
-    CSV.write(output_filename, df)
+    # If a file with the same name already exists, then load the data and append the new data to it
+    if isfile(output_filename)
+        existing_data = CSV.read(output_filename, DataFrame)
+        # Append the new data dataframe to the existing dataframe
+        append!(decoder_stats, existing_data)
+    end
+    CSV.write(output_filename, decoder_stats)
     return output_filename
+end
+
+function check_approximate(col::AbstractVector, val; atol::Float64=1e-8, rtol::Float64=1e-5)::BitVector
+    """
+    Check if the values in the column are approximately equal to the given value `val` using `isapprox` for Real values,
+    or == for String values. Returns a BitVector indicating which elements are approximately equal or equal.
+    """
+    if eltype(col) <: Real && isa(val, Real)
+        # println("Check if elements the column\n", col, "\n are approximately equal to ", val, ". Result: ", isapprox.(col, val; atol=atol, rtol=rtol))
+        return isapprox.(col, val; atol=atol, rtol=rtol)
+    elseif eltype(col) <: AbstractString && isa(val, AbstractString)
+        # println("Check if elements the column\n", col, "\n are equal to ", val, ". Result: ", col .== val)
+        return col .== val
+    else
+        # Fallback to == for other types
+        return col .== val
+    end
+end
+
+function extract_collected_data(stats_dataframe::DataFrame, select_parameters::Dict{Symbol, AbstractVector{<:Any}}, display_parameters::Vector{Symbol})::DataFrame
+    """
+    Extract data from a dataframe that has a specific set of columns and rows corresponding to the values for the columns.
+    # Define a readable dataframe which has the following columns:
+    # - All the columns in `display_parameters`.
+    # - All the rows that whose values in the columns corresponding to the keys in `select_parameters` match the values in `select_parameters`.
+    """
+    # Check if the selected parameters are valid
+    valid_parameter_names = check_valid_fields_DecoderStatistics(collect(keys(select_parameters)))
+    # println("Valid parameter names: ", valid_parameter_names)
+    valid_parameter_values = Iterators.product(collect([select_parameters[param] for param in valid_parameter_names])...)
+    # println("Valid parameter values: ", collect(valid_parameter_values))
+
+    # Create a focused dataframe with columns as the parameter names.
+    focused_dataframe = DataFrame(
+        #[name => fieldtype(DecoderStatistics, name)[] for name in valid_parameter_names]...,
+        [name => fieldtype(DecoderStatistics, name)[] for name in display_parameters]...
+    )
+    # println("Focused DataFrame columns: ", names(focused_dataframe))
+    # Filter the stats_dataframe to only include rows that match the selected parameter values
+    for values in valid_parameter_values
+        # Search for rows in the `stats_dataframe` where the columns corresponding to the `valid_parameter_names` match the values in `values`
+        filter_condition = reduce((acc, (param, val)) -> acc .& check_approximate(stats_dataframe[!, param], val), zip(valid_parameter_names, values), init=trues(nrow(stats_dataframe)))
+        # For the selected rows, print the columns in `valid_parameter_names` and `display_parameters`
+        matching_rows = stats_dataframe[filter_condition, :]
+        # println("Parameter names: ", valid_parameter_names)
+        # println("Matching rows for values $(values):\n", matching_rows)
+        # If there are matching rows, add them to the focused dataframe
+        if nrow(matching_rows) > 0
+            # append!(focused_dataframe, matching_rows[:, vcat(valid_parameter_names, display_parameters)])
+            append!(focused_dataframe, matching_rows[:, display_parameters])
+        end
+    end
+
+    # Add the selected parameters to the readable dataframe
+    # println("=============================")
+    # println("Summary\n", focused_dataframe)
+    return focused_dataframe
 end

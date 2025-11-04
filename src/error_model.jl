@@ -9,6 +9,21 @@ abstract type ErrorModel end
 sample(model::ErrorModel, _::Int) = throw(NotImplementedError("The sampling function is not implemented for the error model: $(typeof(model))."))
 sweep_error_parameters(model::ErrorModel) = throw(NotImplementedError("The sweep_error_parameters function is not implemented for the error model: $(typeof(model))."))
 
+function assign_error_model(error_model_name::String, error_model_params::Vector)::ErrorModel #TODO: Specify that we want a vector of either Floats or Strings.
+    """
+    Pick out the right Error Model object based on the `error_mode_name`.
+    """
+    if (error_model_name == "Ballistic Error Model")
+        error_model = BallisticErrorModel(error_model_params[1], error_model_params[2])
+    elseif (error_model_name == "Explicit Error Set")
+        error_model = ExplicitErrorModel(error_model_params[1])
+    else
+        error_model = ErrorModel()
+        throw(ArgumentError("Unknown error model name $(error_mode_name). Must be one of Ballistic_Error_Model or Explicit Error Set"))
+    end
+
+end
+
 struct ExplicitErrorModel <: ErrorModel
     name::String
     error_file_name::String
@@ -24,7 +39,7 @@ function sample_errors(model::ExplicitErrorModel, nqubits::Int)::Matrix{Int}
     Load errors from a specified file.
     The file should contain a matrix where each row represents an error vector for nqubits.
     """
-    errors = readdlm("./../data/$(model.error_file_name).txt", Int)
+    errors = readdlm("./../data/debankan/$(model.error_file_name).txt", Int)
     if size(errors, 2) != nqubits
         throw(DimensionMismatch("The number of qubits in the error file does not match the specified nqubits."))
     end
@@ -35,7 +50,7 @@ struct IIDErrorModel <: ErrorModel
     name::String
     per_qubit_error_prob::Float64
     parameters_description::String
-    function IIDErrorModel(per_qubit_error_prob::Float64; name::String="IID Error Model")
+    function IIDErrorModel(per_qubit_error_prob::Float64; name::String="IID_Error_Model")
         if per_qubit_error_prob < 0.0 || per_qubit_error_prob > 1.0
             error("Error probability must be in [0, 1].")
         end
@@ -74,27 +89,27 @@ struct BallisticErrorModel <: ErrorModel
     parameters_description::String
     correlations::Matrix{Int}  # Pairs for qubits along which correlated errors can occur.
     connections::Vector{Vector{Int}}  # Adjacency list to specify qubit connectivity.
-    
-    function BallisticErrorModel(per_qubit_error_prob::Float64, neighbour_error_prob::Float64; correlations::Matrix{Int}, name::String="Ballistic Error Model")
+
+    function BallisticErrorModel(per_qubit_error_prob::Float64, neighbour_error_prob::Float64; correlations::Matrix{Int}=zeros(Int, 0, 2), name::String="Ballistic Error Model")
         if per_qubit_error_prob < 0.0 || per_qubit_error_prob > 1.0
             throw(BoundsError("Error probability must be in [0, 1]."))
         end
-        average_block_size = compute_mean([length(corr) for corr in eachrow(correlations)])
-        # convert the list of edges provided as `correlations` into an adjacency list `connections`
-        nqubits = maximum(correlations)
-        connections = [Int[] for _ in 1:nqubits]
-        for edge in eachrow(correlations)
-            u, v = edge
-            push!(connections[u], v)
-            push!(connections[v], u)
+        if (length(correlations) > 0)
+            average_block_size = compute_mean([length(corr) for corr in eachrow(correlations)])
+            nqubits = maximum(correlations)
+            # convert the list of edges provided as `correlations` into an adjacency list `connections`
+            connections = [Int[] for _ in 1:nqubits]
+            for edge in eachrow(correlations)
+                u, v = edge
+                push!(connections[u], v)
+                push!(connections[v], u)
+            end
+        else
+            average_block_size = 0.0
+            nqubits = 0
+            connections = Vector{Vector{Int}}()
         end
         new(name, nqubits, per_qubit_error_prob, neighbour_error_prob, average_block_size, "per_qubit_error_prob=$(per_qubit_error_prob),neighbour_error_prob=$(neighbour_error_prob)", correlations, connections)
-    end
-
-    function BallisticErrorModel(per_qubit_error_prob::Float64, neighbour_error_prob::Float64; name::String="Ballistic Error Model")
-        # Default correlations: no correlations
-        correlations = zeros(Int, 0, 2)
-        new(name, 0, per_qubit_error_prob, neighbour_error_prob, 0.0, "per_qubit_error_prob=$(per_qubit_error_prob),neighbour_error_prob=$(neighbour_error_prob)", correlations, Vector{Vector{Int}}())
     end
 end
 
@@ -107,10 +122,10 @@ function sample_error(model::BallisticErrorModel, nqubits::Int)::Vector{Int}
     error_vector = [rv < model.per_qubit_error_prob ? rand(1:3) : 0 for rv in random_values]
     # Introduce correlated errors based on the connectivity
     for qubit in 1:nqubits
-        if error_vector[qubit] == 1
+        if error_vector[qubit] != 0
             for neighbor in model.connections[qubit]
                 if rand() < model.neighbour_error_prob
-                    error_vector[neighbor] = 1
+                    error_vector[neighbor] = rand(1:3) # Introduce an error on the neighboring qubit
                 end
             end
         end
