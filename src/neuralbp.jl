@@ -24,6 +24,8 @@ struct NeuralBP
     parity_check_matrix_dual::BitMatrix
     nb_neurons_per_layer::Int
     neuron_to_check_variable::Dict{Int, Tuple{Int, Int}}  # Mapping from neuron index to (check, variable) pair.
+    neuron_to_checks::Vector{Int} # Mapping from neuron index to check node.
+    neuron_to_bits::Vector{Int} # Mapping from neuron index to variable node.
 
     # Connectivity: fixed parameters
     adj_initialize_V2C::BitMatrix
@@ -99,11 +101,15 @@ struct NeuralBP
         ## Define mappings
         # Mapping from neuron index to (check, variable) pair
         neuron_to_check_variable = Dict{Int, Tuple{Int, Int}}()
+        neuron_to_checks = Vector{Int}(undef, nb_neurons_per_layer)
+        neuron_to_bits = Vector{Int}(undef, nb_neurons_per_layer)
         neuron_index = 1
         for c in 1:code_n_checks
             for v in 1:code_n_bits
                 if parity_check_matrix[c, v] == 1
                     neuron_to_check_variable[neuron_index] = (c, v)
+                    neuron_to_checks[neuron_index] = c
+                    neuron_to_bits[neuron_index] = v
                     neuron_index += 1
                 end
             end
@@ -171,6 +177,8 @@ struct NeuralBP
             parity_check_matrix_dual,
             nb_neurons_per_layer,
             neuron_to_check_variable,
+            neuron_to_checks,
+            neuron_to_bits,
             adj_initialize_V2C,
             adj_V2C_C2V,
             adj_C2V_V2C,
@@ -246,67 +254,58 @@ function (bpnn::NeuralBP)(initial_llrs_batch::AbstractMatrix{<:Real}, syndromes_
     4. Return the output of the readout layer.
     """
 
-    println("NeuralBP Forward Pass: n_layers =", n_layers, ", each with ", bpnn.nb_neurons_per_layer, " neurons.")
-    println("Neuron state of size ", size(initial_llrs_batch), ": ", initial_llrs_batch)
-    
     # 1. Forward pass from input layer to V2C layer
     v2c_neurons = bpnn.adj_initialize_V2C * initial_llrs_batch
 
-    println("v2c_neurons after input layer: size ", size(v2c_neurons), ": ", v2c_neurons)
-
     # Apply the activation function elemenwise to all neurons in `v2c_input`
     v2c_activated_neurons = log.(tanh.(abs.(v2c_neurons) ./ 2))
-
-    println("v2c_activated_neurons after input layer: size ", size(v2c_activated_neurons), ": ", v2c_activated_neurons)
 
     # Initialize the readout neurons
     readout_neurons = zeros(Float32, bpnn.code_n_bits, size(initial_llrs_batch, 2))
 
     # 2. For N iterations:
+    # Precompute the selected V2C neurons for each C2V neuron.
+    selected_v2c = [findall(col .== 1) for col in eachcol(bpnn.adj_V2C_C2V)]
+    # println("Selected V2C neurons for all C2V neurons: ", selected_v2c)
+        
     for iter in 1:n_layers
         # 1. Forward pass from V2C to C2V layer
         c2v_neurons = (bpnn.weights_c2v_v2c .* bpnn.adj_V2C_C2V') * v2c_activated_neurons
+
+        # Compute the number of negative messages (in `v2c_activated_neurons`) in the expression for each C2V neuron.
+        # For each neuron in the C2V layer, we need to compute the number of negative messages from the corresponding V2C neurons that are connected to it.
+        n_negative_messages = hcat([[count(v2c_neurons_in_batch[rows] .< 0) for rows in selected_v2c] for v2c_neurons_in_batch in eachcol(v2c_neurons)]...)
+
+        # Compute the phase contribution from the syndrome and the negative messages.
+        phase_contributions = (-1) .^ (syndromes_batch[bpnn.neuron_to_checks, 1:end] .+ n_negative_messages)
+
         # Apply the activation functions for C2V layer.
+        c2v_activated_neurons = 2 * atanh.(exp.(c2v_neurons)) .* phase_contributions
+
+        #=
         # Note that since `c2v_neurons` is a matrix, we need to apply the i-th activation function to the i-th row of the matrix.
         c2v_activated_neurons = zeros(Float32, size(c2v_neurons))
         for i in 1:bpnn.nb_neurons_per_layer
             (c, _) = bpnn.neuron_to_check_variable[i]
             
-            # Compute the total number of messages (in `v2c_activated_neurons`) which are negative for the check node `c`.
-            selected_v2c = findall(x -> x == 1, bpnn.adj_V2C_C2V[:, i])
-            
-            # In every column of `v2c_neurons`, compute the number of negative messages.
-            negative_messages = sum(v2c_neurons[selected_v2c, :] .< 0, dims=1)
+            println("Number of negative messages incoming to neuron $i at iteration $iter: ", n_negative_messages[i, 1:end])
+
+            println("Syndrome for check node $c at iteration $iter: ", syndromes_batch[c, 1:end])
             
             # Compute the phase contribution from the syndrome and the negative messages.
-            phase_contribution = mod.(syndromes_batch[c, 1:end] .+ negative_messages, 2)
-            
-            c2v_activated_neurons[i, 1:end] = 2 * atanh.(exp.(c2v_neurons[i, 1:end])) .* ((-1) .^ phase_contribution)
+            # phase_contribution = (-1) .^ (syndromes_batch[c, 1:end] .+ n_negative_messages[i, 1:end])
+
+            if (any(c2v_neurons[i, 1:end] .> 0))
+                DomainError("Invalid value encountered in atanh for C2V neuron $i during iteration $iter. atanh(exp(x)) is only defined for x <= 0. We have x = $(c2v_neurons[i, 1:end]).")
+            end
+            println("Phase contribution for neuron $i at iteration $iter: ", phase_contributions[i, 1:end])
+            println("C2V neuron values before activation for neuron $i at iteration $iter: ", c2v_neurons[i, 1:end])
+            c2v_activated_neurons[i, 1:end] = 2 * atanh.(exp.(c2v_neurons[i, 1:end])) .* phase_contributions[i, 1:end]
         end
+        =#
 
         # 2. Forward pass from C2V to V2C layer
         v2c_neurons = (bpnn.weights_v2c_c2v .* bpnn.adj_C2V_V2C') * c2v_activated_neurons .+ (bpnn.adj_initialize_V2C * initial_llrs_batch)
-        #== Debug: Compute v2c_neurons using explicit loops and compare with matrix multiplication.
-        v2c_neurons = zeros(Float32, bpnn.nb_neurons_per_layer, size(initial_llrs_batch, 2))
-        for i in 1:bpnn.nb_neurons_per_layer
-            (_, v) = bpnn.neuron_to_check_variable[i]
-            # The neurons corresponding to `v2c messages` are sum of messages from all connected `c2v neurons`, plus the initial llr for the variable node.
-            selected_c2v = findall(x -> x == 1, bpnn.adj_C2V_V2C[:, i])
-            v2c_neurons[i, 1:end] = sum(c2v_activated_neurons[selected_c2v, 1:end], dims=1) .+ initial_llrs_batch[v, 1:end]
-            # v2c_neurons[i, 1:end] = sum(bpnn.weights_c2v_v2c[selected_c2v, i]' * c2v_activated_neurons[selected_c2v, 1:end], dims=1) .+ initial_llrs_batch[v, 1:end]
-        end
-        v2c_neurons_matmul = bpnn.adj_C2V_V2C' * c2v_activated_neurons .+ (bpnn.adj_initialize_V2C * initial_llrs_batch)
-        println("v2c_neurons of size ", size(v2c_neurons), ": ")
-        show(stdout, "text/plain", v2c_neurons)
-        println()
-        println("v2c_neurons_matmul of size ", size(v2c_neurons_matmul), ": ")
-        show(stdout, "text/plain", v2c_neurons_matmul)
-        println()
-        # Check if the two matrices are close.
-        if !all(isapprox.(v2c_neurons, v2c_neurons_matmul; atol=1e-5))
-            error("v2c_neurons computed using explicit loops and matrix multiplication do not match.")
-        end
-        ==#
         
         # Apply the activation function for V2C layer.
         # Since the activation function is the same for all neurons, we can apply it elementwise.
@@ -314,9 +313,6 @@ function (bpnn::NeuralBP)(initial_llrs_batch::AbstractMatrix{<:Real}, syndromes_
 
         if (iter == n_layers)
             # 3. Forward pass from final V2C layer to readout layer
-            println("Readout adjacency matrix size: ", size(bpnn.adj_C2V_readout))
-            show(stdout, "text/plain", bpnn.adj_C2V_readout)
-            println()
             readout_neurons = initial_llrs_batch .+ (bpnn.weights_c2v_readout .* bpnn.adj_C2V_readout) * c2v_activated_neurons
         end
     end
@@ -324,10 +320,8 @@ function (bpnn::NeuralBP)(initial_llrs_batch::AbstractMatrix{<:Real}, syndromes_
     return readout_neurons
 end
 
-function sigmoid(x::Float32)::Float32
-    # Define the sigmoid function: σ(x) = 1 / (1 + exp(x))
-    return 1.0f0 / (1.0f0 + exp(x))
-end
+# Define the sigmoid function: σ(x) = 1 / (1 + exp(x))
+sigmoid(x::T) where T <: Number = 1.0f0 / (1.0f0 + exp(x))
 
 function compute_loss_error_from_llrs(posterior_llrs::Matrix{Float32}, expected_recoveries::BitMatrix, parity_check_matrix_dual::BitMatrix)::Float64
     """
@@ -345,11 +339,12 @@ function compute_loss_error_from_llrs(posterior_llrs::Matrix{Float32}, expected_
         - H^⟂ is the parity-check matrix of the dual code.
     """
     (n_bits, n_samples) = size(expected_recoveries)
+    #=
     loss_samples = zeros(Float32, n_samples)
     for s in 1:n_samples
         e_expected = convert.(Float32, expected_recoveries[:, s])
-        e_pred::Vector{Float32} = (posterior_llrs[:, s] .< 0)
-        e_total = e_expected + e_pred
+        e_pred = sigmoid.(posterior_llrs[:, s])
+        e_total = e_expected .+ e_pred
 
         # Since M is the symplectic matrix, we can compute M * e_total as follows:
         # If e_total = [e_X; e_Z], then M * e_total = [e_Z; e_X]
@@ -361,15 +356,32 @@ function compute_loss_error_from_llrs(posterior_llrs::Matrix{Float32}, expected_
         # Compute H^⟂ * M * e_total
         commutation_relations = parity_check_matrix_dual * M_e_total
 
+        println("Commutation relations for sample $s: ", commutation_relations)
+
         # For each bit of the commutation relations, compute the loss contribution.
-        loss_sample = 0.0
-        for i in 1:size(commutation_relations::Vector{Float32}, 1)
-            loss_sample += abs(sin(π * commutation_relations[i] / 2))
-        end
-        loss_samples[s] = loss_sample
+        loss_samples[s] = sum(abs.(sin.(π .* commutation_relations ./ 2)))
+        # for i in 1:size(commutation_relations::Vector{Float32}, 1)
+        #     loss_sample += abs(sin(π * commutation_relations[i] / 2))
+        # end
+        # loss_samples[s] = loss_sample
     end
 
     average_loss = sum(loss_samples) / n_samples
+    println("Average Loss:", average_loss)
+    =#
+
+    # Compute the average loss over all samples as a Matrix equation.
+    symplectic_matrix = vcat(hcat(zeros(Float32, n_bits ÷ 2, n_bits ÷ 2), Matrix{Float32}(I, n_bits ÷ 2, n_bits ÷ 2)),
+                         hcat(Matrix{Float32}(I, n_bits ÷ 2, n_bits ÷ 2), zeros(Float32, n_bits ÷ 2, n_bits ÷ 2)))
+    e_pred_matrix = sigmoid.(posterior_llrs)
+    e_total_matrix = convert.(Float32, expected_recoveries) .+ e_pred_matrix
+    M_e_total_matrix = symplectic_matrix * e_total_matrix
+    commutation_relations_matrix = parity_check_matrix_dual * M_e_total_matrix
+    loss_matrix = sum(abs.(sin.(π .* commutation_relations_matrix ./ 2)), dims=1)
+    average_loss = sum(loss_matrix) / n_samples
+
+    # println("Average Loss (Matrix computation): ", average_loss)
+
     return average_loss
 end
 

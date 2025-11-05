@@ -23,13 +23,13 @@ function test_neural_BP()
 
     ## Run the standard BP decoder
     (final_llrs_standard_bp, _) = run_bp("SumProduct", H, 4, syndrome, initial_llrs, n_iterations)
-    println("Final LLRs from standard BP after $(n_iterations) iterations: ", final_llrs_standard_bp)
+    # println("Final LLRs from standard BP after $(n_iterations) iterations: ", final_llrs_standard_bp)
 
-    println("--------------------------------------------------")
+    # println("--------------------------------------------------")
 
     ## Run the Neural BP decoder
     nb_neurons_per_layer = sum(H)
-    println("Number of neurons per layer: ", nb_neurons_per_layer)
+    # println("Number of neurons per layer: ", nb_neurons_per_layer)
 
     # Explicitly define weights for testing, to be all ones since that corresponds to standard BP.
     weights_v2c_c2v = ones(Float32, nb_neurons_per_layer, nb_neurons_per_layer)
@@ -52,13 +52,13 @@ function test_neural_BP()
     initial_llrs_batch = repeat(initial_llrs, 1, 1)  # single sample
 
     # Perform `n_iterations` forward passes: this corresponds to N iterations of standard BP
-    println("Performing forward pass through the NeuralBP model on syndrome: ", syndromes[:, 1], " and with initial LLRs: ", initial_llrs_batch[:, 1], ".")
+    # println("Performing forward pass through the NeuralBP model on syndrome: ", syndromes[:, 1], " and with initial LLRs: ", initial_llrs_batch[:, 1], ".")
     final_llrs_neural_bp = bpnn(initial_llrs_batch, syndromes; n_layers=n_iterations)
 
     # Check if the final LLRs match the expected values
     println("Syndrome: ", syndrome)
     if all(isapprox.(final_llrs_neural_bp, final_llrs_standard_bp, atol=1e-6))
-        println("LLRs after $(n_iterations) iterations match the expected values.")
+        println("LLRs after $(n_iterations) iterations match the expected values:", final_llrs_neural_bp)
     else
         println("LLRs after $(n_iterations) iterations do not match the expected values.")
         println("Expected: ", final_llrs_standard_bp)
@@ -114,38 +114,102 @@ function test_forward_propagation()
     println("Output LLRs from forward pass:", output_llrs)
 end
 
-function test_training_BP()
+function test_loss()
     """
-    We will test the NeuralBP implementation on a small example.
-    H = [1 1 0 1 0;
-         0 1 1 0 1;
-         1 0 1 0 1]
-    Syndrome = [1; 0; 1]
-    Expected recovery = [1; 0; 1; 0; 0]
+    Test the computation of the loss function for the NeuralBP model.
+    We will define a parity-check matrix, a syndrome, initial LLRs, and expected recoveries.
+    We will then compute the loss using the `compute_loss_error_from_llrs` function.
+    H = [0 0 0 1 1 1 1;
+         0 1 1 0 0 1 1;
+         1 0 1 0 1 0 1
+    ]
+    H^⟂ = [
+        1 0 0 0 0 1 1;
+        0 1 0 0 1 0 1;
+        0 0 1 0 1 1 0;
+        0 0 0 1 1 1 1
+    ]
+    syndrome = [1, 0, 1] (indicating errors on qubits 1, 3, and 4)
+    errors = [1, 0, 1, 1, 0, 0, 0] (the actual error pattern)
+    posterior_llrs = [1.0663514264498881; 1.0663514264498881; 3.3280977282225512; 2.1972245773362196; 1.0663514264498881; -0.06452172443644333; 2.1972245773362196; 1.0663514264498881]
+    The Loss function is given by
+        L(μ, e) = ∑_i  f ( ∑_(jk) H^⟂_ij M_(jk) [ e_k + σ(μ_k)])
+    where
+        - σ(μ_k) = 1 / (1 + exp(μ_k))
+        - f(x) = |sin(π x / 2)|
+        - M = [0 I ; I 0] is the symplectic matrix
+        - H^⟂ is the parity-check matrix of the dual code.
     """
     # Define the parity-check matrix
-    H = [1 1 0 1 0;
-         0 1 1 0 1;
-         1 0 1 0 1]
+    H = [0 0 0 1 1 1 1 0;
+         0 1 1 0 0 1 1 0;
+         1 0 1 0 1 0 1 0]
+    n_bits = size(H, 2)
+    H_dual = [1 0 0 0 0 1 1 0;
+              0 1 0 0 1 0 1 0;
+              0 0 1 0 1 1 0 0;
+              0 0 0 1 1 1 1 0]
+    # Example syndrome
+    # syndrome = [1; 0; 1;;]  # Indicates errors on qubits 1, 3, and 4
+    # Expected recovery
+    errors = convert.(Bool, [1; 0; 1; 1; 0; 0; 0; 0;;])
+    # Initial LLRs
+    posterior_llrs = convert.(Float32, [2.0663514264498881; 1.0663514264498881; -3.3280977282225512; -2.1972245773362196; -0.0663514264498881; -0.06452172443644333; 2.1972245773362196; 1.0663514264498881;;])
+    
+    # Compute the Loss function.
+    actual_loss = compute_loss_error_from_llrs(posterior_llrs, errors, convert.(Bool, H_dual))
+
+    println("Computed Loss:", actual_loss)
+end
+
+function test_training_BP()
+    """
+    We will test the NeuralBP implementation the Hamming (7,4) code.
+    H = [0 0 0 1 1 1 1;
+         0 1 1 0 0 1 1;
+         1 0 1 0 1 0 1
+    ]
+    H^⟂ = [
+        1 0 0 0 0 1 1;
+        0 1 0 0 1 0 1;
+        0 0 1 0 1 1 0;
+        0 0 0 1 1 1 1
+    ]
+    We will generate training data with a certain error probability, train the NeuralBP model, and then test it on some test syndromes.
+    
+    """
+    # Define the parity-check matrix
+    H = [0 0 0 1 1 1 1;
+         0 1 1 0 0 1 1;
+         1 0 1 0 1 0 1]
+    H_dual = [1 0 0 0 0 1 1;
+              0 1 0 0 1 0 1;
+              0 0 1 0 1 1 0;
+              0 0 0 1 1 1 1]
     
     # generate training data
     n_samples = 10
     error_probability = 0.2
     syndromes, expected_recoveries = generate_training_data(H, n_samples, error_probability)
 
-    # Initialize the NeuralBP model
-    bpnn = NeuralBP(H, H)
+    ## Initialize the NeuralBP model
+    nb_neurons_per_layer = sum(H)
+    # Explicitly define weights associated to computing the messages from V2C to C2V, since we don't want to run into DomainError issues with atanh during training.
+    bpnn = NeuralBP(H, H_dual; weights_c2v_v2c=ones(Float32, nb_neurons_per_layer, nb_neurons_per_layer))
     print_neuralbp_info(bpnn)
 
     # Train the model
-    initial_llrs = log(9) .* ones(Float32, size(expected_recoveries)) # Initial LLRs corresponding to p=0.9
+    initial_llrs = convert.(Float32, log(9)) .* ones(Float32, size(expected_recoveries)) # Initial LLRs corresponding to p=0.1
 
     train_neuralbp!(bpnn, syndromes, expected_recoveries; initial_llrs=initial_llrs, n_epochs=5, batch_size=2)
 
     # Test the model
-    test_error_patterns = [1 0 1 0 0;
-                           0 1 0 1 0;
-                           1 1 0 0 1]
+    test_error_patterns = [
+        1 0 0 1 0 0 0; # Error on qubit 1 and 4
+        0 1 0 0 1 0 0; # Error on qubit 2 and 5
+        0 0 1 0 0 0 0; # Error on qubit 3
+        0 0 0 0 0 0 1; # Error on qubit 7
+    ]
     test_syndromes = mod.(H * test_error_patterns, 2)
     predicted_recoveries = predict_neuralbp(bpnn, test_syndromes)
 
@@ -159,3 +223,4 @@ function test_training_BP()
         println("---------------------------")
     end
 end
+

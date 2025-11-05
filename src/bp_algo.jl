@@ -460,8 +460,6 @@ function run_bp(algo::String, parity_check_matrix::Matrix{Int}, soft_constraint_
     # Initialize messages
     messages_v2c = bp_initialize(G, initial_llrs)
 
-    println("Initialized BP with v2c messages of size ", size(messages_v2c), ": ", messages_v2c)
-
     old_llrs = copy(initial_llrs)
     current_iteration = 1
     stop = false
