@@ -1,3 +1,5 @@
+import Zygote: gradient, Params
+
 struct NeuralBP
     """
     Structure to represent a layer of the Neural Network that corresponds to unfolded Belief Propagation.
@@ -34,6 +36,7 @@ struct NeuralBP
     adj_C2V_readout::BitMatrix
 
     # Learnable parameters: weights.
+    learnable_parameters::Vector{Symbol}
     weights_v2c_c2v::Matrix{Float32}
     weights_c2v_v2c::Matrix{Float32}
     weights_c2v_readout::Matrix{Float32}
@@ -183,6 +186,7 @@ struct NeuralBP
             adj_V2C_C2V,
             adj_C2V_V2C,
             adj_C2V_readout,
+            learnable_parameters,
             weights_v2c_c2v,
             weights_c2v_v2c,
             weights_c2v_readout
@@ -194,7 +198,8 @@ end
 
 # Emplicitly tell the Flux framework that the weights are the trainable parameters.
 function Flux.trainable(model::NeuralBP)
-    return Tuple(getfield(model, pname) for pname in model.learnable_parameters)
+    trainable_values = Tuple(getfield(model, pname) for pname in model.learnable_parameters)
+    return trainable_values
 end
 
 function print_neuralbp_info(bpnn::NeuralBP; io::IO=Base.stdout)
@@ -339,42 +344,13 @@ function compute_loss_error_from_llrs(posterior_llrs::Matrix{Float32}, expected_
         - H^⟂ is the parity-check matrix of the dual code.
     """
     (n_bits, n_samples) = size(expected_recoveries)
-    #=
-    loss_samples = zeros(Float32, n_samples)
-    for s in 1:n_samples
-        e_expected = convert.(Float32, expected_recoveries[:, s])
-        e_pred = sigmoid.(posterior_llrs[:, s])
-        e_total = e_expected .+ e_pred
-
-        # Since M is the symplectic matrix, we can compute M * e_total as follows:
-        # If e_total = [e_X; e_Z], then M * e_total = [e_Z; e_X]
-        half_n = n_bits ÷ 2
-        e_X = e_total[1:half_n]
-        e_Z = e_total[half_n+1:end]
-        M_e_total = vcat(e_Z, e_X)
-
-        # Compute H^⟂ * M * e_total
-        commutation_relations = parity_check_matrix_dual * M_e_total
-
-        println("Commutation relations for sample $s: ", commutation_relations)
-
-        # For each bit of the commutation relations, compute the loss contribution.
-        loss_samples[s] = sum(abs.(sin.(π .* commutation_relations ./ 2)))
-        # for i in 1:size(commutation_relations::Vector{Float32}, 1)
-        #     loss_sample += abs(sin(π * commutation_relations[i] / 2))
-        # end
-        # loss_samples[s] = loss_sample
-    end
-
-    average_loss = sum(loss_samples) / n_samples
-    println("Average Loss:", average_loss)
-    =#
-
     # Compute the average loss over all samples as a Matrix equation.
     symplectic_matrix = vcat(hcat(zeros(Float32, n_bits ÷ 2, n_bits ÷ 2), Matrix{Float32}(I, n_bits ÷ 2, n_bits ÷ 2)),
                          hcat(Matrix{Float32}(I, n_bits ÷ 2, n_bits ÷ 2), zeros(Float32, n_bits ÷ 2, n_bits ÷ 2)))
     e_pred_matrix = sigmoid.(posterior_llrs)
     e_total_matrix = convert.(Float32, expected_recoveries) .+ e_pred_matrix
+    # println("e_total_matrix of shape: ", size(e_total_matrix), ": ", e_total_matrix)
+    # println("Symplectic matrix: ", size(symplectic_matrix), ": ", symplectic_matrix)
     M_e_total_matrix = symplectic_matrix * e_total_matrix
     commutation_relations_matrix = parity_check_matrix_dual * M_e_total_matrix
     loss_matrix = sum(abs.(sin.(π .* commutation_relations_matrix ./ 2)), dims=1)
@@ -390,7 +366,7 @@ function train_neuralbp!(
     syndromes::BitMatrix,
     expected_recoveries::BitMatrix;
     initial_llrs::Matrix{Float32}=ones(Float32, size(expected_recoveries)),
-    optimizer::Function=ADAM,
+    optimizer=ADAM(1e-3), #TODO: unable to place a datatype without avoiding errors.
     n_epochs::Int=10,
     batch_size::Int=32
 )
@@ -427,25 +403,19 @@ function train_neuralbp!(
         for batch_sample_indices in samples_grouped_by_batch
     ]
 
+    # Set the trainable parameters
+    opt_state = Flux.setup(optimizer, bpnn)  # create optimiser state (tune lr as needed)
+
     for epoch in 1:n_epochs
         for (syndromes_train_batch, expected_recoveries_batch, llrs_batch) in training_dataset
-            #=
-            # This code is depricated since we are using the Flux.gradient function.
-            gs = Flux.gradient(Flux.params(bpnn)) do
-                posterior_llrs_pred = bpnn(llrs_batch, syndromes_train_batch)
-                loss = compute_loss_error_from_llrs(posterior_llrs_pred, expected_recoveries_batch, bpnn.parity_check_matrix_dual)
-                return loss
+            # compute loss and gradients in one shot
+            loss, grads = Flux.withgradient(bpnn) do model
+                posterior_llrs = model(llrs_batch, syndromes_train_batch)
+                compute_loss_error_from_llrs(posterior_llrs, expected_recoveries_batch, bpnn.parity_check_matrix_dual)
             end
-            =#
-            posterior_llrs_pred = bpnn(llrs_batch, syndromes_train_batch)
-            batch_loss = (bpnn::NeuralBP) -> compute_loss_error_from_llrs(
-                posterior_llrs_pred,
-                expected_recoveries_batch,
-                bpnn.parity_check_matrix_dual
-            )
-            # Compute gradients
-            grads = gradient(batch_loss, bpnn)
-            Flux.Optimise.update!(optimizer, Flux.params(bpnn), grads)
+            # apply update. grads[1] contains gradients for the model
+            Flux.update!(opt_state, bpnn, grads)
+            println("Epoch $epoch, Batch Loss: $loss")
         end
         println("Epoch $epoch completed.")
     end

@@ -144,7 +144,6 @@ function test_loss()
     H = [0 0 0 1 1 1 1 0;
          0 1 1 0 0 1 1 0;
          1 0 1 0 1 0 1 0]
-    n_bits = size(H, 2)
     H_dual = [1 0 0 0 0 1 1 0;
               0 1 0 0 1 0 1 0;
               0 0 1 0 1 1 0 0;
@@ -179,13 +178,13 @@ function test_training_BP()
     
     """
     # Define the parity-check matrix
-    H = [0 0 0 1 1 1 1;
-         0 1 1 0 0 1 1;
-         1 0 1 0 1 0 1]
-    H_dual = [1 0 0 0 0 1 1;
-              0 1 0 0 1 0 1;
-              0 0 1 0 1 1 0;
-              0 0 0 1 1 1 1]
+    H = [0 0 0 1 1 1 1 0;
+         0 1 1 0 0 1 1 0;
+         1 0 1 0 1 0 1 0]
+    H_dual = [1 0 0 0 0 1 1 0;
+              0 1 0 0 1 0 1 0;
+              0 0 1 0 1 1 0 0;
+              0 0 0 1 1 1 1 0]
     
     # generate training data
     n_samples = 10
@@ -196,7 +195,7 @@ function test_training_BP()
     nb_neurons_per_layer = sum(H)
     # Explicitly define weights associated to computing the messages from V2C to C2V, since we don't want to run into DomainError issues with atanh during training.
     bpnn = NeuralBP(H, H_dual; weights_c2v_v2c=ones(Float32, nb_neurons_per_layer, nb_neurons_per_layer))
-    print_neuralbp_info(bpnn)
+    # print_neuralbp_info(bpnn)
 
     # Train the model
     initial_llrs = convert.(Float32, log(9)) .* ones(Float32, size(expected_recoveries)) # Initial LLRs corresponding to p=0.1

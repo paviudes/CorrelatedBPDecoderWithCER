@@ -17,6 +17,7 @@ using Plots            # Plotting decoder performance and error rates
 using Flux             # Neural network framework for neural belief propagation
 using Functors         # Making neural network parameters trainable
 using Optimisers       # Optimization algorithms for training neural networks
+using Zygote           # Automatic differentiation for gradient computation
 
 import Base: eltype, length, sort!
 
