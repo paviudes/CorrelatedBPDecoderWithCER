@@ -1,4 +1,5 @@
 import Zygote: gradient, Params
+using Functors: @functor
 
 struct NeuralBP
     """
@@ -35,15 +36,21 @@ struct NeuralBP
     adj_C2V_V2C::BitMatrix
     adj_C2V_readout::BitMatrix
 
+    # Parameters of the Neural Network
+    initial_llrs::Vector{Float32}
+    n_layers::Int
+    
     # Learnable parameters: weights.
-    learnable_parameters::Vector{Symbol}
+    # learnable_parameters::Vector{Symbol}
     weights_v2c_c2v::Matrix{Float32}
     weights_c2v_v2c::Matrix{Float32}
     weights_c2v_readout::Matrix{Float32}
 
     function NeuralBP(
         parity_check_matrix::Matrix{Int},
-        parity_check_matrix_dual::Matrix{Int};
+        parity_check_matrix_dual::Matrix{Int},
+        initial_llrs::Vector{Float32},
+        n_layers::Int;
         weights_v2c_c2v::Matrix{Float32}=Matrix{Float32}(undef, 0, 0),
         weights_c2v_v2c::Matrix{Float32}=Matrix{Float32}(undef, 0, 0),
         weights_c2v_readout::Matrix{Float32}=Matrix{Float32}(undef, 0, 0)
@@ -157,19 +164,14 @@ struct NeuralBP
             adj_C2V_readout[v_prime, j] = 1
         end
 
-        # The parameters (weights) that are not explicitly fixed are considered learnable.
-        # We will also initialize the learnable parameters to Gaussian random values, if they are not explicitly provided.
-        learnable_parameters = Vector{Symbol}()
+        # We will initialize the learnable parameters to Gaussian random values, if they are not explicitly provided.
         if (size(weights_v2c_c2v, 1) == 0)
-            push!(learnable_parameters, :weights_v2c_c2v)
             weights_v2c_c2v = randn(Float32, nb_neurons_per_layer, nb_neurons_per_layer)
         end
         if (size(weights_c2v_v2c, 1) == 0)
-            push!(learnable_parameters, :weights_c2v_v2c)
             weights_c2v_v2c = randn(Float32, nb_neurons_per_layer, nb_neurons_per_layer)
         end
         if (size(weights_c2v_readout, 1) == 0)
-            push!(learnable_parameters, :weights_c2v_readout)
             weights_c2v_readout = randn(Float32, code_n_bits, nb_neurons_per_layer)
         end
 
@@ -186,7 +188,52 @@ struct NeuralBP
             adj_V2C_C2V,
             adj_C2V_V2C,
             adj_C2V_readout,
-            learnable_parameters,
+            initial_llrs,
+            n_layers,
+            # learnable_parameters,
+            weights_v2c_c2v,
+            weights_c2v_v2c,
+            weights_c2v_readout
+        )
+    end
+
+    # Internal constructor for Flux/Functors reconstruction with all field values
+    function NeuralBP(
+        parity_check_matrix::BitMatrix,
+        code_n_checks::Int,
+        code_n_bits::Int,
+        parity_check_matrix_dual::BitMatrix,
+        nb_neurons_per_layer::Int,
+        neuron_to_check_variable::Dict{Int, Tuple{Int, Int}},
+        neuron_to_checks::Vector{Int},
+        neuron_to_bits::Vector{Int},
+        adj_initialize_V2C::BitMatrix,
+        adj_V2C_C2V::BitMatrix,
+        adj_C2V_V2C::BitMatrix,
+        adj_C2V_readout::BitMatrix,
+        initial_llrs::Vector{Float32},
+        n_layers::Int,
+        # learnable_parameters::Vector{Symbol},
+        weights_v2c_c2v::Matrix{Float32},
+        weights_c2v_v2c::Matrix{Float32},
+        weights_c2v_readout::Matrix{Float32}
+    )
+        return new(
+            parity_check_matrix,
+            code_n_checks,
+            code_n_bits,
+            parity_check_matrix_dual,
+            nb_neurons_per_layer,
+            neuron_to_check_variable,
+            neuron_to_checks,
+            neuron_to_bits,
+            adj_initialize_V2C,
+            adj_V2C_C2V,
+            adj_C2V_V2C,
+            adj_C2V_readout,
+            initial_llrs,
+            n_layers,
+            # learnable_parameters,
             weights_v2c_c2v,
             weights_c2v_v2c,
             weights_c2v_readout
@@ -194,12 +241,16 @@ struct NeuralBP
     end
 end
 
-# Functors.@functor NeuralBP  # makes the weights trainable.
+# Make NeuralBP work with Functors by only making the weight matrices children
+@functor NeuralBP (weights_v2c_c2v, weights_c2v_v2c, weights_c2v_readout)
 
-# Emplicitly tell the Flux framework that the weights are the trainable parameters.
+# Explicitly tell the Flux framework that the weights are the trainable parameters.
 function Flux.trainable(model::NeuralBP)
-    trainable_values = Tuple(getfield(model, pname) for pname in model.learnable_parameters)
-    return trainable_values
+    return (
+        weights_v2c_c2v = model.weights_v2c_c2v,
+        weights_c2v_v2c = model.weights_c2v_v2c,
+        weights_c2v_readout = model.weights_c2v_readout
+    )
 end
 
 function print_neuralbp_info(bpnn::NeuralBP; io::IO=Base.stdout)
@@ -243,7 +294,98 @@ function print_neuralbp_info(bpnn::NeuralBP; io::IO=Base.stdout)
     println(io, "\n----------------------------")
 end
 
-function (bpnn::NeuralBP)(initial_llrs_batch::AbstractMatrix{<:Real}, syndromes_batch::BitMatrix; n_layers::Int=5)
+function print_neuralbp_summary(bpnn::NeuralBP; io::IO=Base.stdout, final_llrs::Matrix{Float32}=Float32[])
+    """
+    Print a summary of training the NeuralBP model.
+    Print the fitted parameters of the model.
+    1. Weights from V2C to C2V
+    2. Weights from C2V to V2C
+    3. Weights from C2V to readout
+    4. Initial LLRs
+    5. (Optional) Final LLRs after training
+    """
+    println(io, "NeuralBP Training Summary:")
+    println(io, "----------------------------")
+    # print the weights
+    # print the weights from V2C to C2V
+    println(io, "Fitted Weights from V2C to C2V layer ($(size(bpnn.weights_v2c_c2v, 1)) x $(size(bpnn.weights_v2c_c2v, 2))):")
+    show(io, "text/plain", bpnn.weights_v2c_c2v)
+    println(io, "\n----------------------------")
+    # print the weights from C2V to V2C
+    println(io, "Fitted Weights from C2V to V2C layer ($(size(bpnn.weights_c2v_v2c, 1)) x $(size(bpnn.weights_c2v_v2c, 2))):")
+    show(io, "text/plain", bpnn.weights_c2v_v2c)
+    println(io, "\n----------------------------")
+    # print the weights from C2V to readout
+    println(io, "Fitted Weights from C2V to readout layer ($(size(bpnn.weights_c2v_readout, 1)) x $(size(bpnn.weights_c2v_readout, 2))):")
+    show(io, "text/plain", bpnn.weights_c2v_readout)
+    println(io, "\n----------------------------")
+    # print the initial LLRs
+    println(io, "Initial LLRs ($(length(bpnn.initial_llrs))):")
+    show(io, "text/plain", bpnn.initial_llrs)
+    println(io, "\n----------------------------")
+    # print the final LLRs if provided
+    if length(final_llrs) > 0
+        println(io, "Final LLRs after training ($(size(final_llrs'))):")
+        show(io, "text/plain", final_llrs')
+        println(io, "\n----------------------------")
+    end
+end
+
+function load_trained_neuralbp_model(weights_filename::String, bpnn::NeuralBP)::NeuralBP
+    """
+    Load a trained version of the NeuralBP model from a file.
+    The file should contain the weights that specify the forward pass of the NeuralBP model.
+    These weights are:
+    1. weights_v2c_c2v
+    2. weights_c2v_v2c
+    3. weights_c2v_readout
+    They will be stored in a dictionary with the corresponding keys. The values will be vectorized versions of the weight matrices.
+    The function will reconstruct the weight matrices from the vectorized versions and create a NeuralBP model with these weights.
+    """
+    # Load the weights from the file
+    fp = open(weights_filename, "r")
+    weights_data = JSON.parse(fp)
+    weights_v2c_c2v = reshape(Float32.(weights_data["weights_v2c_c2v"]), (bpnn.nb_neurons_per_layer, bpnn.nb_neurons_per_layer))
+    weights_c2v_v2c = reshape(Float32.(weights_data["weights_c2v_v2c"]), (bpnn.nb_neurons_per_layer, bpnn.nb_neurons_per_layer))
+    weights_c2v_readout = reshape(Float32.(weights_data["weights_c2v_readout"]), (bpnn.code_n_bits, bpnn.nb_neurons_per_layer))
+    close(fp)
+
+    # Create a new model with the loaded weights
+    loaded_bpnn = NeuralBP(
+        convert.(Int, bpnn.parity_check_matrix),
+        convert.(Int, bpnn.parity_check_matrix_dual),
+        bpnn.initial_llrs,
+        bpnn.n_layers;
+        weights_v2c_c2v=weights_v2c_c2v,
+        weights_c2v_v2c=weights_c2v_v2c,
+        weights_c2v_readout=weights_c2v_readout
+    )
+    return loaded_bpnn
+end
+
+function save_trained_neuralbp_model(weights_filename::String, bpnn::NeuralBP)
+    """
+    Save the trained version of the NeuralBP model to a file.
+    The file will contain the weights that specify the forward pass of the NeuralBP model.
+    These weights are:
+    1. weights_v2c_c2v
+    2. weights_c2v_v2c
+    3. weights_c2v_readout
+    They will be stored in a dictionary with the corresponding keys. The values will be vectorized versions of the weight matrices.
+    """
+    # Create a dictionary to store the weights
+    weights_data = Dict{String, Any}()
+    weights_data["weights_v2c_c2v"] = vec(bpnn.weights_v2c_c2v)
+    weights_data["weights_c2v_v2c"] = vec(bpnn.weights_c2v_v2c)
+    weights_data["weights_c2v_readout"] = vec(bpnn.weights_c2v_readout)
+
+    # Save the weights to the file
+    fp = open(weights_filename, "w")
+    JSON.print(fp, weights_data)
+    close(fp)
+end
+
+function (bpnn::NeuralBP)(initial_llrs_batch::AbstractMatrix{<:Real}, syndromes_batch::BitMatrix)
     """
     Forward pass through the Neural Network.
     We have four main steps:
@@ -273,9 +415,10 @@ function (bpnn::NeuralBP)(initial_llrs_batch::AbstractMatrix{<:Real}, syndromes_
     selected_v2c = [findall(col .== 1) for col in eachcol(bpnn.adj_V2C_C2V)]
     # println("Selected V2C neurons for all C2V neurons: ", selected_v2c)
         
-    for iter in 1:n_layers
+    for iter in 1:bpnn.n_layers
         # 1. Forward pass from V2C to C2V layer
-        c2v_neurons = (bpnn.weights_c2v_v2c .* bpnn.adj_V2C_C2V') * v2c_activated_neurons
+        # c2v_neurons = (bpnn.weights_c2v_v2c .* bpnn.adj_V2C_C2V') * v2c_activated_neurons
+        c2v_neurons = (sigmoid.(bpnn.weights_c2v_v2c) .* bpnn.adj_V2C_C2V') * v2c_activated_neurons #TODO: check if sigmoid is needed. Without the sigmoid, the training is unstable, but the algorithm is more faithful to BP.
 
         # Compute the number of negative messages (in `v2c_activated_neurons`) in the expression for each C2V neuron.
         # For each neuron in the C2V layer, we need to compute the number of negative messages from the corresponding V2C neurons that are connected to it.
@@ -316,7 +459,7 @@ function (bpnn::NeuralBP)(initial_llrs_batch::AbstractMatrix{<:Real}, syndromes_
         # Since the activation function is the same for all neurons, we can apply it elementwise.
         v2c_activated_neurons = log.(tanh.(abs.(v2c_neurons) ./ 2))
 
-        if (iter == n_layers)
+        if (iter == bpnn.n_layers)
             # 3. Forward pass from final V2C layer to readout layer
             readout_neurons = initial_llrs_batch .+ (bpnn.weights_c2v_readout .* bpnn.adj_C2V_readout) * c2v_activated_neurons
         end
@@ -333,31 +476,25 @@ function compute_loss_error_from_llrs(posterior_llrs::Matrix{Float32}, expected_
     Compute a Loss function from the posterior LLRs calculated by the NeuralBP model and the expected recoveries.
     Note that if the posterior LLR is positive, then σ(μ_k) ≈ 0 (no error), else σ(μ_k) ≈ 1 (error).
     The idea is that if the output of the BP decoder, e_pred (≈ σ(μ)) added to the expected recovery (e) commutes with the elements of the dual code, then it is a stabilizer.
-    Thus, e_total = e_pred + e_expected should satisfy H^⟂ * M * e_total = 0, where M is the symplectic matrix.
+    Thus, e_total = e_pred + e_expected should satisfy H^⟂ * e_total = 0, where H^⟂ is the parity-check matrix of the dual code.
+    In the context of stabilizer codes, when H is the parity-check matrix specifying the Z-stabilizers, H^⟂ specifies the X-type normalizers.
     
     This motivates the Loss function in Eq. 8 of https://arxiv.org/abs/1811.07835.
-    L(μ, e) = ∑_i  f ( ∑_(jk) H^⟂_ij M_(jk) [ e_k + σ(μ_k)])
+    L(μ, e) = ∑_i  f ( ∑_(jk) H^⟂_ij [ e_k + σ(μ_k)])
     where
         - σ(μ_k) = 1 / (1 + exp(μ_k))
         - f(x) = |sin(π x / 2)|
-        - M = [0 I ; I 0] is the symplectic matrix
         - H^⟂ is the parity-check matrix of the dual code.
     """
-    (n_bits, n_samples) = size(expected_recoveries)
+    n_samples = size(expected_recoveries, 2)
     # Compute the average loss over all samples as a Matrix equation.
-    symplectic_matrix = vcat(hcat(zeros(Float32, n_bits ÷ 2, n_bits ÷ 2), Matrix{Float32}(I, n_bits ÷ 2, n_bits ÷ 2)),
-                         hcat(Matrix{Float32}(I, n_bits ÷ 2, n_bits ÷ 2), zeros(Float32, n_bits ÷ 2, n_bits ÷ 2)))
     e_pred_matrix = sigmoid.(posterior_llrs)
     e_total_matrix = convert.(Float32, expected_recoveries) .+ e_pred_matrix
     # println("e_total_matrix of shape: ", size(e_total_matrix), ": ", e_total_matrix)
-    # println("Symplectic matrix: ", size(symplectic_matrix), ": ", symplectic_matrix)
-    M_e_total_matrix = symplectic_matrix * e_total_matrix
-    commutation_relations_matrix = parity_check_matrix_dual * M_e_total_matrix
+    commutation_relations_matrix = parity_check_matrix_dual * e_total_matrix
     loss_matrix = sum(abs.(sin.(π .* commutation_relations_matrix ./ 2)), dims=1)
     average_loss = sum(loss_matrix) / n_samples
-
     # println("Average Loss (Matrix computation): ", average_loss)
-
     return average_loss
 end
 
@@ -365,7 +502,6 @@ function train_neuralbp!(
     bpnn::NeuralBP,
     syndromes::BitMatrix,
     expected_recoveries::BitMatrix;
-    initial_llrs::Matrix{Float32}=ones(Float32, size(expected_recoveries)),
     optimizer=ADAM(1e-3), #TODO: unable to place a datatype without avoiding errors.
     n_epochs::Int=10,
     batch_size::Int=32
@@ -393,15 +529,18 @@ function train_neuralbp!(
         (i-1) * batch_size + 1 : min(i * batch_size, n_samples)
         for i in 1:ceil(Int, n_samples / batch_size)
     ]
+    # println("Samples grouped by batch: ", samples_grouped_by_batch)
     # Create the training dataset as a vector of tuples
     training_dataset = [
         (
-            syndromes[:, batch_sample_indices],
-            expected_recoveries[:, batch_sample_indices],
-            repeat(initial_llrs[:, 1:1], 1, length(batch_sample_indices))
+            syndromes[1:end, batch_sample_indices],
+            expected_recoveries[1:end, batch_sample_indices],
+            repeat(bpnn.initial_llrs, 1, length(batch_sample_indices))
         )
         for batch_sample_indices in samples_grouped_by_batch
     ]
+
+    # println("Starting training for $n_epochs epochs with batch size $batch_size... with training dataset of shape ", training_dataset)
 
     # Set the trainable parameters
     opt_state = Flux.setup(optimizer, bpnn)  # create optimiser state (tune lr as needed)
@@ -414,8 +553,8 @@ function train_neuralbp!(
                 compute_loss_error_from_llrs(posterior_llrs, expected_recoveries_batch, bpnn.parity_check_matrix_dual)
             end
             # apply update. grads[1] contains gradients for the model
-            Flux.update!(opt_state, bpnn, grads)
-            println("Epoch $epoch, Batch Loss: $loss")
+            Flux.update!(opt_state, bpnn, grads[1])
+            # println("Epoch $epoch, Batch Loss: $loss")
         end
         println("Epoch $epoch completed.")
     end
@@ -431,8 +570,11 @@ function predict_neuralbp(bpnn::NeuralBP, syndromes::BitMatrix)::BitMatrix
     Returns:
     - `predicted_recoveries::BitMatrix`: A matrix where each column represents the predicted recovery (error pattern) corresponding to the syndrome.
     """
-    predicted_recoveries_LLRs = bpnn(syndromes)
-    predicted_recoveries = convert.(Bool, (predicted_recoveries_LLRs .> 0))
+    batch_size = size(syndromes, 2)
+    initial_llrs_batch = repeat(bpnn.initial_llrs, 1, batch_size)
+    predicted_recoveries_LLRs = bpnn(initial_llrs_batch, syndromes)
+    # print_neuralbp_summary(bpnn; final_llrs=predicted_recoveries_LLRs)
+    predicted_recoveries = convert.(Bool, (predicted_recoveries_LLRs .< 0))
     return predicted_recoveries
 end
 
@@ -467,4 +609,35 @@ function generate_training_data(parity_check_matrix::Matrix{Int}, n_samples::Int
     end
 
     return syndromes, expected_recoveries
+end
+
+function check_bp_solutions(parity_check_matrix_dual::Matrix{Int}, errors::BitMatrix, recoveries::BitMatrix)::BitVector
+    """
+    Check if the provided recoveries correctly fix the errors according to the parity-check matrix.
+    Arguments:
+    - `parity_check_matrix::Matrix{Int}`: The parity-check matrix defining the code.
+    - `errors::BitMatrix`: A matrix where each row represents an error pattern.
+    - `recoveries::BitMatrix`: A matrix where each row represents the recovery pattern corresponding to the error.
+
+    Returns:
+    - `is_correct::BitVector`: A vector indicating whether each recovery correctly fixes the corresponding error.
+    """
+    n_samples = size(errors, 2)
+    is_correct = BitVector(undef, n_samples)
+
+    for i in 1:n_samples
+        total_pattern = xor.(errors[1:end, i], recoveries[1:end, i])
+        syndrome = mod.(parity_check_matrix_dual * total_pattern, 2)
+        is_correct[i] = all(syndrome .== 0)
+
+        # For debugging purposes: if a weight-0 error is not corrected, print details.
+        if (sum(errors[1:end, i]) == 0) && (!is_correct[i])
+            println("Debug Info: Weight-0 error not corrected for sample $i.")
+            println("Error pattern: ", errors[1:end, i])
+            println("Recovery pattern: ", recoveries[1:end, i])
+            println("Total pattern (error + recovery): ", total_pattern)
+            println("Syndrome: ", syndrome)
+        end
+    end
+    return is_correct
 end

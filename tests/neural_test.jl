@@ -1,3 +1,4 @@
+using DelimitedFiles
 using CorrelatedBPDecoderWithCER
 
 function test_neural_BP()
@@ -73,14 +74,20 @@ function test_forward_propagation()
     We will then perform a forward pass through the network and print the output.
     """
     # Define the parity-check matrix
-    H = [1 0 0 0 1;
-         0 1 0 1 0;
-         0 0 1 1 1]
+    example_name = "hamming"
+    prefix = "./../data/$(example_name)"
+    # Read from the files `data/<example_name>/HX.txt` and `data/<example_name>/LX.txt`
+    H = readdlm("$(prefix)/HX.txt", Int)
+    println("Parity-check matrix H of $(size(H))")
+    show(stdout, "text/plain", H)
+    println()
+    # To load the dual matrix, load the logical operators LX and append it to H to form H_dual
+    logicals = readdlm("$(prefix)/LX.txt", Int)
+    H_dual = vcat(H, logicals)
+    println("Dual parity-check matrix H^⟂ of size $(size(H_dual))")
+    show(stdout, "text/plain", H_dual)
+    println()
     n_bits = size(H, 2)
-    
-    H_dual = [1 1 0 1 1;
-              1 0 1 0 1]
-    
     # Compute the number of neurons per layer: sum of ones in H
     nb_neurons_per_layer = sum(H)
     println("Number of neurons per layer: ", nb_neurons_per_layer)
@@ -91,25 +98,32 @@ function test_forward_propagation()
     weights_c2v_readout = ones(Float32, n_bits, nb_neurons_per_layer)
 
     # Initialize the NeuralBP model
+    initial_llrs = convert.(Float32, log(9)) .* ones(Float32, size(H, 2)) # Initial LLRs corresponding to p=0.1
+    n_layers = 2
     bpnn = NeuralBP(
         H,
-        H_dual;
+        H_dual,
+        initial_llrs,
+        n_layers;
         weights_v2c_c2v=weights_v2c_c2v,
         weights_c2v_v2c=weights_c2v_v2c,
         weights_c2v_readout=weights_c2v_readout
     )
-    print_neuralbp_info(bpnn)
-    
-    # Define a syndrome
-    syndrome = convert.(Bool, [1; 0; 0])
-    syndromes = repeat(syndrome, 1, 1)  # single sample
+    # print_neuralbp_info(bpnn)
 
-    # Define initial LLRs
-    initial_llrs = -log(9) .* ones(Float32, size(H, 2), 1) # Initial LLRs corresponding to p=0.1
+    # Define a syndrome
+    syndrome = convert.(Bool, zeros(Int, size(H, 1)))
+    syndromes_batch = repeat(syndrome, 1, 1)  # single sample
+
+    # Define initial LLRs batch
+    initial_llrs_batch = repeat(initial_llrs, 1, 1) # Initial LLRs corresponding to p=0.1
+
+    # println("Syndrome shape: ", size(syndromes_batch))
+    # println("Initial LLRs shape: ", size(initial_llrs_batch))
 
     # Perform a forward pass
-    println("Performing forward pass through the NeuralBP model on syndrome: ", syndromes[:, 1], " and with initial LLRs: ", initial_llrs[:, 1], ".")
-    output_llrs = bpnn(initial_llrs, syndromes; n_layers=1)
+    println("Performing forward pass through the NeuralBP model on syndrome: ", syndromes_batch[:, 1], " and with initial LLRs: ", initial_llrs_batch[:, 1], ".")
+    output_llrs = bpnn(initial_llrs_batch, syndromes_batch)
 
     println("Output LLRs from forward pass:", output_llrs)
 end
@@ -163,63 +177,64 @@ end
 
 function test_training_BP()
     """
-    We will test the NeuralBP implementation the Hamming (7,4) code.
-    H = [0 0 0 1 1 1 1;
-         0 1 1 0 0 1 1;
-         1 0 1 0 1 0 1
-    ]
-    H^⟂ = [
-        1 0 0 0 0 1 1;
-        0 1 0 0 1 0 1;
-        0 0 1 0 1 1 0;
-        0 0 0 1 1 1 1
-    ]
+    We will test the NeuralBP implementation on an example in `data/neural_example/`.
     We will generate training data with a certain error probability, train the NeuralBP model, and then test it on some test syndromes.
     
     """
+    example_name = "hamming"
+    prefix = "./../data/$(example_name)"
     # Define the parity-check matrix
-    H = [0 0 0 1 1 1 1 0;
-         0 1 1 0 0 1 1 0;
-         1 0 1 0 1 0 1 0]
-    H_dual = [1 0 0 0 0 1 1 0;
-              0 1 0 0 1 0 1 0;
-              0 0 1 0 1 1 0 0;
-              0 0 0 1 1 1 1 0]
+    # Read from the files `data/neural_example/H.txt` and `data/neural_example/H_dual.txt`
+    H = readdlm("$(prefix)/HX.txt", Int)
+    # To load the dual matrix, load the logical operators LX and append it to H to form H_dual
+    logicals = readdlm("$(prefix)/LX.txt", Int)
+    H_dual = vcat(H, logicals)
     
     # generate training data
-    n_samples = 10
-    error_probability = 0.2
-    syndromes, expected_recoveries = generate_training_data(H, n_samples, error_probability)
+    generate_data = false
+    if (generate_data == true)
+        # Generate training data using an i.i.d error model
+        n_samples = 10
+        error_probability = 0.1
+        training_syndromes, expected_recoveries = generate_training_data(H, n_samples, error_probability)
+    else
+        # Load pre-generated training data from files
+        expected_recoveries = convert.(Bool, readdlm("$(prefix)/train_error_patterns_Z.txt", Int))
+        n_samples = size(expected_recoveries, 2)
+        # Compute the syndromes for the training errors
+        training_syndromes = convert.(Bool, mod.(H * expected_recoveries, 2))
+    end
 
     ## Initialize the NeuralBP model
     nb_neurons_per_layer = sum(H)
+    n_layers = 50  # Number of BP iterations / layers
+    
+    # Train the model
+    initial_llrs = convert.(Float32, log(9)) .* ones(Float32, size(H, 2)) # Initial LLRs corresponding to p=0.1
+
     # Explicitly define weights associated to computing the messages from V2C to C2V, since we don't want to run into DomainError issues with atanh during training.
-    bpnn = NeuralBP(H, H_dual; weights_c2v_v2c=ones(Float32, nb_neurons_per_layer, nb_neurons_per_layer))
+    bpnn = NeuralBP(
+        H,
+        H_dual,
+        initial_llrs,
+        n_layers;
+        weights_v2c_c2v=ones(Float32, nb_neurons_per_layer, nb_neurons_per_layer),
+        weights_c2v_v2c=ones(Float32, nb_neurons_per_layer, nb_neurons_per_layer),
+        weights_c2v_readout=ones(Float32, size(H, 2), nb_neurons_per_layer)
+    )
     # print_neuralbp_info(bpnn)
 
-    # Train the model
-    initial_llrs = convert.(Float32, log(9)) .* ones(Float32, size(expected_recoveries)) # Initial LLRs corresponding to p=0.1
-
-    train_neuralbp!(bpnn, syndromes, expected_recoveries; initial_llrs=initial_llrs, n_epochs=5, batch_size=2)
+    train_neuralbp!(bpnn, training_syndromes, expected_recoveries; n_epochs=5, batch_size=2)
 
     # Test the model
-    test_error_patterns = [
-        1 0 0 1 0 0 0; # Error on qubit 1 and 4
-        0 1 0 0 1 0 0; # Error on qubit 2 and 5
-        0 0 1 0 0 0 0; # Error on qubit 3
-        0 0 0 0 0 0 1; # Error on qubit 7
-    ]
-    test_syndromes = mod.(H * test_error_patterns, 2)
-    predicted_recoveries = predict_neuralbp(bpnn, test_syndromes)
+    test_error_patterns = convert.(Bool, readdlm("$(prefix)/test_error_patterns_Z.txt", Int))
+    test_syndromes = convert.(Bool, mod.(H * test_error_patterns', 2))
+    predicted_recoveries = transpose(predict_neuralbp(bpnn, test_syndromes))
+    # println("Predicted recoveries for test syndromes:", predicted_recoveries)
 
-    println("Predicted recoveries:", predicted_recoveries)
-
-    # Compare with expected recoveries
-    for i in 1:eachcol(test_error_patterns)
-        println("Test sample $i:")
-        println("  Error: ", test_error_patterns[:, i])
-        println("  Predicted: ", predicted_recoveries[:, i])
-        println("---------------------------")
-    end
+    # Check if the predicted recoveries match the expected recoveries
+    is_correct = check_bp_solutions(convert.(Int, H), test_error_patterns, convert.(Bool, predicted_recoveries))
+    # println("Do the predicted recoveries match the expected recoveries? ", is_correct)
+    println("Out of ", size(test_error_patterns, 1), " test samples, ", sum(is_correct), " were correctly decoded.")
 end
 

@@ -49,6 +49,6 @@ include("command_line.jl")
 export parse_command_line_args, print_arguments, generate_runs
 
 include("neuralbp.jl")
-export NeuralBP, print_neuralbp_info, generate_training_data, train_neuralbp!, predict_neuralbp, compute_loss_error_from_llrs
+export NeuralBP, print_neuralbp_info, print_neuralbp_summary, generate_training_data, train_neuralbp!, predict_neuralbp, compute_loss_error_from_llrs, check_bp_solutions, load_trained_neuralbp_model, save_trained_neuralbp_model
 
 end # module CorrelatedBPDecoderWithCER
