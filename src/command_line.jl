@@ -1,6 +1,6 @@
 using ArgParse
 
-function parse_command_line_args(;prefix="./../data")::Dict{String, Any}
+function parse_command_line_args_BP(;prefix="./../data")::Dict{String, Any}
 	"""
 	Parse command-line arguments and return them as a dictionary using `ArgParse`.
 	# Input modes
@@ -139,6 +139,101 @@ function parse_command_line_args(;prefix="./../data")::Dict{String, Any}
 		end
 	end
 
+	return args_dict
+end
+
+function parse_command_line_args_NN(;prefix::String="./../data")::Dict{String, Any}
+	"""
+	Parse command-line arguments for Neural BP experiments and return them as a dictionary using `ArgParse`.
+	# Compulsory line arguments
+		- `-- codename::String`:  
+		Name of a directory containing the parity-check matrices and the logical operators.
+		The directory should contain the following files:
+			- `HX.txt`: Parity-check matrix for X errors.
+			- `LX.txt`: Logical operators for X errors.
+			- `connectivity_matrix.txt`: Connectivity matrix for correlated errors.
+			- `train_error_patterns_Z.txt`: Training error patterns for Z errors.
+	
+	# Keywords for training the Neural BP model
+		- `-- n_hidden_layers::Int` (default = 5):
+		Number of hidden layers in the Neural BP model.
+
+		- `--n_epochs::Int` (default = `5`):  
+		Number of training epochs.
+
+		- `--batch_size::Int` (default = `100`):  
+		Batch size for training.
+
+		- `--n_samples::Int` (default = `-1`):  
+		Number of samples to use for training. Use all available samples if set to -1.
+
+		- `--retrain::Bool` (default = `false`):  
+		Retrain the model even if trained weights are available.
+
+	# Examples
+	The script should be run from the folder `expts` as follows:
+	```sh
+	julia --project="./../" neural_bp_experiments.jl --codename hamming --n_hidden_layers 5 --n_epochs 5 --batch_size 100 --retrain false
+	```
+	Where `codename` is a folder inside `./../data/` containing the required files.
+	"""
+	settings = ArgParseSettings()
+	
+	@add_arg_table! settings begin
+		"--codename"
+			help = "Name of a directory containing the parity-check matrices and the logical operators."
+			arg_type = String
+			default = ""
+		"--n_hidden_layers"
+			help = "Number of hidden layers in the Neural BP model."
+			arg_type = Int
+			default = 5
+		"--n_epochs"
+			help = "Number of training epochs."
+			arg_type = Int
+			default = 5
+		"--batch_size"
+			help = "Batch size for training."
+			arg_type = Int
+			default = 100
+		"--n_samples"
+			help = "Number of samples to use for training. Use all available samples if set to -1."
+			arg_type = Int
+			default = -1
+		"--correlation_strength"
+			help = "Strength of correlation in the error model."
+			arg_type = Float64
+			default = 0.0
+		"--retrain"
+			help = "Retrain the model even if trained weights are available."
+			arg_type = Bool
+			default = false
+		"--train"
+			help = "Name of the file used for training the Neural BP model."
+			arg_type = String
+			default = ""
+		"--test"
+			help = "Name of the file used for testing the trained Neural BP model."
+			arg_type = String
+			default = ""
+	end
+	args_dict = parse_args(settings)
+
+	# Ensure that the `./../data/codename` has all the required files.
+	if isdir("$(prefix)/$(args_dict["codename"])")
+        # Check for required files
+		required_files = ["HX.txt", "LX.txt", "connectivity_matrix.txt", args_dict["train"], args_dict["test"]]
+		for file in required_files
+			if !isfile("$(prefix)/$(args_dict["codename"])/$(file)")
+				throw(error("The required file '$(file)' is missing in the directory '$(prefix)/$(args_dict["codename"])'. Please add the file and try again."))
+			end
+		end
+		# All required files are present.
+    else
+		throw(error("The specified data directory does not exist: $(prefix). Please create the directory and add the required data files."))
+	end
+
+	args_dict = parse_args(settings)
 	return args_dict
 end
 

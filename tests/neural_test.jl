@@ -92,14 +92,16 @@ function test_forward_propagation()
     nb_neurons_per_layer = sum(H)
     println("Number of neurons per layer: ", nb_neurons_per_layer)
 
+    # Number of layers (rounds of BP)
+    n_layers = 2
+    
     # Explicitly define weights for testing, to be all ones since that corresponds to standard BP.
-    weights_v2c_c2v = ones(Float32, nb_neurons_per_layer, nb_neurons_per_layer)
-    weights_c2v_v2c = ones(Float32, nb_neurons_per_layer, nb_neurons_per_layer)
+    weights_v2c_c2v = ones(Float32, nb_neurons_per_layer, nb_neurons_per_layer, n_layers)
+    weights_c2v_v2c = ones(Float32, nb_neurons_per_layer, nb_neurons_per_layer, n_layers)
     weights_c2v_readout = ones(Float32, n_bits, nb_neurons_per_layer)
 
     # Initialize the NeuralBP model
     initial_llrs = convert.(Float32, log(9)) .* ones(Float32, size(H, 2)) # Initial LLRs corresponding to p=0.1
-    n_layers = 2
     bpnn = NeuralBP(
         H,
         H_dual,
@@ -175,6 +177,76 @@ function test_loss()
     println("Computed Loss:", actual_loss)
 end
 
+function test_correlation_loss()
+    """
+    Test the computation of the loss function that comes from encouraging correlations between errors.
+    The correlation loss is given by
+        L_corr(μ) = λ * ∑_((qi, qj) ∈ C) [ e_(qi) XOR e_(qj) ]
+    where
+        - λ is a hyperparameter that controls the strength of the correlation penalty.
+        - C is the set of correlated qubit index pairs.
+        - e_(qi) is the predicted error at qubit `qi`.
+    
+    We will define a small set of correlated qubit pairs, predicted LLRs, and compute the correlation loss explicitly using the formula above.
+    Additionally, we will compute the correlation loss using the `compute_additional_loss_from_ising_correlations` function and compare the results.
+    """
+    H_dual = [1 0 0 0 0 1 1 0;
+              0 1 0 0 1 0 1 0;
+              0 0 1 0 1 1 0 0;
+              0 0 0 1 1 1 1 0]
+    posterior_llrs = convert.(Float32, [
+        2.0663514264498881;     # qubit 1
+        1.0663514264498881;     # qubit 2
+        -3.3280977282225512;    # qubit 3
+        -2.1972245773362196;    # qubit 4
+        -0.0663514264498881;    # qubit 5
+        -0.06452172443644333;   # qubit 6
+        2.1972245773362196;     # qubit 7
+        1.0663514264498881;;    # qubit 8
+    ])
+    # Define correlated qubit pairs
+    connectivity_matrix = [1 2; 3 4; 5 6; 7 8]
+    correlation_strength = 0.5f0
+    # Expected recoveries
+    expected_recoveries = convert.(Bool, [1; 0; 1; 1; 0; 0; 0; 0;;])
+    
+    # Compute the correlation loss explicitly
+    expected_corr_loss = 0.0f0
+    for (qi, qj) in eachrow(connectivity_matrix)
+        e_qi = 1 / (1 + exp(posterior_llrs[qi]))
+        e_qj = 1 / (1 + exp(posterior_llrs[qj]))
+        xor_value = e_qi + e_qj - 2 * e_qi * e_qj
+        expected_corr_loss += xor_value
+    end
+    expected_corr_loss *= correlation_strength
+    
+    expected_bare_loss = compute_loss_error_from_llrs(
+        posterior_llrs, 
+        expected_recoveries,
+        convert.(Bool, H_dual)
+    )
+    expected_loss = expected_bare_loss + expected_corr_loss
+    
+    # Now compute the correlation loss using the function
+    actual_loss = compute_loss_including_correlations(
+        posterior_llrs, 
+        expected_recoveries,
+        convert.(Bool, H_dual),
+        connectivity_matrix, 
+        correlation_strength,
+        true
+    )
+
+    # Compare the two results
+    if isapprox(actual_loss, expected_loss, atol=1e-6)
+        println("Correlation loss computed by the function matches the expected value.")
+    else
+        println("Correlation loss computed by the function does not match the expected value.")
+        println("Explicitly computed loss: ", expected_loss)
+        println("Computed loss from function: ", actual_loss)
+    end
+end
+
 function test_training_BP()
     """
     We will test the NeuralBP implementation on an example in `data/neural_example/`.
@@ -207,10 +279,13 @@ function test_training_BP()
 
     ## Initialize the NeuralBP model
     nb_neurons_per_layer = sum(H)
-    n_layers = 50  # Number of BP iterations / layers
+    n_layers = 5  # Number of BP iterations / layers
     
     # Train the model
     initial_llrs = convert.(Float32, log(9)) .* ones(Float32, size(H, 2)) # Initial LLRs corresponding to p=0.1
+
+    # Define connectivity matrix for correlated errors (for testing purposes, we can define some arbitrary pairs)
+    connectivity_matrix = readdlm("$(prefix)/connectivity_matrix.txt", Int)
 
     # Explicitly define weights associated to computing the messages from V2C to C2V, since we don't want to run into DomainError issues with atanh during training.
     bpnn = NeuralBP(
@@ -218,23 +293,34 @@ function test_training_BP()
         H_dual,
         initial_llrs,
         n_layers;
-        weights_v2c_c2v=ones(Float32, nb_neurons_per_layer, nb_neurons_per_layer),
-        weights_c2v_v2c=ones(Float32, nb_neurons_per_layer, nb_neurons_per_layer),
-        weights_c2v_readout=ones(Float32, size(H, 2), nb_neurons_per_layer)
+        weights_v2c_c2v=ones(Float32, nb_neurons_per_layer, nb_neurons_per_layer, n_layers),
+        weights_c2v_v2c=ones(Float32, nb_neurons_per_layer, nb_neurons_per_layer, n_layers),
+        weights_c2v_readout=ones(Float32, size(H, 2), nb_neurons_per_layer),
+        connectivity=connectivity_matrix,
+        correlation_strength=0.5f0
     )
     # print_neuralbp_info(bpnn)
 
-    train_neuralbp!(bpnn, training_syndromes, expected_recoveries; n_epochs=5, batch_size=2)
+    train_neuralbp!(bpnn, training_syndromes, expected_recoveries; n_epochs=1, batch_size=2)
+
+    # Debugging purpose: check if any element of the weights is NaN or `null`
+    for layer in 1:n_layers
+        if any(isnan.(bpnn.weights_v2c_c2v[:, :, layer])) || any(isnan.(bpnn.weights_c2v_v2c[:, :, layer])) || any(isnan.(bpnn.weights_c2v_readout))
+            error("Trained weights contain NaN values. Please check the training process.")
+        end
+    end
 
     # Test the model
     test_error_patterns = convert.(Bool, readdlm("$(prefix)/test_error_patterns_Z.txt", Int))
-    test_syndromes = convert.(Bool, mod.(H * test_error_patterns', 2))
-    predicted_recoveries = transpose(predict_neuralbp(bpnn, test_syndromes))
+    println("Test error patterns shape: ", size(test_error_patterns))
+    test_syndromes = convert.(Bool, mod.(H * test_error_patterns, 2))
+    println("Test syndromes shape: ", size(test_syndromes))
+    predicted_recoveries = predict_neuralbp(bpnn, test_syndromes)
+    println("Predicted recoveries shape: ", size(predicted_recoveries))
     # println("Predicted recoveries for test syndromes:", predicted_recoveries)
 
     # Check if the predicted recoveries match the expected recoveries
     is_correct = check_bp_solutions(convert.(Int, H), test_error_patterns, convert.(Bool, predicted_recoveries))
     # println("Do the predicted recoveries match the expected recoveries? ", is_correct)
-    println("Out of ", size(test_error_patterns, 1), " test samples, ", sum(is_correct), " were correctly decoded.")
+    println("Out of ", size(test_error_patterns, 2), " test samples, ", sum(is_correct), " were correctly decoded.")
 end
-
