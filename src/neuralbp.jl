@@ -570,32 +570,6 @@ function load_extracted_weights_for_BP(prefix::String, n_layers::Int)
     close(fp_c2v_readout)
     return (weighted_BP_messages_v2c_c2v_layers, weighted_BP_messages_c2v_v2c_layers, weighted_BP_messages_c2v_readout)
 end
-    
-
-# Define safe versions of atanh(exp(x)) and log(tanh(x/2)) to avoid numerical issues.
-function safe_atanh_exp(x::Matrix{Float32})::Matrix{Float32}
-    """
-    Compute atanh(exp(x)) safely, avoiding numerical issues.
-    For large negative x, exp(x) will be very small, and atanh(exp(x)) will be close to 0.
-    For large positive x, exp(x) will be very large, and atanh(exp(x)) will be close to Inf.
-    We will clip the values of exp(x) to avoid numerical issues.
-    """
-    clipped_exp = clamp.(exp.(x), eps(Float32), 1.0f0 - eps(Float32))
-    return atanh.(clipped_exp)
-end
-
-function safe_log_tanh(x::Matrix{Float32})::Matrix{Float32}
-    """
-    Compute log(tanh(x/2)) safely, avoiding numerical issues.
-    We will assume that x is always positive.
-    For large x, tanh(x/2) will be close to 1, and log(tanh(x/2)) will be close to 0.
-    For small x, tanh(x/2) will be close to 0, and log(tanh(x/2)) will be close to -Inf.
-    We will clip the values of tanh(x/2) to avoid numerical issues.
-    """
-    clipped_tanh = clamp.(tanh.(x ./ 2), eps(Float32), 1.0f0 - eps(Float32))
-    return log.(clipped_tanh)
-end
-    
 
 function (bpnn::NeuralBP)(initial_llrs_batch::AbstractMatrix{<:Real}, syndromes_batch::BitMatrix)
     """
@@ -631,7 +605,7 @@ function (bpnn::NeuralBP)(initial_llrs_batch::AbstractMatrix{<:Real}, syndromes_
     for iter in 1:bpnn.n_layers
         # 1. Forward pass from V2C to C2V layer
         # c2v_neurons = (bpnn.weights_c2v_v2c .* bpnn.adj_V2C_C2V') * v2c_activated_neurons
-        c2v_neurons = (sigmoid.(bpnn.weights_c2v_v2c[1:end, 1:end, iter]) .* bpnn.adj_V2C_C2V') * v2c_activated_neurons #TODO: check if sigmoid is needed. Without the sigmoid, the training is unstable, but the algorithm is more faithful to BP.
+        c2v_neurons = (@. sigmoid(bpnn.weights_c2v_v2c[:, :, iter]) * bpnn.adj_V2C_C2V') * v2c_activated_neurons #TODO: check if sigmoid is needed. Without the sigmoid, the training is unstable, but the algorithm is more faithful to BP.
 
         # Compute the number of negative messages (in `v2c_activated_neurons`) in the expression for each C2V neuron.
         # For each neuron in the C2V layer, we need to compute the number of negative messages from the corresponding V2C neurons that are connected to it.
@@ -645,7 +619,8 @@ function (bpnn::NeuralBP)(initial_llrs_batch::AbstractMatrix{<:Real}, syndromes_
         c2v_activated_neurons = 2 .* safe_atanh_exp(c2v_neurons) .* phase_contributions # Use safe version to avoid numerical issues.
 
         # 2. Forward pass from C2V to V2C layer
-        v2c_neurons = (bpnn.weights_v2c_c2v[1:end, 1:end, iter] .* bpnn.adj_C2V_V2C') * c2v_activated_neurons .+ (bpnn.adj_initialize_V2C * initial_llrs_batch)
+        # v2c_neurons = (bpnn.weights_v2c_c2v[1:end, 1:end, iter] .* bpnn.adj_C2V_V2C') * c2v_activated_neurons .+ (bpnn.adj_initialize_V2C * initial_llrs_batch)
+        v2c_neurons = (@. bpnn.weights_v2c_c2v[:, :, iter] * bpnn.adj_C2V_V2C') * c2v_activated_neurons + bpnn.adj_initialize_V2C * initial_llrs_batch
         
         # Apply the activation function for V2C layer.
         # Since the activation function is the same for all neurons, we can apply it elementwise.
@@ -657,12 +632,8 @@ function (bpnn::NeuralBP)(initial_llrs_batch::AbstractMatrix{<:Real}, syndromes_
             readout_neurons = initial_llrs_batch .+ (bpnn.weights_c2v_readout .* bpnn.adj_C2V_readout) * c2v_activated_neurons
         end
     end
-    
     return readout_neurons
 end
-
-# Define the sigmoid function: σ(x) = 1 / (1 + exp(x))
-sigmoid(x::T) where T <: Number = 1.0f0 / (1.0f0 + exp(x))
 
 function compute_loss_error_from_llrs(posterior_llrs::Matrix{Float32}, expected_recoveries::BitMatrix, parity_check_matrix_dual::BitMatrix)::Float32
     """
@@ -681,12 +652,10 @@ function compute_loss_error_from_llrs(posterior_llrs::Matrix{Float32}, expected_
     """
     n_samples = size(expected_recoveries, 2)
     # Compute the average loss over all samples as a Matrix equation.
-    e_pred_matrix = sigmoid.(posterior_llrs)
-    e_total_matrix = convert.(Float32, expected_recoveries) .+ e_pred_matrix
+    e_total_matrix = @. sigmoid(posterior_llrs) + expected_recoveries
     # println("e_total_matrix of shape: ", size(e_total_matrix), ": ", e_total_matrix)
     commutation_relations_matrix = parity_check_matrix_dual * e_total_matrix
-    loss_matrix = sum(abs.(sin.(π .* commutation_relations_matrix ./ 2)), dims=1)
-    average_loss = sum(loss_matrix) / n_samples
+    average_loss = sum(@. abs(sin(π * commutation_relations_matrix / 2))) / n_samples
     # println("Average Loss (Matrix computation): ", average_loss)
     return average_loss
 end
@@ -760,8 +729,9 @@ function compute_additional_loss_from_ising_correlations(posterior_llrs::Matrix{
     e_pred_left = sigmoid.(posterior_llrs[connectivity[1:end, 1], 1:end])
     e_pred_right = sigmoid.(posterior_llrs[connectivity[1:end, 2], 1:end])
     # Compute the correlation penalty term
-    correlation_penalty_matrix = e_pred_left .- (e_pred_left .* e_pred_right)
-    correlation_penalty = sum(correlation_penalty_matrix) * correlation_strength / n_samples
+    # correlation_penalty_matrix = e_pred_left .- (e_pred_left .* e_pred_right)
+    # correlation_penalty = sum(correlation_penalty_matrix) * correlation_strength / n_samples
+    correlation_penalty = sum(@. e_pred_left * (1 - e_pred_right)) * correlation_strength / n_samples
     return correlation_penalty
 end
 

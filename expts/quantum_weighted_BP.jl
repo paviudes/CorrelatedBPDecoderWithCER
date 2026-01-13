@@ -11,10 +11,10 @@ function main(read_from_file::Bool, explicit_error_file::String, ballistic_per_q
     # Load the parity check matrices from files
 	# X Parity-Check matrix
 	HX = readdlm("./../data/hamming/HX.txt", Int)
-	correlations_X = readdlm("./../data/hamming/hamming/correlations.txt", Int)  # Extra rows to accomodate for correlations.
+	correlations_X = readdlm("./../data/hamming/connectivity_matrix.txt", Int)  # Extra rows to accomodate for correlations.
 	# Z Parity-Check matrix
 	HZ = readdlm("./../data/hamming/HZ.txt", Int)
-	correlations_Z = readdlm("./../data/hamming/hamming/correlations.txt", Int)  # Extra rows to accomodate for correlations.
+	correlations_Z = readdlm("./../data/hamming/connectivity_matrix.txt", Int)  # Extra rows to accomodate for correlations.
 	# X Logical operators
 	LX = readdlm("./../data/hamming/LX.txt", Int)
 	# Z Logical operators
@@ -33,7 +33,7 @@ function main(read_from_file::Bool, explicit_error_file::String, ballistic_per_q
 	end
 	
 	if read_from_file
-		errormodel = ExplicitErrorModel(explicit_error_file)
+		errormodel = ExplicitErrorModel("./../data/hamming/$(explicit_error_file).txt")
 		explicit_error_set = sample_errors(errormodel, hgp_hamming.n)
 		num_error_samples = size(explicit_error_set, 1)
 	else
@@ -70,7 +70,7 @@ function main(read_from_file::Bool, explicit_error_file::String, ballistic_per_q
 	is_decoder_failures = Vector{Bool}(undef, num_error_samples)
 	for trial in 1:num_error_samples
 		if read_from_file
-			error = explicit_error_set[trial, :]
+			error = explicit_error_set[:, trial]
 		else
 			# Sample error from the IID model.
 			error = sample_error(errormodel, hgp_hamming.n)
@@ -113,7 +113,7 @@ end
 # Run the parallel command with `parallel --line-buffer < run_commands_explicit_errormodel_varrying_alpha.txt > ./../data/debankan/explicit_error_model_results.txt 2>&1`
 if abspath(PROGRAM_FILE) == @__FILE__
 	# Create the './../data' and './../logs' directories if they don't exist
-	prefix="./../data/debankan"
+	prefix="./../data/hamming"
 	if !isdir(prefix)
 		mkdir(prefix)
 	end

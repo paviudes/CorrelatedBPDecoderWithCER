@@ -11,17 +11,17 @@ function main(read_from_file::Bool, explicit_error_file::String, ballistic_per_q
 	# parity_check_Hamming = generate_Hamming_Parity_Check_Matrix(3)
 	# (HX, HZ) = get_hypergraph_product_code_H(parity_check_Hamming, parity_check_Hamming)
 
-	# Load the matrices from files
+	# Load the parity check matrices from files
 	# X Parity-Check matrix
-	HX = readdlm("./../data/hamming_r4_hgp_HX.txt", Int)
-	correlations_X = readdlm("./../data/hamming_r4_hgp_correlations.txt", Int)  # Extra rows to accomodate for correlations.
+	HX = readdlm("./../data/hamming/HX.txt", Int)
+	correlations_X = readdlm("./../data/hamming/connectivity_matrix.txt", Int)  # Extra rows to accomodate for correlations.
 	# Z Parity-Check matrix
-	HZ = readdlm("./../data/hamming_r4_hgp_HZ.txt", Int)
-	correlations_Z = readdlm("./../data/hamming_r4_hgp_correlations.txt", Int)  # Extra rows to accomodate for correlations.
+	HZ = readdlm("./../data/hamming/HZ.txt", Int)
+	correlations_Z = readdlm("./../data/hamming/connectivity_matrix.txt", Int)  # Extra rows to accomodate for correlations.
 	# X Logical operators
-	LX = readdlm("./../data/hamming_r4_hgp_LX.txt", Int)
+	LX = readdlm("./../data/hamming/LX.txt", Int)
 	# Z Logical operators
-	LZ = readdlm("./../data/hamming_r4_hgp_LZ.txt", Int)
+	LZ = readdlm("./../data/hamming/LZ.txt", Int)
 
 	# Maintain a log of the experiment
 	io_log = Base.stdout
@@ -30,16 +30,16 @@ function main(read_from_file::Bool, explicit_error_file::String, ballistic_per_q
 	end
 
 	# Specify the Hypergraph Product Code
-	hgp_hamming = QuantumCode(HX, HZ, LX, LZ; correlations_X=correlations_X, correlations_Z=correlations_Z, name="HGP of (15,5) Hamming Codes")
+	hgp_hamming = QuantumCode(HX, HZ, LX, LZ; correlations_X=correlations_X, correlations_Z=correlations_Z, name="HGP of (7,4) Hamming Codes")
 	if (debug || verbose)	
 		print_quantum_code_info(hgp_hamming; io=io_log)
 		println(io_log, "----------------------------------------")
 	end
 	
 	if read_from_file
-		errormodel = ExplicitErrorModel(explicit_error_file)
+		errormodel = ExplicitErrorModel("./../data/hamming/$(explicit_error_file).txt")
 		explicit_error_set = sample_errors(errormodel, hgp_hamming.n)
-		num_error_samples = size(explicit_error_set, 1)
+		num_error_samples = size(explicit_error_set, 2)
 	else
 		# Specify the error model
 		errormodel = BallisticErrorModel(ballistic_per_qubit_error_prob, ballistic_neighbour_error_prob; correlations=correlations_X, name="Ballistic Error Model")
@@ -65,7 +65,7 @@ function main(read_from_file::Bool, explicit_error_file::String, ballistic_per_q
 	is_decoder_failures = Vector{Bool}(undef, num_error_samples)
 	for trial in 1:num_error_samples
 		if read_from_file
-			error = explicit_error_set[trial, :]
+			error = explicit_error_set[:, trial]
 		else
 			# Sample error from the IID model.
 			error = sample_error(errormodel, hgp_hamming.n)
@@ -78,23 +78,33 @@ function main(read_from_file::Bool, explicit_error_file::String, ballistic_per_q
 		
 		# Decode the error using BP.
 		bpset = quantum_belief_propagation_decoder(
-			hgp_hamming, # The quantum code
-			error, # The sampled error
-			prior_probabilities, # Initial probabilities for each qubit being in error
-			rounds_per_BP, # Number of rounds of BP to run
-			n_iterations_BP; # Number of iterations of BP to run. Each interation consists of several rounds.
-			algo, # The BP algorithm to use (:SumProduct or :MinSum)
-			llr_convergence_threshold=llr_convergence_threshold, # Threshold for convergence based on LLR changes
-			llr_confidence_threshold=llr_confidence_threshold, # Threshold for confidence in LLR values to consider decoding successful
+			hgp_hamming, # The quantum code.
+			error, # The sampled error.
+			prior_probabilities, # Initial probabilities for each qubit being in error.
+			rounds_per_BP, # Number of rounds of BP to run.
+			n_iterations_BP; # Number of iterations of BP to run. Each iteration consists of several rounds.
+			algo, # The BP algorithm to use (:SumProduct or :MinSum).
+			llr_convergence_threshold=llr_convergence_threshold, # Threshold for convergence based on LLR changes.
+			llr_confidence_threshold=llr_confidence_threshold, # Threshold for confidence in LLR values to consider decoding successful.
 			weight_soft_constraint=weight_soft_constraint, # Weight for the soft constraints in the Tanner graph.
-			verbose=verbose, # Whether to print detailed logs and print statements
+			verbose=verbose, # Whether to print detailed logs and print statements.
 			io=(debug ? io_log : stdout)
 		)
 		is_decoder_failures[trial] = bpset.is_decoder_failure
 	end
 	
 	# Summary of the experiment
-	stats = DecoderStatistics(algo, errormodel.name, errormodel.parameters_description, num_error_samples, n_iterations_BP, rounds_per_BP, weight_soft_constraint; failures=is_decoder_failures, runtime=time() - start_time)
+	stats = DecoderStatistics(
+		algo, 
+		errormodel.name, 
+		errormodel.parameters_description, 
+		num_error_samples, 
+		n_iterations_BP, 
+		rounds_per_BP, 
+		weight_soft_constraint;
+		failures=is_decoder_failures, 
+		runtime=time() - start_time
+	)
 	record_decoder_statistics(stats)
 	if (debug)
 		close(io_log)
@@ -107,7 +117,7 @@ end
 # Run the parallel command with `parallel --line-buffer < run_commands_explicit_errormodel_varrying_alpha.txt > ./../data/debankan/explicit_error_model_results.txt 2>&1`
 if abspath(PROGRAM_FILE) == @__FILE__
 	# Create the './../data' and './../logs' directories if they don't exist
-	prefix="./../data/debankan"
+	prefix="./../data/hamming"
 	if !isdir(prefix)
 		mkdir(prefix)
 	end
@@ -119,7 +129,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
 	end
 
 	# Parse command-line arguments
-	args_dict = parse_command_line_args(;prefix=prefix)
+	args_dict = parse_command_line_args_BP(;prefix=prefix)
 	# print_arguments(args_dict; io=stdout)
 
 	# Extract arguments

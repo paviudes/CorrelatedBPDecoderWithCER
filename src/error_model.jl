@@ -39,8 +39,8 @@ function sample_errors(model::ExplicitErrorModel, nqubits::Int)::Matrix{Int}
     Load errors from a specified file.
     The file should contain a matrix where each row represents an error vector for nqubits.
     """
-    errors = readdlm("./../data/debankan/$(model.error_file_name).txt", Int)
-    if size(errors, 2) != nqubits
+    errors = readdlm(model.error_file_name, Int)
+    if size(errors, 1) != nqubits
         throw(DimensionMismatch("The number of qubits in the error file does not match the specified nqubits."))
     end
     return errors
@@ -109,7 +109,15 @@ struct BallisticErrorModel <: ErrorModel
             nqubits = 0
             connections = Vector{Vector{Int}}()
         end
-        new(name, nqubits, per_qubit_error_prob, neighbour_error_prob, average_block_size, "per_qubit_error_prob=$(per_qubit_error_prob),neighbour_error_prob=$(neighbour_error_prob)", correlations, connections)
+        new(name, 
+            nqubits, 
+            per_qubit_error_prob, 
+            neighbour_error_prob, 
+            average_block_size, 
+            "per_qubit_error_prob=$(per_qubit_error_prob),neighbour_error_prob=$(neighbour_error_prob)", 
+            correlations, 
+            connections
+        )
     end
 end
 
@@ -126,6 +134,139 @@ function sample_error(model::BallisticErrorModel, nqubits::Int)::Vector{Int}
             for neighbor in model.connections[qubit]
                 if rand() < model.neighbour_error_prob
                     error_vector[neighbor] = rand(1:3) # Introduce an error on the neighboring qubit
+                end
+            end
+        end
+    end
+    return error_vector
+end
+
+struct RandomWalkErrorModel <: ErrorModel
+    """
+    A simple random walk error model where errors propagate through a lattice.
+    The probability of an error occurring at each step is defined by `per_qubit_error_prob`.
+    If there is an error on a qubit, we begin a random walk from that qubit along the connectivity graph.
+    We perform the walk for `k` steps.
+    """
+    name::String
+    nqubits::Int
+    per_qubit_error_prob::Float64
+    walk_length::Int
+    average_walk_length::Float64
+    parameters_description::String
+    correlations::Matrix{Int} # Pairs for qubits along which correlated errors can occur.
+    connections::Vector{Vector{Int}}  # Adjacency list to specify qubit connectivity.
+
+    function RandomWalkErrorModel(per_qubit_error_prob::Float64, walk_length::Int, nqubits::Int; correlations::Matrix{Int}=zeros(Int, 0, 2), name::String="Random Walk Error Model")
+        if per_qubit_error_prob < 0.0 || per_qubit_error_prob > 1.0
+            throw(BoundsError("Error probability must be in [0, 1]."))
+        end
+        if (length(correlations) > 0)
+            average_walk_length = compute_mean([length(corr) for corr in eachrow(correlations)])
+            # convert the list of edges provided as `correlations` into an adjacency list `connections`
+            connections = [Int[] for _ in 1:nqubits]
+            for edge in eachrow(correlations)
+                u, v = edge
+                push!(connections[u], v)
+                push!(connections[v], u)
+            end
+        else
+            average_walk_length = 0.0
+            connections = Vector{Vector{Int}}()
+        end
+
+        new(name, 
+            nqubits, 
+            per_qubit_error_prob, 
+            walk_length, 
+            average_walk_length, 
+            "per_qubit_error_prob=$(per_qubit_error_prob),walk_length=$(walk_length)", 
+            correlations, 
+            connections
+        )
+    end 
+end
+
+function sample_error(model::RandomWalkErrorModel, nqubits::Int)::Vector{Int}
+    """
+    Sample an n-qubit error vector from the random walk error model.
+    """
+    error_vector = zeros(Int, nqubits)
+    random_values = rand(nqubits)
+    error_vector = [rv < model.per_qubit_error_prob ? 3 : 0 for rv in random_values] #TODO: Currently only Z errors are considered.
+    # Introduce correlated errors based on random walks through the connectivity
+    for qubit in 1:nqubits
+        if error_vector[qubit] != 0
+            # if there is an error on this qubit, start a random walk.
+            current_qubit = qubit
+            # Grow a BFS cluster from the `current_qubit` and introduce errors based on `walk_length`.
+            # Stop when no new errors are introduced.
+            visited = Set{Int}()
+            queue = [current_qubit]
+            steps = 0
+            while !isempty(queue) && (steps < model.walk_length)
+                current_qubit = popfirst!(queue)
+                if current_qubit ∉ visited
+                    visited = union(visited, Set([current_qubit]))
+                    # Introduce an error on this qubit
+                    error_vector[current_qubit] = 3 # Z error
+                    # Add neighbors to the queue
+                    for neighbor in model.connections[current_qubit]
+                        if neighbor ∉ visited
+                            push!(queue, neighbor)
+                        end
+                    end
+                    steps += 1
+                end
+            end
+        end
+    end
+    return error_vector
+end
+
+struct RegenerativeErrorModel <: ErrorModel
+    """
+    Define an error model where errors regenerate in blocks.
+    Partition the qubits into blocks: chunks of size k of qubits indexed 1 to n.
+    For each block b from 1 to B
+        pick a random number u
+        if u < epsilon, then
+            apply errors on each qubit within the block with a probability q.
+    """
+    name::String
+    nqubits::Int
+    block_size::Int
+    block_probability::Float64
+    regeneration_prob::Float64
+    parameters_description::String
+    function RegenerativeErrorModel(block_size::Int, block_probability::Float64, regeneration_prob::Float64, nqubits::Int; name::String="Regenerative Error Model")
+        if regeneration_prob < 0.0 || regeneration_prob > 1.0
+            throw(BoundsError("Regeneration probability must be in [0, 1]."))
+        end
+        new(name, 
+            nqubits, 
+            block_size,
+            block_probability,
+            regeneration_prob, 
+            "block_size=$(block_size),block_probability=$(block_probability),regeneration_prob=$(regeneration_prob)"
+        )
+    end
+end
+
+function sample_error(model::RegenerativeErrorModel, nqubits::Int)::Vector{Int}
+    """
+    Sample an n-qubit error vector from the regenerative error model.
+    """
+    error_vector = zeros(Int, nqubits)
+    nblocks = ceil(Int, nqubits / model.block_size)
+    for b in 0:(nblocks - 1)
+        if rand() < model.regeneration_prob
+            # Apply errors within this block
+            start_index = b * model.block_size + 1
+            end_index = min((b + 1) * model.block_size, nqubits)
+            for qubit in start_index:end_index
+                if rand() < model.block_probability
+                    error_vector[qubit] = 3 #TODO: Currently only Z errors are considered.
                 end
             end
         end

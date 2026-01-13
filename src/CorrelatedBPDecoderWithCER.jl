@@ -6,6 +6,8 @@ module CorrelatedBPDecoderWithCER
 
 # Core Julia packages
 using LinearAlgebra     # Matrix operations, decompositions, linear algebra functions
+using Base.Threads           # Multi-threading for parallel computations
+BLAS.set_num_threads(Threads.nthreads()) # Set BLAS to use the same number of threads as Julia
 using Random            # Random number generation for error sampling and initialization
 using JSON              # Reading/writing JSON configuration and data files
 using DelimitedFiles    # File I/O for CSV-like data formats
@@ -42,7 +44,8 @@ export get_hypergraph_product_code_H
 include("error_model.jl")
 export ErrorModel, IIDErrorModel, sample_error, print_error_model_info, 
        separate_error_components, join_error_components, BallisticErrorModel, 
-       ExplicitErrorModel, sample_errors, sweep_error_parameters, assign_error_model
+       ExplicitErrorModel, sample_errors, sweep_error_parameters, assign_error_model,
+       RandomWalkErrorModel, RegenerativeErrorModel
 
 # Data collection and postprocessing
 include("postprocessing.jl")
@@ -83,6 +86,11 @@ export NeuralBP, print_neuralbp_info, print_neuralbp_summary,
        save_trained_neuralbp_model, save_trained_weights, 
        extract_weights_for_BP, save_extracted_weights_for_BP, 
        load_extracted_weights_for_BP
+
+
+# Utility functions
+include("utils.jl")
+export safe_atanh_exp, safe_log_tanh, random_values_around_one
 
 #===============================================================================
                                END OF MODULE

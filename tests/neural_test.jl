@@ -135,16 +135,17 @@ function test_loss()
     Test the computation of the loss function for the NeuralBP model.
     We will define a parity-check matrix, a syndrome, initial LLRs, and expected recoveries.
     We will then compute the loss using the `compute_loss_error_from_llrs` function.
-    H = [0 0 0 1 1 1 1;
-         0 1 1 0 0 1 1;
-         1 0 1 0 1 0 1
-    ]
+    H = [
+        0 0 0 1 1 1 1 0;
+        0 1 1 0 0 1 1 0;
+        1 0 1 0 1 0 1 0
+        ]
     H^⟂ = [
-        1 0 0 0 0 1 1;
-        0 1 0 0 1 0 1;
-        0 0 1 0 1 1 0;
-        0 0 0 1 1 1 1
-    ]
+            1 0 0 0 0 1 1 0;
+            0 1 0 0 1 0 1 0;
+            0 0 1 0 1 1 0 0;
+            0 0 0 1 1 1 1 0
+          ]
     syndrome = [1, 0, 1] (indicating errors on qubits 1, 3, and 4)
     errors = [1, 0, 1, 1, 0, 0, 0] (the actual error pattern)
     posterior_llrs = [1.0663514264498881; 1.0663514264498881; 3.3280977282225512; 2.1972245773362196; 1.0663514264498881; -0.06452172443644333; 2.1972245773362196; 1.0663514264498881]
@@ -271,7 +272,7 @@ function test_training_BP()
         training_syndromes, expected_recoveries = generate_training_data(H, n_samples, error_probability)
     else
         # Load pre-generated training data from files
-        expected_recoveries = convert.(Bool, readdlm("$(prefix)/train_error_patterns_Z.txt", Int))
+        expected_recoveries = convert.(Bool, readdlm("$(prefix)/ballistic_training_data.txt", Int))
         n_samples = size(expected_recoveries, 2)
         # Compute the syndromes for the training errors
         training_syndromes = convert.(Bool, mod.(H * expected_recoveries, 2))
@@ -293,9 +294,9 @@ function test_training_BP()
         H_dual,
         initial_llrs,
         n_layers;
-        weights_v2c_c2v=ones(Float32, nb_neurons_per_layer, nb_neurons_per_layer, n_layers),
-        weights_c2v_v2c=ones(Float32, nb_neurons_per_layer, nb_neurons_per_layer, n_layers),
-        weights_c2v_readout=ones(Float32, size(H, 2), nb_neurons_per_layer),
+        weights_v2c_c2v=random_values_around_one([nb_neurons_per_layer, nb_neurons_per_layer, n_layers]; scale=0.01f0),
+        weights_c2v_v2c=random_values_around_one([nb_neurons_per_layer, nb_neurons_per_layer, n_layers]; scale=0.01f0),
+        weights_c2v_readout=random_values_around_one([size(H, 2), nb_neurons_per_layer]; scale=0.01f0),
         connectivity=connectivity_matrix,
         correlation_strength=0.5f0
     )
@@ -311,7 +312,7 @@ function test_training_BP()
     end
 
     # Test the model
-    test_error_patterns = convert.(Bool, readdlm("$(prefix)/test_error_patterns_Z.txt", Int))
+    test_error_patterns = convert.(Bool, readdlm("$(prefix)/test_error_patterns_Z_th_0.995_nb_flip_0.01.txt", Int))
     println("Test error patterns shape: ", size(test_error_patterns))
     test_syndromes = convert.(Bool, mod.(H * test_error_patterns, 2))
     println("Test syndromes shape: ", size(test_syndromes))
