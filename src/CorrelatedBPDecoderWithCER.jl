@@ -78,15 +78,33 @@ export parse_command_line_args_BP, parse_command_line_args_NN, print_arguments, 
 
 # Neural belief propagation
 include("neuralbp.jl")
-export NeuralBP, print_neuralbp_info, print_neuralbp_summary, 
-       generate_training_data, train_neuralbp!, predict_neuralbp, 
-       compute_loss_error_from_llrs, compute_additional_loss_from_ising_correlations, 
-       compute_loss_including_correlations, check_bp_solutions, 
-       load_trained_weights, load_trained_neuralbp_model, 
-       save_trained_neuralbp_model, save_trained_weights, 
-       extract_weights_for_BP, save_extracted_weights_for_BP, 
-       load_extracted_weights_for_BP
+export NeuralBPBase, NachmaniNeuralBP
 
+# Print functions for Neural BP models
+include("printfuns.jl")
+export print_neuralbp_info, print_neuralbp_summary
+
+# Load and save Neural BP models
+include("log_model.jl")
+export load_trained_neuralbp_model, save_trained_neuralbp_model
+
+# Extraction and saving/loading of weights for BP
+include("nbp_weights.jl")
+export save_trained_weights, extract_weights_for_BP, save_extracted_weights_for_BP,
+       load_extracted_weights_for_BP, load_trained_weights
+
+# Loss functions
+include("loss.jl")
+export compute_loss_error_from_llrs, compute_additional_loss_from_ising_correlations, 
+       compute_loss_including_correlations
+
+# Training routines
+include("train.jl")
+export train_neuralbp!, generate_training_data
+
+# Predictions with trained models
+include("predict.jl")
+export predict_neuralbp, check_bp_solutions
 
 # Utility functions
 include("utils.jl")

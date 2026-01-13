@@ -102,11 +102,14 @@ function test_forward_propagation()
 
     # Initialize the NeuralBP model
     initial_llrs = convert.(Float32, log(9)) .* ones(Float32, size(H, 2)) # Initial LLRs corresponding to p=0.1
-    bpnn = NeuralBP(
+    base = NeuralBPBase(
         H,
         H_dual,
         initial_llrs,
-        n_layers;
+        n_layers
+    )
+    bpnn = NachmaniNeuralBP(
+        base,
         weights_v2c_c2v=weights_v2c_c2v,
         weights_c2v_v2c=weights_c2v_v2c,
         weights_c2v_readout=weights_c2v_readout
@@ -289,16 +292,19 @@ function test_training_BP()
     connectivity_matrix = readdlm("$(prefix)/connectivity_matrix.txt", Int)
 
     # Explicitly define weights associated to computing the messages from V2C to C2V, since we don't want to run into DomainError issues with atanh during training.
-    bpnn = NeuralBP(
+    base = NeuralBPBase(
         H,
         H_dual,
         initial_llrs,
         n_layers;
+        connectivity=connectivity_matrix,
+        correlation_strength=0.5f0,
+    )
+    bpnn = NachmaniNeuralBP(
+        base,
         weights_v2c_c2v=random_values_around_one([nb_neurons_per_layer, nb_neurons_per_layer, n_layers]; scale=0.01f0),
         weights_c2v_v2c=random_values_around_one([nb_neurons_per_layer, nb_neurons_per_layer, n_layers]; scale=0.01f0),
-        weights_c2v_readout=random_values_around_one([size(H, 2), nb_neurons_per_layer]; scale=0.01f0),
-        connectivity=connectivity_matrix,
-        correlation_strength=0.5f0
+        weights_c2v_readout=random_values_around_one([size(H, 2), nb_neurons_per_layer]; scale=0.01f0)
     )
     # print_neuralbp_info(bpnn)
 
