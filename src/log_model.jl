@@ -1,4 +1,4 @@
-function load_trained_neuralbp_model(weights_filename::String, bpnn::NeuralBP)::NeuralBP
+function load_trained_neuralbp_model(weights_filename::String, bpnn::NachmaniNeuralBP)::NachmaniNeuralBP
     """
     Load a trained version of the NeuralBP model from a file.
     The file should contain the weights that specify the forward pass of the NeuralBP model.
@@ -10,9 +10,32 @@ function load_trained_neuralbp_model(weights_filename::String, bpnn::NeuralBP)::
     The function will reconstruct the weight matrices from the vectorized versions and create a NeuralBP model with these weights.
     """
     # Load the weights from the file
-    weights_data = load_trained_weights(weights_filename, bpnn)
+    weights_data = load_trained_weights(weights_filename)
     # Create a NachmaniNeuralBP model with the loaded weights
     loaded_bpnn = NachmaniNeuralBP(
+        bpnn.base,
+        weights_v2c_c2v=weights_data["weights_v2c_c2v"],
+        weights_c2v_v2c=weights_data["weights_c2v_v2c"],
+        weights_c2v_readout=weights_data["weights_c2v_readout"]
+    )
+    return loaded_bpnn
+end
+
+function load_trained_neuralbp_model(weights_filename::String, bpnn::StandardNeuralBP)::StandardNeuralBP
+    """
+    Load a trained version of the NeuralBP model from a file.
+    The file should contain the weights that specify the forward pass of the NeuralBP model.
+    These weights are:
+    1. weights_v2c_c2v
+    2. weights_c2v_v2c
+    3. weights_c2v_readout
+    They will be stored in a dictionary with the corresponding keys. The values will be vectorized versions of the weight matrices.
+    The function will reconstruct the weight matrices from the vectorized versions and create a NeuralBP model with these weights.
+    """
+    # Load the weights from the file
+    weights_data = load_trained_weights(weights_filename)
+    # Create a StandardNeuralBP model with the loaded weights
+    loaded_bpnn = StandardNeuralBP(
         bpnn.base,
         weights_v2c_c2v=weights_data["weights_v2c_c2v"],
         weights_c2v_v2c=weights_data["weights_c2v_v2c"],

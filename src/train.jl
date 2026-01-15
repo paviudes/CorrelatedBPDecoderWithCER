@@ -49,7 +49,13 @@ function train_neuralbp!(
     # Set the trainable parameters
     opt_state = Flux.setup(optimizer, bpnn)  # create optimiser state (tune lr as needed)
 
+    # Create progress bar for epochs
+    epoch_progress = Progress(n_epochs, desc="Training Epochs: ")
+    
     for epoch in 1:n_epochs
+        # Create progress bar for batches within each epoch
+        batch_progress = Progress(length(training_dataset), desc="Epoch $epoch Batches: ")
+        
         for (syndromes_train_batch, expected_recoveries_batch, llrs_batch) in training_dataset
             # compute loss and gradients in one shot
             loss, grads = Flux.withgradient(bpnn) do model
@@ -61,14 +67,18 @@ function train_neuralbp!(
                     bpnn.base.parity_check_matrix_dual,
                     bpnn.base.connectivity,
                     bpnn.base.correlation_strength,
-                    bpnn.base.is_correlated
+                    bpnn.base.is_correlated #TODO: set explicitly to `false` for excluding correlations
                 )
             end
             # apply update. grads[1] contains gradients for the model
             Flux.update!(opt_state, bpnn, grads[1])
-            # println("Epoch $epoch, Batch Loss: $loss")
+            
+            # Update batch progress bar with current loss
+            ProgressMeter.next!(batch_progress; showvalues = [(:loss, loss)])
         end
-        # println("Epoch $epoch completed.")
+        
+        # Update epoch progress bar
+        ProgressMeter.next!(epoch_progress)
     end
 end
 

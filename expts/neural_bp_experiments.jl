@@ -246,7 +246,7 @@ function generate_regenerative_testing_data(
     return output_error_files
 end
 
-function train_neuralbp(
+function train_standard_neuralbp(
     parity_check_matrix_file::String,
     logicals_file::String;
     connectivity_matrix::Matrix{Int}=zeros(Int,0,0),
@@ -274,20 +274,105 @@ function train_neuralbp(
 
     # Define the initial LLRs for the variable nodes
     n_bits = size(H, 2)
-    nb_neurons_per_layer = sum(H)
     initial_llrs = convert.(Float32, log(9)) .* ones(Float32, n_bits) # Initial LLRs corresponding to p=0.1
 
     # Define the Neural BP model
-    bpnn = NeuralBP(
+    base = NeuralBPBase(
         H,
         H_dual,
         initial_llrs,
         n_hidden_layers;
-        weights_v2c_c2v=random_values_around_one([nb_neurons_per_layer, nb_neurons_per_layer, n_hidden_layers]; scale=0.01f0),
-        weights_c2v_v2c=random_values_around_one([nb_neurons_per_layer, nb_neurons_per_layer, n_hidden_layers]; scale=0.01f0),
-        weights_c2v_readout=random_values_around_one([n_bits, nb_neurons_per_layer]; scale=0.01f0),
         connectivity=connectivity_matrix,
-        correlation_strength=convert(Float32, correlation_strength)
+        correlation_strength=convert(Float32, correlation_strength),
+    )
+    bpnn = StandardNeuralBP(
+        base;
+        weights_v2c_c2v=random_values_around_one([base.nb_weights_v2c_c2v]; scale=0.01f0),
+        weights_c2v_v2c=random_values_around_one([base.nb_weights_c2v_v2c]; scale=0.01f0),
+        weights_c2v_readout=random_values_around_one([base.nb_weights_c2v_readout]; scale=0.01f0)
+    )
+    # println("Correlation strength set to: ", bpnn.correlation_strength)
+    # print_neuralbp_info(bpnn)
+
+    # Check if the weights file already exists
+    weights_filename = "$(prefix)/neuralbp_weights_nlayers_$(n_hidden_layers)_epochs_$(n_epochs)_correlation_strength_$(correlation_strength).json"
+    if isfile(weights_filename) && !retrain
+        # println("Loading existing weights from file: $weights_filename")
+        bpnn = load_trained_neuralbp_model(weights_filename, bpnn)
+    else
+        # println("Training Neural BP model for parity-check matrix from file: $parity_check_matrix_file")
+        # Generate training data if not provided
+        if training_errors_file == ""
+            error_probability = 0.1
+            (__, expected_recoveries) = generate_training_data(H, n_samples, error_probability)
+            training_errors_file = "$(prefix)/training_data.txt"
+            # Save the generated training data to a file using `DelimitedFiles.writedlm`
+            writedlm(training_errors_file, expected_recoveries, ',')
+        end
+
+        # Read errors from the training errors file
+        expected_recoveries = convert.(Bool, readdlm(training_errors_file, Int))
+        n_samples = size(expected_recoveries, 2)
+        # Compute the syndromes for the training errors
+        training_syndromes = convert.(Bool, mod.(H * expected_recoveries, 2))
+        
+        # Train the Neural BP model
+        train_neuralbp!(bpnn, training_syndromes, expected_recoveries; n_epochs=n_epochs, batch_size=batch_size)
+
+        # Save the trained weights to a file
+        save_trained_neuralbp_model(weights_filename, bpnn)
+
+        #TODO: Save a report of the training to a file. The file name should start with `training_report_`
+
+        # println("Trained weights saved to file: $weights_filename")
+    end
+    return bpnn
+end
+
+function train_Nachmani_neuralbp(
+    parity_check_matrix_file::String,
+    logicals_file::String;
+    connectivity_matrix::Matrix{Int}=zeros(Int,0,0),
+    correlation_strength::Float64=0.5,
+    n_hidden_layers::Int=2,
+    n_epochs::Int=5,
+    training_errors_file::String="",
+    n_samples::Int=1000,
+    batch_size::Int=2,
+    prefix::String="./../data/models",
+    retrain::Bool=false
+)
+    """
+    Train a Neural Belief Propagation decoder for the given parity-check matrix.
+    The trained model consists of weights (coefficients) for each pair of connected neurons in the neural BP network.
+    We will save the weights into a file for later use.
+    If this weights file already exists, we will load the weights from the file instead of training a new model.
+    """
+    # Define the parity-check matrix
+    # Read from the files `data/neural_example/H.txt` and `data/neural_example/H_dual.txt`
+    H = readdlm(parity_check_matrix_file, Int)
+    # To load the dual matrix, load the logical operators LX and append it to H to form H_dual
+    logicals = readdlm(logicals_file, Int)
+    H_dual = vcat(H, logicals)
+
+    # Define the initial LLRs for the variable nodes
+    n_bits = size(H, 2)
+    initial_llrs = convert.(Float32, log(9)) .* ones(Float32, n_bits) # Initial LLRs corresponding to p=0.1
+
+    # Define the Neural BP model
+    base = NeuralBPBase(
+        H,
+        H_dual,
+        initial_llrs,
+        n_hidden_layers;
+        connectivity=connectivity_matrix,
+        correlation_strength=convert(Float32, correlation_strength),
+    )
+    bpnn = NachmaniNeuralBP(
+        base;
+        weights_v2c_c2v=random_values_around_one([base.nb_weights_v2c_c2v * base.n_layers]; scale=0.01f0),
+        weights_c2v_v2c=random_values_around_one([base.nb_weights_c2v_v2c * base.n_layers]; scale=0.01f0),
+        weights_c2v_readout=random_values_around_one([base.nb_weights_c2v_readout * base.n_layers]; scale=0.01f0)
     )
     # println("Correlation strength set to: ", bpnn.correlation_strength)
     # print_neuralbp_info(bpnn)
@@ -333,12 +418,11 @@ function neuralbp_test_predictions(bpnn::NeuralBP, test_errors_file::String)::Bi
     Test these predictions to see if they match the expected recoveries.
     """
     test_errors = convert.(Bool, readdlm(test_errors_file, Int))
-    test_syndromes = convert.(Bool, mod.(bpnn.parity_check_matrix * test_errors, 2))
+    test_syndromes = convert.(Bool, mod.(bpnn.base.parity_check_matrix * test_errors, 2))
     predicted_recoveries = predict_neuralbp(bpnn, test_syndromes)
     
     # Check if the predicted recoveries match the expected recoveries
-    is_correct = check_bp_solutions(convert.(Int, bpnn.parity_check_matrix), test_errors, convert.(Bool, predicted_recoveries))
-
+    is_correct = check_bp_solutions(convert.(Int, bpnn.base.parity_check_matrix), test_errors, convert.(Bool, predicted_recoveries))
     #TODO: Save a report of the testing to a file. The file name should start with `testing_report_`
     
     # println("Out of ", size(test_errors, 2), " test samples, ", sum(is_correct), " were correctly decoded.")
@@ -382,7 +466,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     retrain = args_dict["retrain"]
     # Train the Neural BP model
     start = time()
-    bpnn = train_neuralbp(
+    bpnn = train_standard_neuralbp(
         parity_check_matrix_file,
         logicals_file;
         connectivity_matrix=connectivity_matrix,
@@ -412,7 +496,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
         size(is_correct, 1),
         n_hidden_layers,
         n_epochs,
-        convert(Float64, bpnn.correlation_strength);
+        convert(Float64, bpnn.base.correlation_strength);
         num_failures = count(failures),
         failures = failures,
         runtime = runtime

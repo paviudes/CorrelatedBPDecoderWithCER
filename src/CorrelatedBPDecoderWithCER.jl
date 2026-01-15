@@ -6,12 +6,14 @@ module CorrelatedBPDecoderWithCER
 
 # Core Julia packages
 using LinearAlgebra     # Matrix operations, decompositions, linear algebra functions
+using SparseArrays     # Sparse matrix representations for efficiency
 using Base.Threads           # Multi-threading for parallel computations
 BLAS.set_num_threads(Threads.nthreads()) # Set BLAS to use the same number of threads as Julia
 using Random            # Random number generation for error sampling and initialization
 using JSON              # Reading/writing JSON configuration and data files
 using DelimitedFiles    # File I/O for CSV-like data formats
 using CSV               # CSV file reading and writing
+using ProgressMeter     # Progress bars for training and other long operations
 
 # Data manipulation and analysis
 using DataFrames        # Tabular data structures for decoder statistics
@@ -77,8 +79,16 @@ include("command_line.jl")
 export parse_command_line_args_BP, parse_command_line_args_NN, print_arguments, generate_runs
 
 # Neural belief propagation
-include("neuralbp.jl")
-export NeuralBPBase, NachmaniNeuralBP
+include("neuralbase.jl")
+export NeuralBPBase, NeuralBP, add_soft_constraints_to_neuralbpbase
+
+# Standard Neural BP model
+include("standardbp.jl")
+export StandardNeuralBP
+
+# Nachmani Neural BP model
+include("nachmani.jl")
+export NachmaniNeuralBP
 
 # Print functions for Neural BP models
 include("printfuns.jl")

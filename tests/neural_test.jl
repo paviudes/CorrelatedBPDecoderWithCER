@@ -251,7 +251,7 @@ function test_correlation_loss()
     end
 end
 
-function test_training_BP()
+function test_training_Nachmani_BP()
     """
     We will test the NeuralBP implementation on an example in `data/neural_example/`.
     We will generate training data with a certain error probability, train the NeuralBP model, and then test it on some test syndromes.
@@ -267,10 +267,10 @@ function test_training_BP()
     H_dual = vcat(H, logicals)
     
     # generate training data
-    generate_data = false
+    generate_data = true
     if (generate_data == true)
         # Generate training data using an i.i.d error model
-        n_samples = 10
+        n_samples = 10000
         error_probability = 0.1
         training_syndromes, expected_recoveries = generate_training_data(H, n_samples, error_probability)
     else
@@ -302,21 +302,102 @@ function test_training_BP()
     )
     bpnn = NachmaniNeuralBP(
         base,
-        weights_v2c_c2v=random_values_around_one([nb_neurons_per_layer, nb_neurons_per_layer, n_layers]; scale=0.01f0),
-        weights_c2v_v2c=random_values_around_one([nb_neurons_per_layer, nb_neurons_per_layer, n_layers]; scale=0.01f0),
-        weights_c2v_readout=random_values_around_one([size(H, 2), nb_neurons_per_layer]; scale=0.01f0)
+        weights_v2c_c2v=random_values_around_one([base.nb_weights_v2c_c2v * n_layers]; scale=0.01f0),
+        weights_c2v_v2c=random_values_around_one([base.nb_weights_c2v_v2c * n_layers]; scale=0.01f0),
+        weights_c2v_readout=random_values_around_one([base.nb_weights_c2v_readout]; scale=0.01f0)
     )
     # print_neuralbp_info(bpnn)
+
+    println("Going to train the Nachmani Neural BP model with $(base.nb_weights_v2c_c2v * n_layers + base.nb_weights_c2v_v2c * n_layers + base.nb_weights_c2v_readout) weights.")
 
     train_neuralbp!(bpnn, training_syndromes, expected_recoveries; n_epochs=1, batch_size=2)
 
     # Debugging purpose: check if any element of the weights is NaN or `null`
-    for layer in 1:n_layers
-        if any(isnan.(bpnn.weights_v2c_c2v[:, :, layer])) || any(isnan.(bpnn.weights_c2v_v2c[:, :, layer])) || any(isnan.(bpnn.weights_c2v_readout))
-            error("Trained weights contain NaN values. Please check the training process.")
-        end
+    if any(isnan.(bpnn.weights_v2c_c2v)) || any(isnan.(bpnn.weights_c2v_v2c)) || any(isnan.(bpnn.weights_c2v_readout))
+        error("Trained weights contain NaN values. Please check the training process.")
     end
 
+    # Test the model
+    test_error_patterns = convert.(Bool, readdlm("$(prefix)/test_error_patterns_Z_th_0.995_nb_flip_0.01.txt", Int))
+    println("Test error patterns shape: ", size(test_error_patterns))
+    test_syndromes = convert.(Bool, mod.(H * test_error_patterns, 2))
+    println("Test syndromes shape: ", size(test_syndromes))
+    predicted_recoveries = predict_neuralbp(bpnn, test_syndromes)
+    println("Predicted recoveries shape: ", size(predicted_recoveries))
+    # println("Predicted recoveries for test syndromes:", predicted_recoveries)
+
+    # Check if the predicted recoveries match the expected recoveries
+    is_correct = check_bp_solutions(convert.(Int, H), test_error_patterns, convert.(Bool, predicted_recoveries))
+    # println("Do the predicted recoveries match the expected recoveries? ", is_correct)
+    println("Out of ", size(test_error_patterns, 2), " test samples, ", sum(is_correct), " were correctly decoded.")
+end
+
+function test_training_Standard_BP()
+    """
+    We will test the NeuralBP implementation on an example in `data/neural_example/`.
+    We will generate training data with a certain error probability, train the NeuralBP model, and then test it on some test syndromes.
+    
+    """
+    example_name = "hamming"
+    prefix = "./../data/$(example_name)"
+    # Define the parity-check matrix
+    # Read from the files `data/neural_example/H.txt` and `data/neural_example/H_dual.txt`
+    H = readdlm("$(prefix)/HX.txt", Int)
+    # To load the dual matrix, load the logical operators LX and append it to H to form H_dual
+    logicals = readdlm("$(prefix)/LX.txt", Int)
+    H_dual = vcat(H, logicals)
+    
+    # generate training data
+    generate_data = true
+    if (generate_data == true)
+        # Generate training data using an i.i.d error model
+        n_samples = 10000
+        error_probability = 0.1
+        training_syndromes, expected_recoveries = generate_training_data(H, n_samples, error_probability)
+    else
+        # Load pre-generated training data from files
+        expected_recoveries = convert.(Bool, readdlm("$(prefix)/ballistic_training_data.txt", Int))
+        n_samples = size(expected_recoveries, 2)
+        # Compute the syndromes for the training errors
+        training_syndromes = convert.(Bool, mod.(H * expected_recoveries, 2))
+    end
+
+    ## Initialize the NeuralBP model
+    nb_neurons_per_layer = sum(H)
+    n_layers = 100  # Number of BP iterations / layers
+    
+    # Train the model
+    initial_llrs = convert.(Float32, log(9)) .* ones(Float32, size(H, 2)) # Initial LLRs corresponding to p=0.1
+
+    # Define connectivity matrix for correlated errors (for testing purposes, we can define some arbitrary pairs)
+    connectivity_matrix = readdlm("$(prefix)/connectivity_matrix.txt", Int)
+
+    # Explicitly define weights associated to computing the messages from V2C to C2V, since we don't want to run into DomainError issues with atanh during training.
+    base = NeuralBPBase(
+        H,
+        H_dual,
+        initial_llrs,
+        n_layers;
+        connectivity=connectivity_matrix,
+        correlation_strength=0.75f0,
+    )
+    bpnn = StandardNeuralBP(
+        base;
+        weights_v2c_c2v=random_values_around_one([base.nb_weights_v2c_c2v]; scale=0.01f0),
+        weights_c2v_v2c=random_values_around_one([base.nb_weights_c2v_v2c]; scale=0.01f0),
+        weights_c2v_readout=random_values_around_one([base.nb_weights_c2v_readout]; scale=0.01f0)
+    )
+    # print_neuralbp_info(bpnn)
+
+    println("Going to train the Standard Neural BP model with $(base.nb_weights_v2c_c2v + base.nb_weights_c2v_v2c + base.nb_weights_c2v_readout) weights.")
+
+    train_neuralbp!(bpnn, training_syndromes, expected_recoveries; n_epochs=5, batch_size=256)
+
+    # Debugging purpose: check if any element of the weights is NaN or `null`
+    if any(isnan.(bpnn.weights_v2c_c2v)) || any(isnan.(bpnn.weights_c2v_v2c)) || any(isnan.(bpnn.weights_c2v_readout))
+        error("Trained weights contain NaN values. Please check the training process.")
+    end
+    
     # Test the model
     test_error_patterns = convert.(Bool, readdlm("$(prefix)/test_error_patterns_Z_th_0.995_nb_flip_0.01.txt", Int))
     println("Test error patterns shape: ", size(test_error_patterns))

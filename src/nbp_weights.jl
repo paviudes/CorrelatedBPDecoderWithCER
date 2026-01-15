@@ -1,4 +1,4 @@
-function load_trained_weights(weights_filename::String, bpnn::NachmaniNeuralBP)::Dict{String, Any}
+function load_trained_weights(weights_filename::String)::Dict{String, Any}
     """
     Load the trained weights from a file.
     The file should contain the weights that specify the forward pass of the NeuralBP model.
@@ -15,17 +15,73 @@ function load_trained_weights(weights_filename::String, bpnn::NachmaniNeuralBP):
     
     formatted_weights = Dict{String, Any}()
     
-    weights_v2c_c2v = reshape(Float32.(weights_data["weights_v2c_c2v"]), (bpnn.base.nb_neurons_per_layer, bpnn.base.nb_neurons_per_layer, bpnn.base.n_layers))
+    weights_v2c_c2v = Float32.(weights_data["weights_v2c_c2v"])
     formatted_weights["weights_v2c_c2v"] = weights_v2c_c2v
     
-    weights_c2v_v2c = reshape(Float32.(weights_data["weights_c2v_v2c"]), (bpnn.base.nb_neurons_per_layer, bpnn.base.nb_neurons_per_layer, bpnn.base.n_layers))
+    weights_c2v_v2c = Float32.(weights_data["weights_c2v_v2c"])
     formatted_weights["weights_c2v_v2c"] = weights_c2v_v2c
     
-    weights_c2v_readout = reshape(Float32.(weights_data["weights_c2v_readout"]), (bpnn.base.code_n_bits, bpnn.base.nb_neurons_per_layer))
+    weights_c2v_readout = Float32.(weights_data["weights_c2v_readout"])
     formatted_weights["weights_c2v_readout"] = weights_c2v_readout
     
     close(fp)
     return formatted_weights
+end
+
+function extract_weights_for_BP(bpnn::StandardNeuralBP)::Tuple{
+    Dict{Tuple{Int, Int, Int, Int}, Float32}, 
+    Dict{Tuple{Int, Int, Int, Int}, Float32}, 
+    Dict{Tuple{Int, Int, Int}, Float32}
+}
+    """
+    Given the weights in the NeuralBP that were obtained after training, we want to extract the following information to perform standard Belief Propagation.
+    1. For each edge from V2C to C2V, extract the weight associated with that edge in the given layer.
+    weighted_BP_messages_v2c_c2v[v,c,c,v] = weight associated with the edge from V2C neuron (v,c) to C2V neuron (c,v)
+    2. For each edge from C2V to V2C, extract the weight associated with that edge in the given layer.
+    weighted_BP_messages_c2v_v2c[c,v,v,c] = weight associated with the edge from C2V neuron (c,v) to V2C neuron (v,c)
+    3. For each edge from C2V to a readout bit, extract the weight associated with that edge.
+    weighted_BP_messages_c2v_readout[c,v,v] = weight associated with the edge from C2V neuron (c,v) to readout bit v
+    4. Return these weights as dictionaries.
+    5. Note that the keys in the dictionaries are tuples of indices, and the values are the weights.
+    """
+    # Initialize the weight dictionaries
+    # Extract weights from V2C to C2V
+    weighted_BP_messages_v2c_c2v = Dict{Tuple{Int, Int, Int, Int}, Float32}()
+    for i in 1:bpnn.base.nb_neurons_per_layer
+        (c, v) = bpnn.base.neuron_to_check_variable[i]
+        for j in 1:bpnn.base.nb_neurons_per_layer
+            (c_prime, v_prime) = bpnn.base.neuron_to_check_variable[j]
+            if bpnn.base.adj_V2C_C2V[i, j] == 1
+                weight = bpnn.weights_v2c_c2v[i, j]
+                weighted_BP_messages_v2c_c2v[(v, c, c_prime, v_prime)] = weight
+            end
+        end
+    end
+    # Extract weights from C2V to V2C
+    weighted_BP_messages_c2v_v2c = Dict{Tuple{Int, Int, Int, Int}, Float32}()
+    for i in 1:bpnn.base.nb_neurons_per_layer
+        (c, v) = bpnn.base.neuron_to_check_variable[i]
+        for j in 1:bpnn.base.nb_neurons_per_layer
+            (c_prime, v_prime) = bpnn.base.neuron_to_check_variable[j]
+            if bpnn.base.adj_C2V_V2C[i, j] == 1
+                weight = bpnn.weights_c2v_v2c[i, j]
+                weighted_BP_messages_c2v_v2c[(c, v, v_prime, c_prime)] = weight
+            end
+        end
+    end
+    # Extract weights from C2V to readout
+    weighted_BP_messages_c2v_readout = Dict{Tuple{Int, Int, Int}, Float32}()
+    for j in 1:bpnn.base.nb_neurons_per_layer
+        (c_prime, v_prime) = bpnn.base.neuron_to_check_variable[j]
+        for v in 1:bpnn.base.code_n_bits
+            if bpnn.base.adj_C2V_readout[v_prime, j] == 1
+                weight = bpnn.weights_c2v_readout[v_prime, j]
+                weighted_BP_messages_c2v_readout[(c_prime, v_prime, v)] = weight
+            end
+        end
+    end
+
+    return (weighted_BP_messages_v2c_c2v, weighted_BP_messages_c2v_v2c, weighted_BP_messages_c2v_readout)
 end
 
 function extract_weights_for_BP(bpnn::NachmaniNeuralBP, layer_index::Int)
@@ -102,6 +158,31 @@ function extract_weights_for_BP(bpnn::NachmaniNeuralBP)
         end
     end
     return (weighted_BP_messages_v2c_c2v_layers, weighted_BP_messages_c2v_v2c_layers, weighted_BP_messages_c2v_readout)
+end
+
+function save_extracted_weights_for_BP(prefix::String, bpnn::StandardNeuralBP)
+    """
+    Save the extracted weights for Belief Propagation to a file.
+    The file will contain the weights that specify the forward pass of the NeuralBP model.
+    These weights are:
+    1. weights_v2c_c2v
+    2. weights_c2v_v2c
+    3. weights_c2v_readout
+    They will be stored in separate files where (1) and (2) will be stored as lists of dictionaries (one dictionary per layer), and (3) will be stored as a single dictionary.
+    """
+    (weighted_BP_messages_v2c_c2v_layers, weighted_BP_messages_c2v_v2c_layers, weighted_BP_messages_c2v_readout) = extract_weights_for_BP(bpnn)
+    # Save the weights from V2C to C2V
+    fp_v2c_c2v = open("$(prefix)_weights_v2c_c2v.json", "w")
+    JSON.print(fp_v2c_c2v, weighted_BP_messages_v2c_c2v_layers)
+    close(fp_v2c_c2v)
+    # Save the weights from C2V to V2C
+    fp_c2v_v2c = open("$(prefix)_weights_c2v_v2c.json", "w")
+    JSON.print(fp_c2v_v2c, weighted_BP_messages_c2v_v2c_layers)
+    close(fp_c2v_v2c)
+    # Save the weights from C2V to readout
+    fp_c2v_readout = open("$(prefix)_weights_c2v_readout.json", "w")
+    JSON.print(fp_c2v_readout, weighted_BP_messages_c2v_readout)
+    close(fp_c2v_readout)
 end
 
 function save_extracted_weights_for_BP(prefix::String, bpnn::NachmaniNeuralBP)
