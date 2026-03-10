@@ -144,8 +144,7 @@ function get_grads_for_batch!(
     n_samples_batch = size(syndromes_batch, 2)
     grads_for_batch = Vector{Vector{Float32}}(undef, n_samples_batch)
     losses = Vector{Float32}(undef, n_samples_batch)
-    # Threads.@threads
-    for i in 1:n_samples_batch
+    Threads.@threads for i in 1:n_samples_batch
         syndrome = syndromes_batch[:, i]
         expected_recovery = expected_recoveries_batch[:, i]
         initial_llrs = llrs_batch[:, i]
