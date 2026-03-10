@@ -1,4 +1,61 @@
-function compute_loss_error_from_llrs(posterior_llrs::Matrix{Float32}, expected_recoveries::BitMatrix, parity_check_matrix_dual::BitMatrix)::Float32
+function compute_loss_per_layer(
+    posterior_llrs::AbstractVector{Float32}, 
+    expected_recovery::BitVector, 
+    parity_check_matrix_dual::BitMatrix; 
+    is_correlated::Bool=false, 
+    connectivity_edges::Matrix{Int}=zeros(Int, 0, 2), 
+    correlation_strengths::Vector{Float32}=Float32[]
+)::Float32
+    """
+    Compute a Loss function from the posterior LLRs calculated by the NeuralBP model and the expected recoveries.
+    Note that if the posterior LLR is positive, then σ(μ_k) ≈ 0 (no error), else σ(μ_k) ≈ 1 (error).
+    The idea is that if the output of the BP decoder, e_pred (≈ σ(μ)) added to the expected recovery (e) commutes with the elements of the dual code, then it is a stabilizer.
+    Thus, e_total = e_pred + e_expected should satisfy H^⟂ * e_total = 0, where H^⟂ is the parity-check matrix of the dual code.
+    In the context of stabilizer codes, when H is the parity-check matrix specifying the Z-stabilizers, H^⟂ specifies the X-type normalizers.
+    
+    This motivates the Loss function in Eq. 8 of https://arxiv.org/abs/1811.07835.
+        L(μ, e) = ∑_i  f ( ∑_(jk) H^⟂_ij [ e_k + σ(μ_k)])
+    where
+        - σ(μ_k) = 1 / (1 + exp(μ_k))
+        - f(x) = |sin(π x / 2)|
+        - H^⟂ is the parity-check matrix of the dual code.
+
+    However, in the presence of correlations, we want to add an additional term L_corr to the Loss function that prefers a correlated error instead of an independent error.
+
+    Recall that the correlations are specified by a correlation graph G = (V, E), where V is the set of vertices corresponding to the bits of the code, and E is the set of edges corresponding to the correlations between the bits.
+    Each edge e = (u, v) ∈ E is associated with a correlation weight w_e, which quantifies the strength of the correlation between the two bits connected by the edge.
+    
+    The correlated part of the Loss function is defined by
+        L_corr(μ^t) = ∑_(e=(u, v) ∈ E) w_e * σ(μ^t_u) * (1 - σ(μ^t_v))
+    where
+        - σ(μ^t_u) is the predicted error probability for bit u at time t,
+        - (1 - σ(μ^t_v)) is the predicted probability that there is no error on bit v at time t, and
+        - w_e is the correlation weight associated with edge e = (u, v) in the correlation graph.
+    """
+    # Compute the average loss over all samples as a Matrix equation.
+    e_total = sigmoid.(posterior_llrs) + expected_recovery
+    commutation_relations = parity_check_matrix_dual * e_total
+    iid_loss = sum(map(x -> abs(sin(π * x / 2)), commutation_relations))
+    correlated_loss = 0.0f0
+    if is_correlated
+        for (i, edge) in enumerate(eachrow(connectivity_edges))
+            u, v = edge
+            w_e = correlation_strengths[i]
+            correlated_loss += w_e * sigmoid(posterior_llrs[u]) * (1 - sigmoid(posterior_llrs[v]))
+        end
+    end
+    total_loss = iid_loss + correlated_loss
+    return total_loss
+end
+
+function compute_loss_from_llrs(
+    posterior_llrs_by_layers::Matrix{Float32}, 
+    expected_recovery::BitVector, 
+    parity_check_matrix_dual::BitMatrix; 
+    is_correlated::Bool=false, 
+    connectivity_edges::Matrix{Int}=zeros(Int, 0, 2), 
+    correlation_strengths::Vector{Float32}=Float32[]
+)::Float32
     """
     Compute a Loss function from the posterior LLRs calculated by the NeuralBP model and the expected recoveries.
     Note that if the posterior LLR is positive, then σ(μ_k) ≈ 0 (no error), else σ(μ_k) ≈ 1 (error).
@@ -12,109 +69,28 @@ function compute_loss_error_from_llrs(posterior_llrs::Matrix{Float32}, expected_
         - σ(μ_k) = 1 / (1 + exp(μ_k))
         - f(x) = |sin(π x / 2)|
         - H^⟂ is the parity-check matrix of the dual code.
+
+    However, we want to compute the Loss for each layer separately and then average them. This is mentioned in the text following Eq. 8 in the paper.
+    Suppose the posterior_llrs is structured as:
+    
+        posterior_llrs = [μ_s1 | μ_s2 | ... | μ_sK]
+    
+    where each μ_k is of shape (n bits, n_samples) and K is the number of layers, then for each layer k, we have L_k = ∑_e L(μ_k, e)
+    to denote the Loss for layer k. The average Loss is then given by:
+        average(L) = (1/K) ∑_(k=1)^K L_k 
+    where K is the number of layers.
     """
-    n_samples = size(expected_recoveries, 2)
-    # Compute the average loss over all samples as a Matrix equation.
-    e_total_matrix = @. sigmoid(posterior_llrs) + expected_recoveries
-    # println("e_total_matrix of shape: ", size(e_total_matrix), ": ", e_total_matrix)
-    commutation_relations_matrix = parity_check_matrix_dual * e_total_matrix
-    average_loss = sum(@. abs(sin(π * commutation_relations_matrix / 2))) / n_samples
-    # println("Average Loss (Matrix computation): ", average_loss)
+    loss_by_layers = [
+        compute_loss_per_layer(
+            posterior_llrs_at_layer,
+            expected_recovery,
+            parity_check_matrix_dual;
+            is_correlated=is_correlated,
+            connectivity_edges=connectivity_edges,
+            correlation_strengths=correlation_strengths
+        )
+        for posterior_llrs_at_layer in eachrow(posterior_llrs_by_layers)
+    ]
+    average_loss = sum(loss_by_layers) / size(posterior_llrs_by_layers, 1)
     return average_loss
-end
-
-function compute_additional_loss_from_ising_XOR(posterior_llrs::Matrix{Float32}, connectivity::Matrix{Int}, expected_recoveries::BitMatrix, correlation_strength::Float32)::Float32
-    """
-    We want to add a term to the Loss function that prefers a correlated error instead of an independent error.
-    Right now we want to focus on Ising-type two-body correlations.
-    Suppose we have a list of qubit indices that are correlated: (q1, q2), (q3, q4), ... specified by `C`.
-    Then we want to add a term to the Loss function that penalizes solutions where the errors at these qubit indices are not correlated. For example, if we have an error on q1 but not on q2, we want to penalize that solution.
-    This can be achieved by adding a term proportional to `e_(q1) XOR e_(q2)` to the Loss function, where `e_(qi)` is the predicted error at qubit `qi`.
-    
-    Hence the modified Loss function is:
-        L_total(μ) = L(μ, e) + λ * ∑_((qi, qj) ∈ C) [ e_(qi) XOR e_(qj) ]
-    where
-        - L(μ, e) is the original Loss function from `compute_loss_error_from_llrs`.
-        - λ is a hyperparameter that controls the strength of the correlation penalty.
-        - C is the set of correlated qubit index pairs.
-        - e_(qi) is the predicted error at qubit `qi`.
-
-    Since we want to implement this in a differentiable manner, we can use the fact that:
-        e_(qi) XOR e_(qj) = e_(qi) + e_(qj) - 2 * e_(qi) * e_(qj)
-    where e_(qi) is approximated by σ(μ_(qi)).
-
-    So, the Loss function becomes:
-        L_total(μ) = L(μ, e) + λ * ∑_((qi, qj) ∈ C) [ σ(μ_(qi)) + σ(μ_(qj)) - 2 * σ(μ_(qi)) * σ(μ_(qj)) ]
-    
-    We need to express this in a matrix form for efficient computation.
-        L_total(μ) = L(μ, e) + λ * ( σ(μ(connectivity[:,1]]) + σ(μ[connectivity[:,2]]) - 2 * σ(μ[connectivity[:,1]]) .* σ(μ[connectivity[:,2]]) )
-    """
-    n_samples = size(expected_recoveries, 2)
-    # Compute the predicted errors from the left part of the connectivity matrix
-    e_pred_left = sigmoid.(posterior_llrs[connectivity[1:end, 1], 1:end])
-    e_pred_right = sigmoid.(posterior_llrs[connectivity[1:end, 2], 1:end])
-    # Compute the correlation penalty term
-    correlation_penalty_matrix = e_pred_left .+ e_pred_right .- 2 .* (e_pred_left .* e_pred_right)
-    correlation_penalty = sum(correlation_penalty_matrix) * correlation_strength / n_samples
-    return correlation_penalty
-end
-
-function compute_additional_loss_from_ising_correlations(posterior_llrs::Matrix{Float32}, connectivity::Matrix{Int}, expected_recoveries::BitMatrix, correlation_strength::Float32)::Float32
-    """
-    We want to add a term to the Loss function that prefers a correlated error instead of an independent error.
-    Right now we want to focus on Ising-type two-body correlations.
-    Suppose we have a list of qubit indices that are correlated: (q1, q2), (q3, q4), ... specified by `C`.
-    Then we want to add a term to the Loss function that penalizes solutions where the errors at these qubit indices are not correlated.
-    For example, if we have an error on q1 but not on q2, we want to penalize that solution. Hence, between q1 and q2, the favoured configurations are
-    (0, 0), (0, 1) and (1, 1), while the disfavoured configuration is (1, 0).
-    This can be achieved by adding a term proportional to `e_(q1) * (1 - e_(q2))` to the Loss function, where `e_(qi)` is the predicted error at qubit `qi`.
-    
-    Hence the modified Loss function is:
-        L_total(μ) = L(μ, e) + λ * ∑_((qi, qj) ∈ C) [ e_(qi) * (1 - e_(qj)) ]
-    where
-        - L(μ, e) is the original Loss function from `compute_loss_error_from_llrs`.
-        - λ is a hyperparameter that controls the strength of the correlation penalty.
-        - C is the set of correlated qubit index pairs.
-        - e_(qi) is the predicted error at qubit `qi`.
-
-    Since we want to implement this in a differentiable manner, we can use the fact that:
-        e_(qi) * (1 - e_(qj)) = e_(qi) - e_(qi) * e_(qj)
-    where e_(qi) is approximated by σ(μ_(qi)).
-
-    So, the Loss function becomes:
-        L_total(μ) = L(μ, e) + λ * ∑_((qi, qj) ∈ C) [ σ(μ_(qi)) - σ(μ_(qi)) * σ(μ_(qj)) ]
-    
-    We need to express this in a matrix form for efficient computation.
-        L_total(μ) = L(μ, e) + λ * ( σ(μ(connectivity[:,1]]) - σ(μ[connectivity[:,1]]) .* σ(μ[connectivity[:,2]]) )
-    """
-    n_samples = size(expected_recoveries, 2)
-    # Compute the predicted errors from the left part of the connectivity matrix
-    e_pred_left = sigmoid.(posterior_llrs[connectivity[1:end, 1], 1:end])
-    e_pred_right = sigmoid.(posterior_llrs[connectivity[1:end, 2], 1:end])
-    # Compute the correlation penalty term
-    # correlation_penalty_matrix = e_pred_left .- (e_pred_left .* e_pred_right)
-    # correlation_penalty = sum(correlation_penalty_matrix) * correlation_strength / n_samples
-    correlation_penalty = sum(@. e_pred_left * (1 - e_pred_right)) * correlation_strength / n_samples
-    return correlation_penalty
-end
-
-function compute_loss_including_correlations(
-    posterior_llrs::Matrix{Float32},
-    expected_recoveries::BitMatrix,
-    parity_check_matrix_dual::BitMatrix,
-    connectivity::Matrix{Int},
-    correlation_strength::Float32,
-    is_correlated::Bool
-)::Float32
-    """
-    Compute the total Loss function including the correlation penalty.
-    This function combines `compute_loss_error_from_llrs` and `compute_additional_loss_from_ising_correlations`.
-    """
-    base_loss = compute_loss_error_from_llrs(posterior_llrs, expected_recoveries, parity_check_matrix_dual)
-    if !is_correlated
-        return base_loss
-    end
-    correlation_penalty = compute_additional_loss_from_ising_correlations(posterior_llrs, connectivity, expected_recoveries, correlation_strength)
-    total_loss = base_loss + correlation_penalty
-    return total_loss
 end

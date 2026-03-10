@@ -427,7 +427,19 @@ function trim_constraints(H::Matrix{Int}, syndrome::Vector{Int}, soft_constraint
     return (updated_H, updated_syndrome, fixed_bits, llrs)
 end
 
-function run_bp(algo::String, parity_check_matrix::Matrix{Int}, soft_constraint_start::Int, syndrome::Vector{Int}, initial_llrs::Vector{Float64}, max_interations::Int; llr_convergence_threshold::Float64=1e-6, llr_confidence_threshold::Float64=2.0, weight_soft_constraint::Float64=0.5, verbose::Bool=false, io::IO=stdout)::Tuple{Vector{Float64}, Int}
+function run_bp(
+    algo::String, 
+    parity_check_matrix::Matrix{Int}, 
+    soft_constraint_start::Int, 
+    syndrome::Vector{Int}, 
+    initial_llrs::Vector{Float64}, 
+    max_interations::Int; 
+    llr_convergence_threshold::Float64=1e-6, 
+    llr_confidence_threshold::Float64=2.0, 
+    weight_soft_constraint::Float64=0.5, 
+    verbose::Bool=false, 
+    io::IO=stdout
+)::Tuple{Vector{Float64}, Int}
     """
     Run the belief propagation algorithm on the given parity-check matrix and syndrome.
     Returns the final log-likelihood ratios (LLRs) after running BP.
@@ -464,7 +476,14 @@ function run_bp(algo::String, parity_check_matrix::Matrix{Int}, soft_constraint_
     current_iteration = 1
     stop = false
     while ((stop == false) && (current_iteration <= max_interations))
-        (messages_v2c_updated, new_llrs) = bp_round(G, initial_llrs, syndrome_non_trivial, messages_v2c, weight_soft_constraint, algo)
+        (messages_v2c_updated, new_llrs) = bp_round(
+            G, 
+            initial_llrs, 
+            syndrome_non_trivial, 
+            messages_v2c, 
+            weight_soft_constraint, 
+            algo
+        )
         #######
         # Temporary patch
         # messages_v2c = bp_initialize(G, new_llrs)
@@ -474,7 +493,16 @@ function run_bp(algo::String, parity_check_matrix::Matrix{Int}, soft_constraint_
             println(io, "BP Round $(current_iteration):\nLLRs = ", new_llrs)
             println(io, "--------------------------------------------------------")
         end
-        stop = should_bp_stop(G, old_llrs, new_llrs, syndrome, llr_convergence_threshold, llr_confidence_threshold; verbose=verbose, io=io)
+        stop = should_bp_stop(
+            G, 
+            old_llrs, 
+            new_llrs, 
+            syndrome, 
+            llr_convergence_threshold, 
+            llr_confidence_threshold; 
+            verbose=verbose, 
+            io=io
+        )
         # Update old LLRs for the next iteration
         old_llrs .= new_llrs
         messages_v2c .= messages_v2c_updated

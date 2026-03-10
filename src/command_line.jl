@@ -200,10 +200,6 @@ function parse_command_line_args_NN(;prefix::String="./../data")::Dict{String, A
 			help = "Number of samples to use for training. Use all available samples if set to -1."
 			arg_type = Int
 			default = -1
-		"--correlation_strength"
-			help = "Strength of correlation in the error model."
-			arg_type = Float64
-			default = 0.0
 		"--retrain"
 			help = "Retrain the model even if trained weights are available."
 			arg_type = Bool
@@ -222,7 +218,7 @@ function parse_command_line_args_NN(;prefix::String="./../data")::Dict{String, A
 	# Ensure that the `./../data/codename` has all the required files.
 	if isdir("$(prefix)/$(args_dict["codename"])")
         # Check for required files
-		required_files = ["HX.txt", "LX.txt", "connectivity_matrix.txt", args_dict["train"], args_dict["test"]]
+		required_files = ["HX.txt", "LX.txt", "connectivity_matrix.txt", "correlation_strengths.txt", args_dict["train"], args_dict["test"]]
 		for file in required_files
 			if !isfile("$(prefix)/$(args_dict["codename"])/$(file)")
 				throw(error("The required file '$(file)' is missing in the directory '$(prefix)/$(args_dict["codename"])'. Please add the file and try again."))

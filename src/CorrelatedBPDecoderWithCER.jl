@@ -21,11 +21,18 @@ using DataFrames        # Tabular data structures for decoder statistics
 # Visualization
 using Plots             # Plotting decoder performance and error rates
 
+#=
 # Machine learning framework
 using Flux              # Neural network framework for neural belief propagation
 using Functors          # Making neural network parameters trainable
 using Optimisers        # Optimization algorithms for training neural networks
-using Zygote            # Automatic differentiation for gradient computation
+using Optimisers: OptimiserChain, ClipGrad, WeightDecay, ADAM # Specific optimizers used in training
+# using Zygote            # Automatic differentiation for gradient computation
+=#
+
+# Optimization tools for training neural networks
+using Optimisers        # Optimization algorithms for training neural networks
+using Optimisers: OptimiserChain, ClipGrad, WeightDecay, ADAM # Specific optimizers used in training
 
 # Base method extensions
 import Base: eltype, length, sort!
@@ -80,45 +87,47 @@ export parse_command_line_args_BP, parse_command_line_args_NN, print_arguments, 
 
 # Neural belief propagation
 include("neuralbase.jl")
-export NeuralBPBase, NeuralBP, add_soft_constraints_to_neuralbpbase
-
-# Standard Neural BP model
-include("standardbp.jl")
-export StandardNeuralBP
+export NeuralBPBase, NeuralBP
 
 # Nachmani Neural BP model
 include("nachmani.jl")
-export NachmaniNeuralBP
+export NachmaniNeuralBP, reset_to_standard_BP, unpack_params!, pack_params, 
+       build_vectorization_maps!, NachmaniLearnableParameterGroup
+include("forwprop.jl")
 
-# Print functions for Neural BP models
-include("printfuns.jl")
-export print_neuralbp_info, print_neuralbp_summary
+# Gradients for the Nachmani Neural BP model
+include("nachmani_grads.jl")
+export grad_message_c2v_wrt_weight, grad_llrs_wrt_weight, 
+       grad_message_c2v_wrt_bias, grad_llrs_wrt_bias
+
+include("backprop.jl")
+export nachmani_loss_jacobian, derivative_loss_at_layer_t_wrt_weight, 
+       derivative_total_loss_wrt_weight, derivative_loss_at_layer_t_wrt_bias, 
+       derivative_total_loss_wrt_bias, nachmani_loss_jacobian_wrt_c2v_readout_weights
 
 # Load and save Neural BP models
 include("log_model.jl")
-export load_trained_neuralbp_model, save_trained_neuralbp_model
-
-# Extraction and saving/loading of weights for BP
-include("nbp_weights.jl")
-export save_trained_weights, extract_weights_for_BP, save_extracted_weights_for_BP,
-       load_extracted_weights_for_BP, load_trained_weights
+export load_NBP, save_NBP
 
 # Loss functions
 include("loss.jl")
-export compute_loss_error_from_llrs, compute_additional_loss_from_ising_correlations, 
-       compute_loss_including_correlations
+export compute_loss_error_from_llrs, compute_loss_from_llrs, compute_loss_per_layer, compute_loss_including_correlations
 
 # Training routines
 include("train.jl")
-export train_neuralbp!, generate_training_data
+export train_step!, train!, generate_training_data, train_minibatch!
 
 # Predictions with trained models
 include("predict.jl")
-export predict_neuralbp, check_bp_solutions
+export predict_neuralbp, check_bp_solutions, predict_and_validate
+
+# Complex number structure for handling contributions of the syndrome in the belief propagation algorithm
+include("complex.jl")
+export ComplexPi32, safe_sinh, safe_cosech, safe_negative_cosech, safe_atanh_exp, safe_log_tanh
 
 # Utility functions
 include("utils.jl")
-export safe_atanh_exp, safe_log_tanh, random_values_around_one
+export sigmoid
 
 #===============================================================================
                                END OF MODULE

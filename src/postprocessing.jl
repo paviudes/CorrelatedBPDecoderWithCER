@@ -19,7 +19,7 @@ struct DecoderStatistics
     std_logical_error_rate::Float64
     runtime::Float64
 
-    function DecoderStatistics(algo::String, error_model_name::String, error_model_parameters_description::String, num_samples_per_error_rate::Int, num_iterations_BP::Int, num_rounds_per_iteration_BP::Int, weight_soft_constraint::Float64; num_failures::Int=0, failures::Vector{Bool}=zeros(Bool, num_samples_per_error_rate), runtime::Float64=0.0)
+    function DecoderStatistics(algo::String, error_model_name::String, error_model_parameters_description::String, num_samples_per_error_rate::Int, num_iterations_BP::Int, num_rounds_per_iteration_BP::Int, weight_soft_constraint::Float64; num_failures::Int=0, failures::BitVector=zeros(Bool, num_samples_per_error_rate), runtime::Float64=0.0)
         if !(algo in ("SumProduct", "MinSum", "NN"))
             throw(ArgumentError("Algorithm must be either 'SumProduct', 'MinSum' or 'NN'."))
         end

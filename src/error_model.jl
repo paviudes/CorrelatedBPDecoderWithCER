@@ -127,13 +127,13 @@ function sample_error(model::BallisticErrorModel, nqubits::Int)::Vector{Int}
     """
     error_vector = zeros(Int, nqubits)
     random_values = rand(nqubits)
-    error_vector = [rv < model.per_qubit_error_prob ? rand(1:3) : 0 for rv in random_values]
+    error_vector = [rv < model.per_qubit_error_prob ? rand(3) : 0 for rv in random_values] #TODO: Currently only Z errors are considered.
     # Introduce correlated errors based on the connectivity
     for qubit in 1:nqubits
         if error_vector[qubit] != 0
             for neighbor in model.connections[qubit]
                 if rand() < model.neighbour_error_prob
-                    error_vector[neighbor] = rand(1:3) # Introduce an error on the neighboring qubit
+                    error_vector[neighbor] = rand(3) #TODO: Currently only Z errors are considered.
                 end
             end
         end
