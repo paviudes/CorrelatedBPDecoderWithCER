@@ -153,8 +153,11 @@ function parse_command_line_args_NN(;prefix::String="./../data")::Dict{String, A
 			- `LX.txt`: Logical operators for X errors.
 			- `connectivity_matrix.txt`: Connectivity matrix for correlated errors.
 			- `train_error_patterns_Z.txt`: Training error patterns for Z errors.
-	
+
 	# Keywords for training the Neural BP model
+		- correlation_strengths_file::String (default = `correlation_strengths.txt`):  
+		File containing the correlation strengths for the correlated error model. The file should contain a list of correlation strengths corresponding to the edges in the connectivity matrix.
+
 		- `-- n_hidden_layers::Int` (default = 5):
 		Number of hidden layers in the Neural BP model.
 
@@ -184,6 +187,10 @@ function parse_command_line_args_NN(;prefix::String="./../data")::Dict{String, A
 			help = "Name of a directory containing the parity-check matrices and the logical operators."
 			arg_type = String
 			default = ""
+		"--correlation_strengths_file"
+			help = "File containing the correlation strengths for the correlated error model."
+			arg_type = String
+			default = "correlation_strengths.txt"
 		"--n_hidden_layers"
 			help = "Number of hidden layers in the Neural BP model."
 			arg_type = Int

@@ -522,7 +522,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     logicals_file = "$(prefix)/LX.txt"
     connectivity_matrix_file = "$(prefix)/connectivity_matrix.txt"
     connectivity_matrix = readdlm(connectivity_matrix_file, Int)
-    correlation_strength_file = "$(prefix)/correlation_strengths.txt"
+    correlation_strength_file = "$(prefix)/$(args_dict["correlation_strengths_file"])"
     correlation_strengths = readdlm(correlation_strength_file, Float32)
     n_hidden_layers = args_dict["n_hidden_layers"]
     n_epochs = args_dict["n_epochs"]
