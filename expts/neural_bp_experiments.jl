@@ -422,7 +422,7 @@ function train_Nachmani_neuralbp(
     build_vectorization_maps!(bpnn)
 
     # Check if the weights directory already exists
-    weights_filename = "$(prefix)/neuralbp_weights_nlayers_$(n_hidden_layers)_epochs_$(n_epochs)"
+    weights_filename = "$(prefix)/neuralbp_weights_nlayers_$(n_hidden_layers)_epochs_$(n_epochs)_training_file_$(basename(training_errors_file))"
     if isdir(weights_filename) && !retrain
         bpnn = load_NBP(base, weights_filename)
     else
