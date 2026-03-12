@@ -426,8 +426,10 @@ function train_Nachmani_neuralbp(
     # Check if the weights directory already exists
     weights_dirname = "$(prefix)/neuralbp_weights_nlayers_$(n_hidden_layers)_epochs_$(n_epochs)_training_file_$(basename(training_errors_file))_correlation_strengths_file_$(basename(correlation_strength_file))"
     if isdir(weights_dirname) && !retrain
+        println("Loading existing weights from directory: $weights_dirname")
         bpnn = load_NBP(base, weights_dirname)
     else
+        println("Could not find existing weights in directory: $weights_dirname. Training a new model for parity-check matrix from file: $parity_check_matrix_file")
         # Generate training data if not provided
         if training_errors_file == ""
             error_probability = 0.1
