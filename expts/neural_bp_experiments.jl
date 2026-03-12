@@ -303,6 +303,7 @@ function train_standard_neuralbp(
     n_hidden_layers::Int=2,
     n_epochs::Int=5,
     training_errors_file::String="",
+    correlation_strength_file::String="",
     n_samples::Int=1000,
     batch_size::Int=2,
     prefix::String="./../data/models",
@@ -386,6 +387,7 @@ function train_Nachmani_neuralbp(
     n_hidden_layers::Int=2,
     n_epochs::Int=5,
     training_errors_file::String="",
+    correlation_strength_file::String="",
     n_samples::Int=1000,
     batch_size::Int=2,
     prefix::String="./../data/models",
@@ -422,9 +424,9 @@ function train_Nachmani_neuralbp(
     build_vectorization_maps!(bpnn)
 
     # Check if the weights directory already exists
-    weights_filename = "$(prefix)/neuralbp_weights_nlayers_$(n_hidden_layers)_epochs_$(n_epochs)_training_file_$(basename(training_errors_file))"
-    if isdir(weights_filename) && !retrain
-        bpnn = load_NBP(base, weights_filename)
+    weights_dirname = "$(prefix)/neuralbp_weights_nlayers_$(n_hidden_layers)_epochs_$(n_epochs)_training_file_$(basename(training_errors_file))_correlation_strengths_file_$(basename(correlation_strength_file))"
+    if isdir(weights_dirname) && !retrain
+        bpnn = load_NBP(base, weights_dirname)
     else
         # Generate training data if not provided
         if training_errors_file == ""
@@ -445,11 +447,11 @@ function train_Nachmani_neuralbp(
         train_minibatch!(bpnn, training_syndromes, expected_recoveries; n_epochs=n_epochs, batch_size=batch_size, is_correlated=false)
 
         # Save the trained weights to a file
-        save_NBP(weights_filename, bpnn)
+        save_NBP(weights_dirname, bpnn)
 
         #TODO: Save a report of the training to a file. The file name should start with `training_report_`
 
-        # println("Trained weights saved to file: $weights_filename")
+        # println("Trained weights saved to file: $weights_dirname")
     end
     return bpnn
 end
@@ -539,6 +541,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
         n_hidden_layers=n_hidden_layers,
         n_epochs=n_epochs,
         training_errors_file=training_errors_file,
+        correlation_strength_file=correlation_strength_file,
         n_samples=n_samples,
         batch_size=batch_size,
         prefix=prefix,
