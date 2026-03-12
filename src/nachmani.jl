@@ -66,7 +66,7 @@ end
 # Make NeuralBP work with Functors by only making the weight matrices children
 @functor NachmaniNeuralBP (weights_v2c_c2v, weights_c2v_v2c, weights_c2v_readout)
 
-function (bpnn::NachmaniNeuralBP)(initial_llrs_batch::AbstractMatrix{<:Real}, syndromes_batch::BitMatrix)
+function (bpnn::NachmaniNeuralBP)(initial_llrs_batch::AbstractMatrix{<:Real}, syndromes_batch::BitMatrix)::Array{3, Float32}
     """
     Forward pass through the Neural Network for Nachmani et al. architecture.
     We have four main steps:
@@ -89,8 +89,8 @@ function (bpnn::NachmaniNeuralBP)(initial_llrs_batch::AbstractMatrix{<:Real}, sy
     # v2c_activated_neurons = log.(tanh.(abs.(v2c_neurons) ./ 2))
     v2c_activated_neurons = safe_log_tanh(abs.(v2c_neurons)) # Use safe version to avoid numerical issues.
 
-    # Initialize the readout neurons
-    readout_neurons = zeros(Float32, bpnn.base.code_n_bits, size(initial_llrs_batch, 2))
+    # Initialize the intermediate LLRs
+    posterior_llrs = zeros(Float32, bpnn.base.n_layers, bpnn.base.code_n_bits, size(initial_llrs_batch, 2))
 
     # 2. For N iterations:
     # Precompute the selected V2C neurons for each C2V neuron.
@@ -126,11 +126,9 @@ function (bpnn::NachmaniNeuralBP)(initial_llrs_batch::AbstractMatrix{<:Real}, sy
         # v2c_activated_neurons = log.(tanh.(abs.(v2c_neurons) ./ 2))
         v2c_activated_neurons = safe_log_tanh(abs.(v2c_neurons)) # Use safe version to avoid numerical issues.
 
-        if (iter == bpnn.base.n_layers)
-            # 3. Forward pass from final V2C layer to readout layer
-            extended_weights_c2v_readout = sparse(bpnn.base.non_zero_rows_C2V_readout, bpnn.base.non_zero_cols_C2V_readout, bpnn.weights_c2v_readout, bpnn.base.code_n_bits, bpnn.base.nb_neurons_per_layer) |> Matrix
-            readout_neurons = initial_llrs_batch .+ (extended_weights_c2v_readout .* bpnn.base.adj_C2V_readout) * c2v_activated_neurons
-        end
+        # 3. Forward pass from final V2C layer to readout layer
+        extended_weights_c2v_readout = sparse(bpnn.base.non_zero_rows_C2V_readout, bpnn.base.non_zero_cols_C2V_readout, bpnn.weights_c2v_readout, bpnn.base.code_n_bits, bpnn.base.nb_neurons_per_layer) |> Matrix
+        posterior_llrs[iter, :, :] = initial_llrs_batch .+ (extended_weights_c2v_readout .* bpnn.base.adj_C2V_readout) * c2v_activated_neurons
     end
-    return readout_neurons
+    return posterior_llrs
 end

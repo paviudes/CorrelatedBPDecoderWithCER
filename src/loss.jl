@@ -99,7 +99,7 @@ function compute_additional_loss_from_ising_correlations(posterior_llrs::Matrix{
 end
 
 function compute_loss_including_correlations(
-    posterior_llrs::Matrix{Float32},
+    posterior_llrs::Array{3, Float32},
     expected_recoveries::BitMatrix,
     parity_check_matrix_dual::BitMatrix,
     connectivity::Matrix{Int},
@@ -110,11 +110,15 @@ function compute_loss_including_correlations(
     Compute the total Loss function including the correlation penalty.
     This function combines `compute_loss_error_from_llrs` and `compute_additional_loss_from_ising_correlations`.
     """
-    base_loss = compute_loss_error_from_llrs(posterior_llrs, expected_recoveries, parity_check_matrix_dual)
-    if !is_correlated
-        return base_loss
+    total_loss = 0.0f0
+    for layer in 1:size(posterior_llrs, 1)    
+        base_loss = compute_loss_error_from_llrs(posterior_llrs[layer, :, :], expected_recoveries, parity_check_matrix_dual)
+        if is_correlated
+            correlation_penalty = compute_additional_loss_from_ising_correlations(posterior_llrs[layer, :, :], connectivity, expected_recoveries, correlation_strength)
+        else
+            correlation_penalty = 0.0f0
+        end
+        total_loss += base_loss + correlation_penalty
     end
-    correlation_penalty = compute_additional_loss_from_ising_correlations(posterior_llrs, connectivity, expected_recoveries, correlation_strength)
-    total_loss = base_loss + correlation_penalty
     return total_loss
 end
