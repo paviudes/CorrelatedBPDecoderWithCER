@@ -421,13 +421,11 @@ function train_Nachmani_neuralbp(
     # Build the vectorization map for training, used to turn the learnable parameters and their corresponding gradients into a 1D vector for optimization.
     build_vectorization_maps!(bpnn)
 
-    # Check if the weights file already exists
+    # Check if the weights directory already exists
     weights_filename = "$(prefix)/neuralbp_weights_nlayers_$(n_hidden_layers)_epochs_$(n_epochs)"
-    if isfile(weights_filename) && !retrain
-        # println("Loading existing weights from file: $weights_filename")
-        bpnn = load_trained_neuralbp_model(weights_filename, bpnn)
+    if isdir(weights_filename) && !retrain
+        bpnn = load_NBP(base, weights_filename)
     else
-        # println("Training Neural BP model for parity-check matrix from file: $parity_check_matrix_file")
         # Generate training data if not provided
         if training_errors_file == ""
             error_probability = 0.1

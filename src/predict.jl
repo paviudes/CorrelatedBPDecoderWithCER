@@ -69,12 +69,17 @@ function predict_and_validate(bpnn::NeuralBP, parity_check_matrix_dual::Matrix{I
     """
     n_samples = size(syndromes, 2)
     failures = falses(n_samples)
-    for i in 1:n_samples
+    n_failures::Int = 0
+    # Use a progress bar to track the prediction and validation process.
+    predprogress = Progress(n_samples, desc="Predicting and validating")
+    @Threads.threads for i in 1:n_samples
         syndrome = syndromes[:, i]
         expected_recovery = expected_recoveries[:, i]
         predicted_recoveries = predict_recovery(bpnn, syndrome)
         is_correct = check_bp_solutions(parity_check_matrix_dual, expected_recovery, predicted_recoveries)
         failures[i] = !is_correct
+        n_failures += failures[i]
+        next!(predprogress, showvalues = [(:Sample, i), (:Failures, n_failures)])
     end
     return failures
 end
