@@ -51,7 +51,8 @@ end
 function compute_loss_from_llrs(
     posterior_llrs_by_layers::Matrix{Float32}, 
     expected_recovery::BitVector, 
-    parity_check_matrix_dual::BitMatrix; 
+    parity_check_matrix_dual::BitMatrix,
+    loss_weights::Dict{NTuple{1, Int}, Float32}; 
     is_correlated::Bool=false, 
     connectivity_edges::Matrix{Int}=zeros(Int, 0, 2), 
     correlation_strengths::Vector{Float32}=Float32[]
@@ -91,6 +92,7 @@ function compute_loss_from_llrs(
         )
         for posterior_llrs_at_layer in eachrow(posterior_llrs_by_layers)
     ]
-    average_loss = sum(loss_by_layers) / size(posterior_llrs_by_layers, 1)
+    n_layers = size(posterior_llrs_by_layers, 1)
+    average_loss = sum([loss_weights[(layer,)] * loss for (layer, loss) in enumerate(loss_by_layers)]) / n_layers
     return average_loss
 end

@@ -199,7 +199,8 @@ function get_grads_for_sample(
     loss = compute_loss_from_llrs(
         posterior_llrs,
         expected_recovery,
-        convert.(Bool, bpnn.base.parity_check_matrix_dual);
+        convert.(Bool, bpnn.base.parity_check_matrix_dual),
+        bpnn.loss_weights;
         is_correlated = is_correlated,
         connectivity_edges=bpnn.base.connectivity_edges,
         correlation_strengths=bpnn.base.correlation_strengths

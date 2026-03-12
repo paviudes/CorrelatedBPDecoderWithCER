@@ -423,9 +423,8 @@ function nachmani_loss_jacobian(
         - weights_c2v_v2c
         - weights_llrs
         - weights_c2v_readout
+        - loss_weights
     The Jacobian is a dictionary that maps each learnable parameter to its corresponding derivative of the Loss function.
-
-    PS: We need to profile this function by inserting elapsed time print statements for each of the steps to identify bottlenecks and optimize the computation of the Jacobian, since this is a critical step in the training process.
     """
     # start = time()
     # Compute the Jacobian with respect to weights_c2v_v2c
@@ -477,6 +476,19 @@ function nachmani_loss_jacobian(
     )
     # println("Computed Jacobian for weights_c2v_readout.\n", jacobian_weights_c2v_readout)
 
+    # Compute the Jacobian with respect to the loss weights.
+    jacobian_loss_weights = Dict{NTuple{1, Int}, Float32}(
+        (layer,) => compute_loss_per_layer(
+            intermediate_llrs[layer, :],
+            expected_recovery,
+            bpnn.base.parity_check_matrix_dual;
+            is_correlated=is_correlated,
+            connectivity_edges=bpnn.base.connectivity_edges,
+            correlation_strengths=bpnn.base.correlation_strengths
+        )
+        for layer in 1:bpnn.base.n_layers
+    )
+
     # elapsed_time_c2v_readout = time() - start - elapsed_time_c2v_v2c - elapsed_time_llrs
     # println("[", round(elapsed_time_c2v_readout, digits=3), " seconds] Completed Jacobian computation for weights_c2v_readout.")
 
@@ -487,5 +499,6 @@ function nachmani_loss_jacobian(
     jacobian[C2V_V2C] = jacobian_weights_c2v_v2c
     jacobian[LLRS] = jacobian_weights_llrs
     jacobian[C2V_READOUT] = jacobian_weights_c2v_readout
+    jacobian[LOSS_WEIGHTS] = jacobian_loss_weights
     return jacobian
 end

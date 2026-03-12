@@ -5,6 +5,7 @@ using Functors: @functor
     C2V_V2C
     LLRS
     C2V_READOUT
+    LOSS_WEIGHTS
 end
 
 mutable struct NachmaniNeuralBP <: NeuralBP
@@ -19,11 +20,13 @@ mutable struct NachmaniNeuralBP <: NeuralBP
     weights_c2v_v2c::Dict{NTuple{5,Int}, Float32} # The keys are tuples of the form (layer, vertex, check, check_prime, vertex) representing W^t_(v,c ; c',v).
     weights_llrs::Dict{NTuple{2,Int}, Float32} # Keys are tuples of the form (layer, vertex) representing b^t_v.
     weights_c2v_readout::Dict{NTuple{4,Int}, Float32} # Keys are tuples of the form (layer, vertex, check, vertex) representing W^t_(v;c,v).
+    loss_weights::Dict{NTuple{1, Int}, Float32} # Weights for the loss function, one for each layer.
 
     # Vectorization map, so that we can easily convert all the learable parameters to a single 1D vector for optimization.
     vmap_c2v_v2c::Dict{NTuple{5,Int}, Int}
     vmap_llrs::Dict{NTuple{2,Int}, Int}
     vmap_c2v_readout::Dict{NTuple{4,Int}, Int}
+    vmap_loss_weights::Dict{NTuple{1, Int}, Int}
     # Inverse Vectorization maps, so that we can easily convert the 1D vector of parameters back to the structured format.
     invmap::Dict{Int, Tuple{NachmaniLearnableParameterGroup, Tuple}}
     
@@ -32,7 +35,8 @@ mutable struct NachmaniNeuralBP <: NeuralBP
         initial_llrs::Vector{<:Real};
         weights_c2v_v2c::Dict{NTuple{5,Int}, Float32}=Dict{NTuple{5,Int}, Float32}(),
         weights_llrs::Dict{NTuple{2,Int}, Float32}=Dict{NTuple{2,Int}, Float32}(),
-        weights_c2v_readout::Dict{NTuple{4,Int}, Float32}=Dict{NTuple{4,Int}, Float32}()
+        weights_c2v_readout::Dict{NTuple{4,Int}, Float32}=Dict{NTuple{4,Int}, Float32}(),
+        loss_weights::Dict{NTuple{1, Int}, Float32}=Dict{NTuple{1, Int}, Float32}()
     )
         """
         Define the NeuralBP model.
@@ -81,13 +85,21 @@ mutable struct NachmaniNeuralBP <: NeuralBP
                 end
             end
         end
+        if length(loss_weights) == 0
+            loss_weights = Dict{NTuple{1, Int}, Float32}()
+            for layer in 1:base.n_layers
+                loss_weights[(layer,)] = variance * randn(Float32)
+            end
+            loss_weights[(base.n_layers,)] = 1.0f0 # We can initialize the final layer to have a higher weight, since it is the most important one for the performance of the decoder.
+        end
         
         return new(
             base,
             Float32.(initial_llrs), # Convert the initial LLRs to Float32.
             weights_c2v_v2c,
             weights_llrs,
-            weights_c2v_readout
+            weights_c2v_readout,
+            loss_weights
         )
     end
 end
@@ -123,6 +135,15 @@ function build_vectorization_maps!(bpnn::NachmaniNeuralBP)
         bpnn.invmap[count] = (C2V_READOUT, key)
         count += 1
     end
+
+    # Build the vectorization map for loss_weights
+    bpnn.vmap_loss_weights = Dict{NTuple{1, Int}, Int}()
+    for key in keys(bpnn.loss_weights)
+        bpnn.vmap_loss_weights[key] = count
+        bpnn.invmap[count] = (LOSS_WEIGHTS, key)
+        count += 1
+    end
+
     return nothing
 end
 
@@ -141,6 +162,8 @@ function pack_params(bpnn::NachmaniNeuralBP)::Vector{Float32}
             param_vector[param_index] = bpnn.weights_llrs[tuple_key]
         elseif param_group == C2V_READOUT
             param_vector[param_index] = bpnn.weights_c2v_readout[tuple_key]
+        elseif param_group == LOSS_WEIGHTS
+            param_vector[param_index] = bpnn.loss_weights[tuple_key]
         else
             error("Unknown parameter group: $param_group")
         end
@@ -164,6 +187,8 @@ function pack_grads(jacobian::Dict{NachmaniLearnableParameterGroup, Dict{NTuple,
             grad_vector[param_index] = jacobian[LLRS][tuple_key]
         elseif param_group == C2V_READOUT
             grad_vector[param_index] = jacobian[C2V_READOUT][tuple_key]
+        elseif param_group == LOSS_WEIGHTS
+            grad_vector[param_index] = jacobian[LOSS_WEIGHTS][tuple_key]
         else
             error("Unknown parameter group: $param_group")
         end
@@ -186,6 +211,8 @@ function unpack_params!(bpnn::NachmaniNeuralBP, param_vector::Vector{Float32})
             bpnn.weights_llrs[tuple_key] = param_vector[param_index]
         elseif param_group == C2V_READOUT
             bpnn.weights_c2v_readout[tuple_key] = param_vector[param_index]
+        elseif param_group == LOSS_WEIGHTS
+            bpnn.loss_weights[tuple_key] = param_vector[param_index]
         else
             error("Unknown parameter group: $param_group")
         end
@@ -200,6 +227,7 @@ function reset_to_standard_BP(bpnn::NachmaniNeuralBP)
         - weights_c2v_v2c
         - weights_llrs
         - weights_c2v_readout
+        - loss_weights
     """
     # Set weights_c2v_v2c to 1.0
     reset_weights_c2v_v2c = bpnn.weights_c2v_v2c
@@ -216,6 +244,9 @@ function reset_to_standard_BP(bpnn::NachmaniNeuralBP)
     for key in keys(reset_weights_c2v_readout)
         reset_weights_c2v_readout[key] = 1.0f0
     end
+    # Set loss_weights to [0.0, 0.0, ..., 0.1] so that only the final layer contributes to the loss.
+    reset_loss_weights = zeros(Float32, bpnn.base.n_layers)
+    reset_loss_weights[bpnn.base.n_layers] = 1.0f0
 
     # Return a new NachmaniNeuralBP model with the standard settings
     standard_bp_model = NachmaniNeuralBP(
@@ -223,9 +254,8 @@ function reset_to_standard_BP(bpnn::NachmaniNeuralBP)
         bpnn.initial_llrs;
         weights_c2v_v2c=reset_weights_c2v_v2c,
         weights_llrs=reset_weights_llrs,
-        weights_c2v_readout=reset_weights_c2v_readout
+        weights_c2v_readout=reset_weights_c2v_readout,
+        loss_weights=reset_loss_weights
     )
     return standard_bp_model
 end
-
-# function pack()

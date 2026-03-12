@@ -79,13 +79,24 @@ function load_NBP(base::NeuralBPBase, weights_directory::String)::NachmaniNeural
         weights_c2v_readout[(t, v, c, vp)] = weight
     end
 
+    # Load the loss weights
+    loss_weights_filepath = joinpath(weights_directory, "loss_weights.csv")
+    loss_weights_df = CSV.read(loss_weights_filepath, DataFrame)
+    loss_weights = Dict{NTuple{1, Int}, Float32}()
+    for row in eachrow(loss_weights_df)
+        layer = row.layer
+        weight = row.weight
+        loss_weights[(layer,)] = weight
+    end
+    
     # Construct the NachmaniNeuralBP model
     bpnn = NachmaniNeuralBP(
         base,
         initial_llrs;
         weights_c2v_v2c=weights_c2v_v2c,
         weights_llrs=weights_llrs,
-        weights_c2v_readout=weights_c2v_readout
+        weights_c2v_readout=weights_c2v_readout,
+        loss_weights=loss_weights
     )
     return bpnn
 end
@@ -98,6 +109,7 @@ function save_NBP(directory::String, bpnn::NachmaniNeuralBP)
     2. weights_c2v_v2c -- stored in `<directory>/weights_c2v_v2c.csv`
     3. weights_llrs -- stored in `<directory>/weights_llrs.csv`
     4. weights_c2v_readout -- stored in `<directory>/weights_c2v_readout.csv`
+    5. loss_weights -- stored in `<directory>/loss_weights.csv`
     """
     # Create the directory if it does not exist
     if !isdir(directory)
@@ -134,4 +146,12 @@ function save_NBP(directory::String, bpnn::NachmaniNeuralBP)
         push!(weights_c2v_readout_df, (t=t, v=v, c=c, vp=vp, weight=weight))
     end
     CSV.write(weights_c2v_readout_filepath, weights_c2v_readout_df)
+
+    # Save the loss weights
+    loss_weights_filepath = joinpath(directory, "loss_weights.csv")
+    loss_weights_df = DataFrame(layer=Int[], weight=Float32[])
+    for ((layer,), weight) in bpnn.loss_weights
+        push!(loss_weights_df, (layer=layer, weight=weight))
+    end
+    CSV.write(loss_weights_filepath, loss_weights_df)
 end
