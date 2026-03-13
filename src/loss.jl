@@ -59,7 +59,7 @@ function compute_additional_loss_from_ising_XOR(posterior_llrs::Matrix{Float32},
     return correlation_penalty
 end
 
-function compute_additional_loss_from_ising_correlations(posterior_llrs::Matrix{Float32}, connectivity::Matrix{Int}, expected_recoveries::BitMatrix, correlation_strength::Float32)::Float32
+function compute_additional_loss_from_ising_correlations(posterior_llrs::Matrix{Float32}, connectivity::Matrix{Int}, expected_recoveries::BitMatrix, correlation_strengths::Vector{Float32})::Float32
     """
     We want to add a term to the Loss function that prefers a correlated error instead of an independent error.
     Right now we want to focus on Ising-type two-body correlations.
@@ -70,10 +70,10 @@ function compute_additional_loss_from_ising_correlations(posterior_llrs::Matrix{
     This can be achieved by adding a term proportional to `e_(q1) * (1 - e_(q2))` to the Loss function, where `e_(qi)` is the predicted error at qubit `qi`.
     
     Hence the modified Loss function is:
-        L_total(μ) = L(μ, e) + λ * ∑_((qi, qj) ∈ C) [ e_(qi) * (1 - e_(qj)) ]
+        L_total(μ) = L(μ, e) + ∑_((qi, qj) ∈ C)  λ_(i,j) [ e_(qi) * (1 - e_(qj)) ]
     where
         - L(μ, e) is the original Loss function from `compute_loss_error_from_llrs`.
-        - λ is a hyperparameter that controls the strength of the correlation penalty.
+        - λ_(i,j) is a hyperparameter that controls the strength of the correlation penalty for the pair (qi, qj).
         - C is the set of correlated qubit index pairs.
         - e_(qi) is the predicted error at qubit `qi`.
 
@@ -82,28 +82,30 @@ function compute_additional_loss_from_ising_correlations(posterior_llrs::Matrix{
     where e_(qi) is approximated by σ(μ_(qi)).
 
     So, the Loss function becomes:
-        L_total(μ) = L(μ, e) + λ * ∑_((qi, qj) ∈ C) [ σ(μ_(qi)) - σ(μ_(qi)) * σ(μ_(qj)) ]
+        L_total(μ) = L(μ, e) + ∑_((qi, qj) ∈ C) λ_(i,j) [ σ(μ_(qi)) - σ(μ_(qi)) * σ(μ_(qj)) ]
     
     We need to express this in a matrix form for efficient computation.
-        L_total(μ) = L(μ, e) + λ * ( σ(μ(connectivity[:,1]]) - σ(μ[connectivity[:,1]]) .* σ(μ[connectivity[:,2]]) )
+        L_total(μ) = L(μ, e) + λ .* ( σ(μ(connectivity[:,1]]) - σ(μ[connectivity[:,1]]) .* σ(μ[connectivity[:,2]]) )
     """
     n_samples = size(expected_recoveries, 2)
+    correlation_strengths_batch = repeat(correlation_strengths, 1, n_samples)
+    # println("correlation_strengths_batch of shape: ", size(correlation_strengths_batch))
     # Compute the predicted errors from the left part of the connectivity matrix
     e_pred_left = sigmoid.(posterior_llrs[connectivity[1:end, 1], 1:end])
     e_pred_right = sigmoid.(posterior_llrs[connectivity[1:end, 2], 1:end])
     # Compute the correlation penalty term
     # correlation_penalty_matrix = e_pred_left .- (e_pred_left .* e_pred_right)
     # correlation_penalty = sum(correlation_penalty_matrix) * correlation_strength / n_samples
-    correlation_penalty = sum(@. e_pred_left * (1 - e_pred_right)) * correlation_strength / n_samples
+    correlation_penalty = sum(@. e_pred_left * (1 - e_pred_right) * correlation_strengths_batch) / n_samples
     return correlation_penalty
 end
 
 function compute_loss_including_correlations(
-    posterior_llrs::Array{3, Float32},
+    posterior_llrs::Array{Float32, 3},
     expected_recoveries::BitMatrix,
     parity_check_matrix_dual::BitMatrix,
     connectivity::Matrix{Int},
-    correlation_strength::Float32,
+    correlation_strengths::Vector{Float32},
     is_correlated::Bool
 )::Float32
     """
@@ -111,10 +113,10 @@ function compute_loss_including_correlations(
     This function combines `compute_loss_error_from_llrs` and `compute_additional_loss_from_ising_correlations`.
     """
     total_loss = 0.0f0
-    for layer in 1:size(posterior_llrs, 1)    
-        base_loss = compute_loss_error_from_llrs(posterior_llrs[layer, :, :], expected_recoveries, parity_check_matrix_dual)
+    for layer in 1:size(posterior_llrs, 3)
+        base_loss = compute_loss_error_from_llrs(posterior_llrs[:, :, layer], expected_recoveries, parity_check_matrix_dual)
         if is_correlated
-            correlation_penalty = compute_additional_loss_from_ising_correlations(posterior_llrs[layer, :, :], connectivity, expected_recoveries, correlation_strength)
+            correlation_penalty = compute_additional_loss_from_ising_correlations(posterior_llrs[:, :, layer], connectivity, expected_recoveries, correlation_strengths)
         else
             correlation_penalty = 0.0f0
         end

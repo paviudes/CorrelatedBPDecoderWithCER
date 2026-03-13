@@ -30,7 +30,7 @@ struct NeuralBPBase <: NeuralBP
 
     is_correlated::Bool
     connectivity::Matrix{Int}
-    correlation_strength::Float32
+    correlation_strengths::Vector{Float32}
     
     code_n_checks::Int
     code_n_bits::Int
@@ -67,7 +67,7 @@ struct NeuralBPBase <: NeuralBP
         initial_llrs::Vector{Float32},
         n_layers::Int;
         connectivity::Matrix{Int}=Matrix{Int}(undef, 0, 0),
-        correlation_strength::Float32=0.0f0
+        correlation_strengths::Vector{Float32}=Float32[]
     )
         """
         Construct the elements of a `NeuralBPLayer` from a given parity-check matrix.
@@ -90,6 +90,9 @@ struct NeuralBPBase <: NeuralBP
                 - 1 if H[c, v] == 1 and v == v'. 0 otherwise.
         2. Adjacency matrix from V2C to C2V (`adj_V2C_C2V`):
             This matrix has |V| x |C| rows and |V| x |C| columns.
+            So: a(m_(c->v)) = i π s_c + ∑_(v' ∈ N(c) - v) a(m_(v'->c))
+            is given by
+                a(m_(c->v)) = adj_V2C_C2V[(c,v), (v', c)] * a(m_(v'->c)) + i π s_c
             We have adj_V2C_C2V[i, j] = 
                 - define (c, v) from i
                 - define (c', v') from j
@@ -202,7 +205,7 @@ struct NeuralBPBase <: NeuralBP
             parity_check_matrix,
             is_correlated,
             connectivity,
-            correlation_strength,
+            correlation_strengths,
             code_n_checks,
             code_n_bits,
             parity_check_matrix_dual,
@@ -251,7 +254,7 @@ function add_soft_constraints_to_neuralbpbase(base::NeuralBPBase; connectivity::
         base.initial_llrs,
         base.n_layers;
         connectivity=connectivity,
-        correlation_strength=base.correlation_strength
+        correlation_strengths=base.correlation_strengths
     )
     return updated_base
 end

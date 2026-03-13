@@ -18,9 +18,9 @@ function test_neural_BP()
     n_bits = size(H, 2)
     H_dual = copy(H)  # For Hamming code, the dual is the same
     # Example syndrome
-    syndrome = [1, 0, 1]  # Indicates errors on qubits 1, 3, and 4
-    initial_llrs = log.((1 .- 0.1) ./ 0.1) .* ones(n_bits)  # Assuming an initial bit-flip probability of 0.1
-    n_iterations = 1
+    syndrome = [0, 1, 0]  # Indicates errors on qubits 1, 3, and 4
+    initial_llrs = log(9) .* ones(n_bits)  # Assuming an initial bit-flip probability of 0.1
+    n_iterations = n_layers = 1
 
     ## Run the standard BP decoder
     (final_llrs_standard_bp, _) = run_bp("SumProduct", H, 4, syndrome, initial_llrs, n_iterations)
@@ -29,20 +29,23 @@ function test_neural_BP()
     # println("--------------------------------------------------")
 
     ## Run the Neural BP decoder
-    nb_neurons_per_layer = sum(H)
-    # println("Number of neurons per layer: ", nb_neurons_per_layer)
-
-    # Explicitly define weights for testing, to be all ones since that corresponds to standard BP.
-    weights_v2c_c2v = ones(Float32, nb_neurons_per_layer, nb_neurons_per_layer)
-    weights_c2v_v2c = ones(Float32, nb_neurons_per_layer, nb_neurons_per_layer)
-    weights_c2v_readout = ones(Float32, n_bits, nb_neurons_per_layer)
-
+    
     # Initialize the NeuralBP model
-    bpnn = NeuralBP(
+    base = NeuralBPBase(
         H,
-        H_dual;
-        weights_v2c_c2v=weights_v2c_c2v,
+        H_dual,
+        convert.(Float32, initial_llrs),
+        n_layers
+    )
+    # Explicitly define weights for testing, to be all ones since that corresponds to standard BP.
+    weights_c2v_v2c = ones(Float32, base.nb_weights_c2v_v2c * n_layers)
+    weights_llrs = ones(Float32, n_bits * n_layers)
+    weights_c2v_readout = ones(Float32, base.nb_weights_c2v_readout)
+
+    bpnn = NachmaniNeuralBP(
+        base,
         weights_c2v_v2c=weights_c2v_v2c,
+        weights_llrs=weights_llrs,
         weights_c2v_readout=weights_c2v_readout
     )
     # print_neuralbp_info(bpnn)
@@ -50,11 +53,12 @@ function test_neural_BP()
     # define the batch of syndromes (in this case, just one syndrome)
     syndromes = convert.(Bool, repeat(syndrome, 1, 1))  # single sample
     # define initial LLRs batch
-    initial_llrs_batch = repeat(initial_llrs, 1, 1)  # single sample
+    initial_llrs_batch = convert.(Float32, repeat(initial_llrs, 1, 1))  # single sample
 
     # Perform `n_iterations` forward passes: this corresponds to N iterations of standard BP
     # println("Performing forward pass through the NeuralBP model on syndrome: ", syndromes[:, 1], " and with initial LLRs: ", initial_llrs_batch[:, 1], ".")
-    final_llrs_neural_bp = bpnn(initial_llrs_batch, syndromes; n_layers=n_iterations)
+    llrs_neural_bp = bpnn(initial_llrs_batch, syndromes)
+    final_llrs_neural_bp = llrs_neural_bp[:, :, n_layers]  # Get the final layer's LLRs from the 3D tensor output
 
     # Check if the final LLRs match the expected values
     println("Syndrome: ", syndrome)
@@ -78,28 +82,23 @@ function test_forward_propagation()
     prefix = "./../data/$(example_name)"
     # Read from the files `data/<example_name>/HX.txt` and `data/<example_name>/LX.txt`
     H = readdlm("$(prefix)/HX.txt", Int)
-    println("Parity-check matrix H of $(size(H))")
-    show(stdout, "text/plain", H)
-    println()
+    # println("Parity-check matrix H of $(size(H))")
+    # show(stdout, "text/plain", H)
+    # println()
     # To load the dual matrix, load the logical operators LX and append it to H to form H_dual
     logicals = readdlm("$(prefix)/LX.txt", Int)
     H_dual = vcat(H, logicals)
-    println("Dual parity-check matrix H^⟂ of size $(size(H_dual))")
-    show(stdout, "text/plain", H_dual)
-    println()
+    # println("Dual parity-check matrix H^⟂ of size $(size(H_dual))")
+    # show(stdout, "text/plain", H_dual)
+    # println()
     n_bits = size(H, 2)
     # Compute the number of neurons per layer: sum of ones in H
     nb_neurons_per_layer = sum(H)
-    println("Number of neurons per layer: ", nb_neurons_per_layer)
+    # println("Number of neurons per layer: ", nb_neurons_per_layer)
 
     # Number of layers (rounds of BP)
     n_layers = 2
     
-    # Explicitly define weights for testing, to be all ones since that corresponds to standard BP.
-    weights_v2c_c2v = ones(Float32, nb_neurons_per_layer, nb_neurons_per_layer, n_layers)
-    weights_c2v_v2c = ones(Float32, nb_neurons_per_layer, nb_neurons_per_layer, n_layers)
-    weights_c2v_readout = ones(Float32, n_bits, nb_neurons_per_layer)
-
     # Initialize the NeuralBP model
     initial_llrs = convert.(Float32, log(9)) .* ones(Float32, size(H, 2)) # Initial LLRs corresponding to p=0.1
     base = NeuralBPBase(
@@ -110,11 +109,10 @@ function test_forward_propagation()
     )
     bpnn = NachmaniNeuralBP(
         base,
-        weights_v2c_c2v=weights_v2c_c2v,
-        weights_c2v_v2c=weights_c2v_v2c,
-        weights_c2v_readout=weights_c2v_readout
+        weights_c2v_v2c=random_values_around_one([base.nb_weights_c2v_v2c * n_layers]; scale=0.01f0),
+        weights_llrs=random_values_around_one([n_bits * n_layers]; scale=0.01f0),
+        weights_c2v_readout=random_values_around_one([base.nb_weights_c2v_readout]; scale=0.01f0)
     )
-    # print_neuralbp_info(bpnn)
 
     # Define a syndrome
     syndrome = convert.(Bool, zeros(Int, size(H, 1)))
@@ -257,7 +255,7 @@ function test_training_Nachmani_BP()
     We will generate training data with a certain error probability, train the NeuralBP model, and then test it on some test syndromes.
     
     """
-    example_name = "hamming"
+    example_name = "aps_testing_data"
     prefix = "./../data/$(example_name)"
     # Define the parity-check matrix
     # Read from the files `data/neural_example/H.txt` and `data/neural_example/H_dual.txt`
@@ -267,7 +265,7 @@ function test_training_Nachmani_BP()
     H_dual = vcat(H, logicals)
     
     # generate training data
-    generate_data = true
+    generate_data = false
     if (generate_data == true)
         # Generate training data using an i.i.d error model
         n_samples = 10000
@@ -282,14 +280,17 @@ function test_training_Nachmani_BP()
     end
 
     ## Initialize the NeuralBP model
-    nb_neurons_per_layer = sum(H)
-    n_layers = 5  # Number of BP iterations / layers
+    n_bits = size(H, 2)
+    n_layers = 50  # Number of BP iterations / layers
     
     # Train the model
-    initial_llrs = convert.(Float32, log(9)) .* ones(Float32, size(H, 2)) # Initial LLRs corresponding to p=0.1
+    initial_llrs = convert.(Float32, log(9)) .* ones(Float32, n_bits) # Initial LLRs corresponding to p=0.1
 
     # Define connectivity matrix for correlated errors (for testing purposes, we can define some arbitrary pairs)
     connectivity_matrix = readdlm("$(prefix)/connectivity_matrix.txt", Int)
+
+    # Define the correlation strengths
+    correlation_strengths = readdlm("$(prefix)/correlated_weights_p_0.025_q_0.7.txt", Float32) |> vec
 
     # Explicitly define weights associated to computing the messages from V2C to C2V, since we don't want to run into DomainError issues with atanh during training.
     base = NeuralBPBase(
@@ -298,27 +299,27 @@ function test_training_Nachmani_BP()
         initial_llrs,
         n_layers;
         connectivity=connectivity_matrix,
-        correlation_strength=0.5f0,
+        correlation_strengths=correlation_strengths,
     )
     bpnn = NachmaniNeuralBP(
         base,
-        weights_v2c_c2v=random_values_around_one([base.nb_weights_v2c_c2v * n_layers]; scale=0.01f0),
         weights_c2v_v2c=random_values_around_one([base.nb_weights_c2v_v2c * n_layers]; scale=0.01f0),
+        weights_llrs=random_values_around_one([n_bits * n_layers]; scale=0.01f0),
         weights_c2v_readout=random_values_around_one([base.nb_weights_c2v_readout]; scale=0.01f0)
     )
     # print_neuralbp_info(bpnn)
 
-    println("Going to train the Nachmani Neural BP model with $(base.nb_weights_v2c_c2v * n_layers + base.nb_weights_c2v_v2c * n_layers + base.nb_weights_c2v_readout) weights.")
+    println("Going to train the Nachmani Neural BP model with $(base.nb_weights_c2v_v2c * n_layers + base.code_n_bits * n_layers + base.nb_weights_c2v_readout) weights.")
 
-    train_neuralbp!(bpnn, training_syndromes, expected_recoveries; n_epochs=1, batch_size=2)
+    train_neuralbp!(bpnn, training_syndromes, expected_recoveries; n_epochs=1, batch_size=32)
 
     # Debugging purpose: check if any element of the weights is NaN or `null`
-    if any(isnan.(bpnn.weights_v2c_c2v)) || any(isnan.(bpnn.weights_c2v_v2c)) || any(isnan.(bpnn.weights_c2v_readout))
+    if any(isnan.(bpnn.weights_c2v_v2c)) || any(isnan.(bpnn.weights_llrs)) || any(isnan.(bpnn.weights_c2v_readout))
         error("Trained weights contain NaN values. Please check the training process.")
     end
 
     # Test the model
-    test_error_patterns = convert.(Bool, readdlm("$(prefix)/test_error_patterns_Z_th_0.995_nb_flip_0.01.txt", Int))
+    test_error_patterns = convert.(Bool, readdlm("$(prefix)/testing_ballistic_p_0.01_q_0.50.txt", Int))
     println("Test error patterns shape: ", size(test_error_patterns))
     test_syndromes = convert.(Bool, mod.(H * test_error_patterns, 2))
     println("Test syndromes shape: ", size(test_syndromes))
@@ -327,7 +328,7 @@ function test_training_Nachmani_BP()
     # println("Predicted recoveries for test syndromes:", predicted_recoveries)
 
     # Check if the predicted recoveries match the expected recoveries
-    is_correct = check_bp_solutions(convert.(Int, H), test_error_patterns, convert.(Bool, predicted_recoveries))
+    is_correct = check_bp_solutions(convert.(Int, H), test_error_patterns, predicted_recoveries)
     # println("Do the predicted recoveries match the expected recoveries? ", is_correct)
     println("Out of ", size(test_error_patterns, 2), " test samples, ", sum(is_correct), " were correctly decoded.")
 end

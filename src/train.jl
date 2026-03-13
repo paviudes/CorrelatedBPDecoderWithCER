@@ -66,7 +66,7 @@ function train_neuralbp!(
                     expected_recoveries_batch,
                     bpnn.base.parity_check_matrix_dual,
                     bpnn.base.connectivity,
-                    bpnn.base.correlation_strength,
+                    bpnn.base.correlation_strengths,
                     bpnn.base.is_correlated #TODO: set explicitly to `false` for excluding correlations
                 )
             end

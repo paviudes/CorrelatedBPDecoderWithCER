@@ -1,4 +1,4 @@
-function predict_neuralbp(bpnn::NeuralBP, syndromes::BitMatrix)::BitMatrix
+function predict_neuralbp(bpnn::NeuralBP, syndromes::BitMatrix)::Array{Bool, 3}
     """
     Predict the recoveries for the given syndromes using the trained NeuralBP model.
     Arguments:
@@ -16,7 +16,7 @@ function predict_neuralbp(bpnn::NeuralBP, syndromes::BitMatrix)::BitMatrix
     return predicted_recoveries
 end
 
-function check_bp_solutions(parity_check_matrix_dual::Matrix{Int}, errors::BitMatrix, proposed_recoveries::Array{3, Bool})::BitVector
+function check_bp_solutions(parity_check_matrix_dual::Matrix{Int}, errors::BitMatrix, proposed_recoveries::Array{Bool, 3})::BitVector
     """
     Check if the provided recoveries correctly fix the errors according to the parity-check matrix.
     Arguments:
@@ -30,18 +30,26 @@ function check_bp_solutions(parity_check_matrix_dual::Matrix{Int}, errors::BitMa
     We check if the recovery at any of the intermediate layers correctly fixes the error, since the final layer's LLRs might not always be the best predictor.
     """
     n_samples = size(errors, 2)
-    is_correct = BitVector(undef, n_samples)
-
+    is_correct = falses(n_samples)
+    total_fails = 0
+    
+    # Make a progress bar
+    progress = Progress(n_samples, desc="Checking BP solutions: ")
     for i in 1:n_samples
         error_pattern = errors[:, i]
         # Check if any of the proposed recoveries from the layers correctly fixes the error
-        is_correct[i] = any(1:size(proposed_recoveries, 1)) do layer
-            recovery_pattern = proposed_recoveries[layer, :, i]
-            corrected_error = error_pattern .⊻ recovery_pattern
-            syndrome_check = mod.(parity_check_matrix_dual * corrected_error, 2)
-            expected_syndrome = zeros(Bool, size(parity_check_matrix_dual, 1))
-            return syndrome_check == expected_syndrome
+        for layer in 1:size(proposed_recoveries, 3)
+            proposed_recovery = proposed_recoveries[:, i, layer]
+            # Check if the proposed recovery correctly fixes the error
+            if mod.(parity_check_matrix_dual * (error_pattern .⊻ proposed_recovery), 2) == zeros(Bool, size(parity_check_matrix_dual, 1))
+                is_correct[i] = true
+                break
+            end
         end
+        if !is_correct[i]
+            total_fails += 1
+        end
+        next!(progress, showvalues = [(:Fails, total_fails)])
     end
     return is_correct
 end
