@@ -57,14 +57,14 @@ function main()
         0.001:0.001:0.005,
         0.3:0.04:0.66,
         10;
-        codename = "aps_7q_Hamm_code_data",
-        n_hidden_layers = 100,
+        codename = "aps_15q_Hamm_code_data",
+        n_hidden_layers = 50,
         n_epochs = 5,
         batch_size = 2,
         retrain = false,
         julia_project = "./../",
-        commands_file = "./../data/aps_7q_Hamm_code_data/commands.txt",
-        results_file = "./../data/aps_7q_Hamm_code_data/simulation_results.json",
+        commands_file = "./../data/aps_15q_Hamm_code_data/commands.txt",
+        results_file = "./../data/aps_15q_Hamm_code_data/simulation_results.json",
         ncpus = 56
     )
 end
