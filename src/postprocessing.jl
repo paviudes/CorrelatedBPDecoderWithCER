@@ -41,7 +41,7 @@ struct DecoderStatistics
     end
 end
 
-function record_decoder_statistics(stats::DecoderStatistics)
+function record_decoder_statistics(stats::DecoderStatistics, output_filename::String="./../data/decoder_statistics.csv")::String
     """
     Print the statistics in a JSON format so that they can be easily printed into a file using GNU `parallel`.
     """
@@ -49,6 +49,11 @@ function record_decoder_statistics(stats::DecoderStatistics)
         name => getfield(stats, name) for name in fieldnames(DecoderStatistics)
     )
     println(JSON.json(stats_dict)) # Ensure a newline after the JSON object
+    
+    # Save the statistics to a CSV file
+    stats_dataframe = DataFrame(stats_dict)
+    CSV.write(output_filename, stats_dataframe)
+    return output_filename
 end
 
 """
