@@ -54,17 +54,17 @@ end
 
 function main()
     generate_parallel_commands(
-        0.001:0.001:0.002,
-        0.3:0.04:0.34,
-        2;
+        0.001:0.001:0.005,
+        0.3:0.04:0.66,
+        10;
         codename = "aps_7q_Hamm_code_data",
-        n_hidden_layers = 2,
+        n_hidden_layers = 100,
         n_epochs = 5,
         batch_size = 2,
         retrain = false,
         julia_project = "./../",
         commands_file = "./../data/aps_7q_Hamm_code_data/commands.txt",
         results_file = "./../data/aps_7q_Hamm_code_data/simulation_results.json",
-        ncpus = 1
+        ncpus = 56
     )
 end
