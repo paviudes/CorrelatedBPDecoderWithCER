@@ -399,7 +399,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     training_errors_file = "$(prefix)/training_data/$(args_dict["train"])"
     n_samples = args_dict["n_samples"]
     retrain = args_dict["retrain"]
-    
+
     # Train the Neural BP model
     start = time()
     bpnn = train_Nachmani_neuralbp(
@@ -441,6 +441,9 @@ if abspath(PROGRAM_FILE) == @__FILE__
 
     # Print the statistics in JSON format to shell.
     # The filename to save the results is:
-    results_file = "./../data/$(args_dict["codename"])/simulation_results_$(test_errors_file)_nlayers_$(n_hidden_layers)_epochs_$(n_epochs)_trained_using_$(args_dict["train"]).json"
+    # extract the name of the test and training files without the path and extension to include in the results file name.
+    test_errors_file_name = splitext(basename(test_errors_file))[1]
+    train_errors_file_name = splitext(basename(training_errors_file))[1]
+    results_file = "./../data/$(args_dict["codename"])/results/simulation_results_$(test_errors_file_name)_nlayers_$(n_hidden_layers)_epochs_$(n_epochs)_trained_using_$(train_errors_file_name).csv"
     record_decoder_statistics(stats, results_file)
 end
