@@ -10,12 +10,14 @@ struct NachmaniNeuralBP <: NeuralBP
     weights_c2v_v2c::Vector{Float32}
     weights_llrs::Vector{Float32}
     weights_c2v_readout::Vector{Float32}
+    weights_loss_layers::Vector{Float32}
 
     function NachmaniNeuralBP(
         base::NeuralBPBase;
         weights_c2v_v2c::Vector{Float32}=Vector{Float32}(undef, 0),
         weights_llrs::Vector{Float32}=Vector{Float32}(undef, 0),
-        weights_c2v_readout::Vector{Float32}=Vector{Float32}(undef, 0)
+        weights_c2v_readout::Vector{Float32}=Vector{Float32}(undef, 0),
+        weights_loss_layers::Vector{Float32}=Vector{Float32}(undef, 0)
     )
         """
         Define the NeuralBP model.
@@ -23,6 +25,7 @@ struct NachmaniNeuralBP <: NeuralBP
         1. Weights for the connections from C2V to V2C: `weights_c2v_v2c`
         2. Weights for the connections from C2V to V2C: `weights_llrs`
         3. Weights for the connections from C2V to readout: `weights_c2v_readout`
+        4. Weights for the loss at each layer: `weights_loss_layers`
 
         """
         # We will initialize the learnable parameters to Gaussian random values, if they are not explicitly provided.
@@ -35,13 +38,17 @@ struct NachmaniNeuralBP <: NeuralBP
         if (size(weights_c2v_readout, 1) == 0)
             weights_c2v_readout = randn(Float32, base.nb_weights_c2v_readout)
         end
+        if (size(weights_loss_layers, 1) == 0)
+            weights_loss_layers = randn(Float32, base.n_layers)
+        end
 
         return new(
             base,
             # learnable_parameters,
             weights_c2v_v2c,
             weights_llrs,
-            weights_c2v_readout
+            weights_c2v_readout,
+            weights_loss_layers
         )
     end
 
@@ -50,19 +57,21 @@ struct NachmaniNeuralBP <: NeuralBP
         base::NeuralBPBase,
         weights_c2v_v2c::Vector{Float32},
         weights_llrs::Vector{Float32},
-        weights_c2v_readout::Vector{Float32}
+        weights_c2v_readout::Vector{Float32},
+        weights_loss_layers::Vector{Float32}
     )
         return new(
             base,
             weights_c2v_v2c,
             weights_llrs,
-            weights_c2v_readout
+            weights_c2v_readout,
+            weights_loss_layers
         )
     end
 end
 
 # Make NeuralBP work with Functors by only making the weight matrices children
-@functor NachmaniNeuralBP (weights_c2v_v2c, weights_llrs, weights_c2v_readout)
+@functor NachmaniNeuralBP (weights_c2v_v2c, weights_llrs, weights_c2v_readout, weights_loss_layers)
 
 function (bpnn::NachmaniNeuralBP)(initial_llrs_batch::AbstractMatrix{<:Real}, syndromes_batch::BitMatrix)::Array{Float32, 3}
     """

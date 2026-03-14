@@ -80,7 +80,7 @@ export parse_command_line_args_BP, parse_command_line_args_NN, print_arguments, 
 
 # Neural belief propagation
 include("neuralbase.jl")
-export NeuralBPBase, NeuralBP, add_soft_constraints_to_neuralbpbase
+export NeuralBPBase, NeuralBP, add_soft_constraints_to_neuralbpbase, parse_correlation_strengths_connectivity
 
 # Standard Neural BP model
 include("standardbp.jl")

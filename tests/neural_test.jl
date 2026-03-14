@@ -305,16 +305,17 @@ function test_training_Nachmani_BP()
         base,
         weights_c2v_v2c=random_values_around_one([base.nb_weights_c2v_v2c * n_layers]; scale=0.01f0),
         weights_llrs=random_values_around_one([n_bits * n_layers]; scale=0.01f0),
-        weights_c2v_readout=random_values_around_one([base.nb_weights_c2v_readout]; scale=0.01f0)
+        weights_c2v_readout=random_values_around_one([base.nb_weights_c2v_readout]; scale=0.01f0),
+        weights_loss_layers=random_values_around_one([n_layers]; scale=0.01f0)
     )
     # print_neuralbp_info(bpnn)
 
-    println("Going to train the Nachmani Neural BP model with $(base.nb_weights_c2v_v2c * n_layers + base.code_n_bits * n_layers + base.nb_weights_c2v_readout) weights.")
+    println("Going to train the Nachmani Neural BP model with $(base.nb_weights_c2v_v2c * n_layers + base.code_n_bits * n_layers + base.nb_weights_c2v_readout + n_layers) weights.")
 
-    train_neuralbp!(bpnn, training_syndromes, expected_recoveries; n_epochs=1, batch_size=32)
+    train_neuralbp!(bpnn, training_syndromes, expected_recoveries; n_epochs=1, batch_size=2)
 
     # Debugging purpose: check if any element of the weights is NaN or `null`
-    if any(isnan.(bpnn.weights_c2v_v2c)) || any(isnan.(bpnn.weights_llrs)) || any(isnan.(bpnn.weights_c2v_readout))
+    if any(isnan.(bpnn.weights_c2v_v2c)) || any(isnan.(bpnn.weights_llrs)) || any(isnan.(bpnn.weights_c2v_readout)) || any(isnan.(bpnn.weights_loss_layers))
         error("Trained weights contain NaN values. Please check the training process.")
     end
 

@@ -3,9 +3,10 @@ function load_trained_weights(weights_filename::String)::Dict{String, Any}
     Load the trained weights from a file.
     The file should contain the weights that specify the forward pass of the NeuralBP model.
     These weights are:
-    1. weights_v2c_c2v
-    2. weights_c2v_v2c
+    1. weights_c2v_v2c
+    2. weights_llrs
     3. weights_c2v_readout
+    4. weights_loss_layers
     They will be stored in a dictionary with the corresponding keys. The values will be vectorized versions of the weight matrices.
     """
     # Load the weights from the file
@@ -15,19 +16,23 @@ function load_trained_weights(weights_filename::String)::Dict{String, Any}
     
     formatted_weights = Dict{String, Any}()
     
-    weights_v2c_c2v = Float32.(weights_data["weights_v2c_c2v"])
-    formatted_weights["weights_v2c_c2v"] = weights_v2c_c2v
-    
     weights_c2v_v2c = Float32.(weights_data["weights_c2v_v2c"])
     formatted_weights["weights_c2v_v2c"] = weights_c2v_v2c
+
+    weights_llrs = Float32.(weights_data["weights_llrs"])
+    formatted_weights["weights_llrs"] = weights_llrs
     
     weights_c2v_readout = Float32.(weights_data["weights_c2v_readout"])
     formatted_weights["weights_c2v_readout"] = weights_c2v_readout
+
+    weights_loss_layers = Float32.(weights_data["weights_loss_layers"])
+    formatted_weights["weights_loss_layers"] = weights_loss_layers
     
     close(fp)
     return formatted_weights
 end
 
+#=
 function extract_weights_for_BP(bpnn::StandardNeuralBP)::Tuple{
     Dict{Tuple{Int, Int, Int, Int}, Float32}, 
     Dict{Tuple{Int, Int, Int, Int}, Float32}, 
@@ -165,24 +170,33 @@ function save_extracted_weights_for_BP(prefix::String, bpnn::StandardNeuralBP)
     Save the extracted weights for Belief Propagation to a file.
     The file will contain the weights that specify the forward pass of the NeuralBP model.
     These weights are:
-    1. weights_v2c_c2v
-    2. weights_c2v_v2c
+    1. weights_c2v_v2c
+    2. weights_llrs
     3. weights_c2v_readout
-    They will be stored in separate files where (1) and (2) will be stored as lists of dictionaries (one dictionary per layer), and (3) will be stored as a single dictionary.
+    4. weights_loss_layers
+    They will be stored in separate files where (1) and (2) will be stored as lists of dictionaries (one dictionary per layer), and (3) and (4) will be stored as a single dictionary.
     """
     (weighted_BP_messages_v2c_c2v_layers, weighted_BP_messages_c2v_v2c_layers, weighted_BP_messages_c2v_readout) = extract_weights_for_BP(bpnn)
-    # Save the weights from V2C to C2V
-    fp_v2c_c2v = open("$(prefix)_weights_v2c_c2v.json", "w")
-    JSON.print(fp_v2c_c2v, weighted_BP_messages_v2c_c2v_layers)
-    close(fp_v2c_c2v)
+    
     # Save the weights from C2V to V2C
     fp_c2v_v2c = open("$(prefix)_weights_c2v_v2c.json", "w")
     JSON.print(fp_c2v_v2c, weighted_BP_messages_c2v_v2c_layers)
     close(fp_c2v_v2c)
+    
+    # Save the weights for the LLRs
+    fp_llrs = open("$(prefix)_weights_llrs.json", "w")
+    JSON.print(fp_llrs, bpnn.weights_llrs)
+    close(fp_llrs)
+    
     # Save the weights from C2V to readout
     fp_c2v_readout = open("$(prefix)_weights_c2v_readout.json", "w")
     JSON.print(fp_c2v_readout, weighted_BP_messages_c2v_readout)
     close(fp_c2v_readout)
+
+    # Save the weights for the loss layers
+    fp_loss_layers = open("$(prefix)_weights_loss_layers.json", "w")
+    JSON.print(fp_loss_layers, bpnn.weights_loss_layers)
+    close(fp_loss_layers)
 end
 
 function save_extracted_weights_for_BP(prefix::String, bpnn::NachmaniNeuralBP)
@@ -243,3 +257,4 @@ function load_extracted_weights_for_BP(prefix::String, n_layers::Int)
     close(fp_c2v_readout)
     return (weighted_BP_messages_v2c_c2v_layers, weighted_BP_messages_c2v_v2c_layers, weighted_BP_messages_c2v_readout)
 end
+=#

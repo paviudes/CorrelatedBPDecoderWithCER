@@ -232,29 +232,40 @@ struct NeuralBPBase <: NeuralBP
     end
 end
 
-function add_soft_constraints_to_neuralbpbase(base::NeuralBPBase; connectivity::Matrix{Int}=base.connectivity)::NeuralBPBase
+function parse_correlation_strengths_connectivity(correlation_strengths_file::String)::Tuple{Matrix{Int}, Vector{Float32}}
     """
-    Create a new NeuralBPBase with updated connectivity for soft constraints.
-    We will define a matrix that can be augmented to the parity-check matrix, which encodes the soft constraints.
-    The new matrix M is defined as follows.
-    - For each pair of variable nodes (i, j) that are connected in the connectivity matrix, we add a row to M with 1s in columns i and j, and 0s elsewhere.
+    Parse the correlation strengths and connectivity from a file.
+    The file should contain one line to describe an edge between two qubits, and a weight for that edge.
+    For instance, here are a few lines of the file:
+    (1, 29) : 0.005851149427861176
+    (1, 2) : 0.0063269667097774155
+    (1, 30) : 0.006204408265565164
+    (2, 3) : 0.006110318845201687
+    (2, 1) : 0.0063269667097774155
+    (2, 31) : 0.005576402801319799
+    (3, 2) : 0.006110318845201688
+
+    We need to parse this file to extract the connectivity matrix and the correlation strengths vector.
+    The connectivity matrix is a two-column matrix where each row corresponds to an edge between two qubits.
+    The correlation strengths vector is a vector where each element corresponds to the weight of the edge between the two qubits.
     """
-    n_connected_pairs = size(connectivity, 1)
-    connectivity_parity_check_matrix = zeros(Bool, n_connected_pairs, base.code_n_bits)
-    for pair_index in 1:n_connected_pairs
-        (v1, v2) = (connectivity[pair_index, 1], connectivity[pair_index, 2])
-        connectivity_parity_check_matrix[pair_index, v1] = 1
-        connectivity_parity_check_matrix[pair_index, v2] = 1
+    connectivity = Vector{Tuple{Int, Int}}(undef, 0)
+    correlation_strengths = Vector{Float32}(undef, 0)
+    open(correlation_strengths_file, "r") do io
+        for line in eachline(io)
+            # Parse the line to extract the qubits and the correlation strength.
+            # The line is of the form "(1, 29) : 0.005851149427861176"
+            # We can use a regular expression to extract the qubits and the correlation strength.
+            m = match(r"\((\d+), (\d+)\) : ([\d\.]+)", line)
+            if m !== nothing
+                qubit1 = parse(Int, m.captures[1])
+                qubit2 = parse(Int, m.captures[2])
+                strength = parse(Float32, m.captures[3])
+                push!(connectivity, (qubit1, qubit2))
+                push!(correlation_strengths, strength)
+            end
+        end
     end
-    updated_parity_check_matrix = vcat(base.parity_check_matrix, connectivity_parity_check_matrix)
-    # Define a new NeuralBPBase with the updated parity-check matrix
-    updated_base = NeuralBPBase(
-        updated_parity_check_matrix,
-        base.parity_check_matrix_dual,
-        base.initial_llrs,
-        base.n_layers;
-        connectivity=connectivity,
-        correlation_strengths=base.correlation_strengths
-    )
-    return updated_base
+    connectivity_matrix = hcat([c[1] for c in connectivity], [c[2] for c in connectivity])
+    return connectivity_matrix, correlation_strengths
 end

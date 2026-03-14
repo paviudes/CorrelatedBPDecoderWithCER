@@ -55,8 +55,15 @@ function train_neuralbp!(
     for epoch in 1:n_epochs
         # Create progress bar for batches within each epoch
         batch_progress = Progress(length(training_dataset), desc="Epoch $epoch Batches: ")
-        
-        for (syndromes_train_batch, expected_recoveries_batch, llrs_batch) in training_dataset
+
+        for b in 1:length(training_dataset)
+            # Create a random shuffle ordering of the syndromes and recoveries for each batch.
+            shuffled_indices = randperm(size(training_dataset[b][1], 2))
+
+            syndromes_train_batch = training_dataset[b][1][:, shuffled_indices]
+            expected_recoveries_batch = training_dataset[b][2][:, shuffled_indices]
+            llrs_batch = training_dataset[b][3][:, shuffled_indices]
+                
             # compute loss and gradients in one shot
             loss, grads = Flux.withgradient(bpnn) do model
                 posterior_llrs = model(llrs_batch, syndromes_train_batch)
@@ -67,7 +74,8 @@ function train_neuralbp!(
                     bpnn.base.parity_check_matrix_dual,
                     bpnn.base.connectivity,
                     bpnn.base.correlation_strengths,
-                    bpnn.base.is_correlated #TODO: set explicitly to `false` for excluding correlations
+                    bpnn.base.is_correlated, #TODO: set explicitly to `false` for excluding correlations
+                    bpnn.weights_loss_layers
                 )
             end
             # apply update. grads[1] contains gradients for the model

@@ -106,7 +106,8 @@ function compute_loss_including_correlations(
     parity_check_matrix_dual::BitMatrix,
     connectivity::Matrix{Int},
     correlation_strengths::Vector{Float32},
-    is_correlated::Bool
+    is_correlated::Bool,
+    weights_loss_layers::Vector{Float32}
 )::Float32
     """
     Compute the total Loss function including the correlation penalty.
@@ -120,7 +121,8 @@ function compute_loss_including_correlations(
         else
             correlation_penalty = 0.0f0
         end
-        total_loss += base_loss + correlation_penalty
+        loss_per_layer = base_loss + correlation_penalty
+        total_loss += loss_per_layer * sigmoid(weights_loss_layers[layer])
     end
     return total_loss
 end
