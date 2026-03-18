@@ -38,6 +38,7 @@ function check_bp_solutions(parity_check_matrix_dual::Matrix{Int}, errors::BitMa
     for i in 1:n_samples
         error_pattern = errors[:, i]
         # Check if any of the proposed recoveries from the layers correctly fixes the error
+        #=
         for layer in 1:size(proposed_recoveries, 3)
             proposed_recovery = proposed_recoveries[:, i, layer]
             # Check if the proposed recovery correctly fixes the error
@@ -46,7 +47,11 @@ function check_bp_solutions(parity_check_matrix_dual::Matrix{Int}, errors::BitMa
                 break
             end
         end
-        if !is_correct[i]
+        =#
+        # Do: H * (error ⊻ recovery) mod 2 == 0, and check if any column has all zeros, i.e. sums to zero.
+        if any(sum(mod.(parity_check_matrix_dual * (error_pattern .⊻ proposed_recoveries[:, i, :]), 2), dims=1) .== 0)
+            is_correct[i] = true
+        else
             total_fails += 1
         end
         next!(progress, showvalues = [(:Fails, total_fails)])

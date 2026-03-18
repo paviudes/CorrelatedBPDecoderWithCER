@@ -1,3 +1,5 @@
+using CSV
+using DataFrames
 using DelimitedFiles
 using CorrelatedBPDecoderWithCER
 
@@ -338,11 +340,15 @@ function neuralbp_test_predictions(bpnn::NeuralBP, test_errors_file::String)::Bi
     """
     test_errors = convert.(Bool, readdlm(test_errors_file, Int))
     test_syndromes = convert.(Bool, mod.(bpnn.base.parity_check_matrix * test_errors, 2))
+    start = time()
     predicted_recoveries = predict_neuralbp(bpnn, test_syndromes)
-    
+    runtime = time() - start
+    println("[", runtime, "s] elapsed. Predicted recoveries computed.")
     # Check if the predicted recoveries match the expected recoveries
     is_correct = check_bp_solutions(convert.(Int, bpnn.base.parity_check_matrix), test_errors, predicted_recoveries)
     #TODO: Save a report of the testing to a file. The file name should start with `testing_report_`
+    runtime = time() - start
+    println("[", runtime, "s] elapsed. Recoveries verified.")
     
     # println("Out of ", size(test_errors, 2), " test samples, ", sum(is_correct), " were correctly decoded.")
     return is_correct
@@ -358,6 +364,46 @@ function postprocess_neuralbp_results(summary_json_file::String; output_csv_file
     # Save the decoder statistics to a CSV file
     output_csv_file = save_decoder_dataframe(decoder_stats, output_csv_file)
     return output_csv_file
+end
+
+function collect_results()
+    """
+    Collect results from the Neural BP experiments and save them to a CSV file.
+    """
+    per_qubit_error_probs = 0.001:0.001:0.005
+    neighbour_error_probs = 0.3:0.04:0.66
+    n_samples = 10
+    codename = "aps_7q_Hamm_code_data"
+    prefix = "./../data/$(codename)"
+    n_hidden_layers = 100
+    n_epochs = 5
+
+    # Collect results for the Neural BP decoder. If the results file already exists, load it instead of re-computing.
+    output_csv_file_neural = "$(prefix)/results/decoder_statistics_ballistic.csv"
+    if (isfile(output_csv_file_neural))
+        # Load the dataframe from the existing CSV file
+        neuralbp_results = CSV.read(output_csv_file_neural, DataFrame)
+    else
+        neuralbp_results = collect_decoder_statistics_for_ballistic_data(per_qubit_error_probs, neighbour_error_probs, n_samples, n_hidden_layers, n_epochs; prefix=prefix)
+        save_decoder_dataframe(neuralbp_results, output_csv_file_neural)
+        println("Decoder statistics saved to file: $output_csv_file_neural")
+    end
+
+    # Collect results for the standard decoder. If the results file already exists, load it instead of re-computing.
+    output_csv_file_standard = "$(prefix)/results/standard_decoder_statistics_ballistic.csv"
+    if (isfile(output_csv_file_standard))
+        # Load the dataframe from the existing CSV file
+        standardbp_results = CSV.read(output_csv_file_standard, DataFrame)
+    else
+        standardbp_results = collect_standard_decoder_statistics_for_ballistic_data(prefix)
+        save_decoder_dataframe(standardbp_results, output_csv_file_standard)
+        println("Standard decoder statistics saved to file: $output_csv_file_standard")
+    end
+
+    # Plot results for the neural BP decoder
+    plot_statistics_for_ballistic_error_model(neuralbp_results, per_qubit_error_probs, neighbour_error_probs; prefix="$(prefix)/plots", data_to_compare=standardbp_results)
+    
+    return nothing
 end
 
 # Run the main function if this script is executed directly
@@ -415,8 +461,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
         prefix=prefix,
         retrain=retrain
     )
-    runtime = time() - start
-
+    
     # Test the Neural BP model predictions
     test_errors_file = "$(prefix)/testing_data/$(args_dict["test"])"
     is_correct = neuralbp_test_predictions(bpnn, test_errors_file)
@@ -424,6 +469,8 @@ if abspath(PROGRAM_FILE) == @__FILE__
 
     println("Out of ", size(is_correct), " test samples, ", sum(is_correct), " were correctly decoded.")
 
+    runtime = time() - start
+    
     # Load the results on to the `DecoderStatistics` structure.
     average_correlation_strength = Float64(sum(correlation_strengths) / length(correlation_strengths))
     stats = DecoderStatistics(

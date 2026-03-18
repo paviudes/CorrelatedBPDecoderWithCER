@@ -17,6 +17,7 @@ using ProgressMeter     # Progress bars for training and other long operations
 
 # Data manipulation and analysis
 using DataFrames        # Tabular data structures for decoder statistics
+using Statistics        # Statistical functions for analyzing decoder performance
 
 # Visualization
 using Plots             # Plotting decoder performance and error rates
@@ -53,7 +54,7 @@ export ErrorModel, IIDErrorModel, sample_error, print_error_model_info,
 include("postprocessing.jl")
 export DecoderStatistics, collect_decoder_statistics, save_decoder_dataframe, 
        check_valid_fields_DecoderStatistics, record_decoder_statistics, 
-       extract_collected_data
+       extract_collected_data, collect_decoder_statistics_for_ballistic_data, collect_standard_decoder_statistics_for_ballistic_data
 
 # Visualization and plotting
 include("plot.jl")
@@ -118,7 +119,7 @@ export predict_neuralbp, check_bp_solutions
 
 # Utility functions
 include("utils.jl")
-export safe_atanh_exp, safe_log_tanh, random_values_around_one
+export safe_atanh_exp, safe_log_tanh, random_values_around_one, compute_std_assuming_bernoulli
 
 #===============================================================================
                                END OF MODULE

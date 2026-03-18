@@ -50,11 +50,11 @@ function train_neuralbp!(
     opt_state = Flux.setup(optimizer, bpnn)  # create optimiser state (tune lr as needed)
 
     # Create progress bar for epochs
-    # epoch_progress = Progress(n_epochs, desc="Training Epochs: ")
+    epoch_progress = Progress(n_epochs, desc="Training Epochs: ")
     
     for epoch in 1:n_epochs
         # Create progress bar for batches within each epoch
-        # batch_progress = Progress(length(training_dataset), desc="Epoch $epoch Batches: ")
+        batch_progress = Progress(length(training_dataset), desc="Epoch $epoch Batches: ")
 
         for b in 1:length(training_dataset)
             # Create a random shuffle ordering of the syndromes and recoveries for each batch.
@@ -82,11 +82,11 @@ function train_neuralbp!(
             Flux.update!(opt_state, bpnn, grads[1])
             
             # Update batch progress bar with current loss
-            # ProgressMeter.next!(batch_progress; showvalues = [(:loss, loss)])
+            ProgressMeter.next!(batch_progress; showvalues = [(:loss, loss)])
         end
         
         # Update epoch progress bar
-        # ProgressMeter.next!(epoch_progress)
+        ProgressMeter.next!(epoch_progress)
     end
 end
 

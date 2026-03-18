@@ -88,6 +88,7 @@ function compute_additional_loss_from_ising_correlations(posterior_llrs::Matrix{
         L_total(μ) = L(μ, e) + λ .* ( σ(μ(connectivity[:,1]]) - σ(μ[connectivity[:,1]]) .* σ(μ[connectivity[:,2]]) )
     """
     n_samples = size(expected_recoveries, 2)
+    n_edges = size(connectivity, 1)
     correlation_strengths_batch = repeat(correlation_strengths, 1, n_samples)
     # println("correlation_strengths_batch of shape: ", size(correlation_strengths_batch))
     # Compute the predicted errors from the left part of the connectivity matrix
@@ -96,7 +97,7 @@ function compute_additional_loss_from_ising_correlations(posterior_llrs::Matrix{
     # Compute the correlation penalty term
     # correlation_penalty_matrix = e_pred_left .- (e_pred_left .* e_pred_right)
     # correlation_penalty = sum(correlation_penalty_matrix) * correlation_strength / n_samples
-    correlation_penalty = sum(@. e_pred_left * (1 - e_pred_right) * correlation_strengths_batch) / n_samples
+    correlation_penalty = sum(@. e_pred_left * (1 - e_pred_right) * correlation_strengths_batch) / (n_samples * n_edges)
     return correlation_penalty
 end
 
