@@ -6,6 +6,7 @@ function random_values_around_one(size::Vector{Int}; scale::Float32=0.01f0)::Arr
     return ones(Float32, size...) .+ scale .* (2 .* rand(Float32, size...) .- 1)
 end
 
+#=
 # Define safe versions of atanh(exp(x)) and log(tanh(x/2)) to avoid numerical issues.
 function safe_atanh_exp(x::Matrix{ComplexF32})::Matrix{Float32}
     """
@@ -31,6 +32,92 @@ function safe_log_tanh(x::Matrix{Float32})::Matrix{ComplexF32}
     """
     clipped_tanh = clamp.(tanh.(abs.(x) ./ 2), eps(Float32), 1.0f0 - eps(Float32))
     return log.(clipped_tanh) .+ im * Float32(π) * (x .< 0)
+end
+=#
+
+function safe_log_tanh!(
+    out::AbstractMatrix{ComplexF32},
+    x::AbstractMatrix{Float32}
+)
+    """
+    Compute log(tanh(x/2)) safely, avoiding numerical issues, in-place.
+
+    If x is negative, we add i π to log(tanh(|x|/2)), i.e.,
+        log(tanh(x/2)) = log(tanh(|x|/2)) + i π * 1_{x < 0}.
+
+    For large |x|, tanh(x/2) ≈ 1 ⇒ log(tanh(x/2)) ≈ 0.
+    For small |x|, tanh(x/2) ≈ 0 ⇒ log(tanh(x/2)) → -∞.
+
+    We clip tanh(|x|/2) to avoid numerical issues near 0 and 1.
+    """
+
+    @inbounds @simd for i in eachindex(x)
+        xi = x[i]
+
+        # magnitude part: tanh(|x|/2)
+        t = tanh(abs(xi) * 0.5f0)
+
+        # clip to avoid numerical issues
+        t = ifelse(t < eps(Float32), eps(Float32),
+            ifelse(t > 1.0f0 - eps(Float32), 1.0f0 - eps(Float32), t)
+        )
+
+        # real part
+        real_part = log(t)
+
+        # imaginary part: iπ if x < 0
+        imag_part = xi < 0f0 ? Float32(π) : 0f0
+
+        out[i] = ComplexF32(real_part, imag_part)
+    end
+
+    return nothing
+end
+
+function safe_atanh_exp!(
+    out::AbstractMatrix{Float32},
+    x::AbstractMatrix{ComplexF32}
+)
+    """
+    Compute 2 * atanh(exp(x)) safely, avoiding numerical issues, in-place.
+
+    We assume x is of the form:
+        x = a + i π b
+    where a ∈ ℝ and b ∈ ℤ.
+
+    Then:
+        exp(x) = exp(a) * exp(i π b) = exp(a) * (-1)^b.
+
+    So we:
+    - extract a = real(x)
+    - extract parity of b from imag(x)/π
+    - compute exp(a), clip it, and apply sign (-1)^b
+    - finally compute 2 * atanh(...)
+    """
+
+    @inbounds @simd for i in eachindex(x)
+        xi = x[i]
+
+        # real part
+        a = real(xi)
+
+        # compute exp(a) and clip
+        e = exp(a)
+        e = ifelse(e < eps(Float32), eps(Float32),
+            ifelse(e > 1.0f0 - eps(Float32), 1.0f0 - eps(Float32), e)
+        )
+
+        # extract parity of b from imag(x) ≈ π * b
+        b = Int(round(imag(xi) / Float32(π)))
+
+        # apply (-1)^b efficiently
+        e = isodd(b) ? -e : e
+
+        # final output
+        out[i] = 2f0 * atanh(e)
+    end
+
+    return nothing
 end
 
 # Define the sigmoid function: σ(x) = 1 / (1 + exp(x))

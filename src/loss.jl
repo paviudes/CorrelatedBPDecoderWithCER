@@ -23,42 +23,6 @@ function compute_loss_error_from_llrs(posterior_llrs::Matrix{Float32}, expected_
     return average_loss
 end
 
-function compute_additional_loss_from_ising_XOR(posterior_llrs::Matrix{Float32}, connectivity::Matrix{Int}, expected_recoveries::BitMatrix, correlation_strength::Float32)::Float32
-    """
-    We want to add a term to the Loss function that prefers a correlated error instead of an independent error.
-    Right now we want to focus on Ising-type two-body correlations.
-    Suppose we have a list of qubit indices that are correlated: (q1, q2), (q3, q4), ... specified by `C`.
-    Then we want to add a term to the Loss function that penalizes solutions where the errors at these qubit indices are not correlated. For example, if we have an error on q1 but not on q2, we want to penalize that solution.
-    This can be achieved by adding a term proportional to `e_(q1) XOR e_(q2)` to the Loss function, where `e_(qi)` is the predicted error at qubit `qi`.
-    
-    Hence the modified Loss function is:
-        L_total(μ) = L(μ, e) + λ * ∑_((qi, qj) ∈ C) [ e_(qi) XOR e_(qj) ]
-    where
-        - L(μ, e) is the original Loss function from `compute_loss_error_from_llrs`.
-        - λ is a hyperparameter that controls the strength of the correlation penalty.
-        - C is the set of correlated qubit index pairs.
-        - e_(qi) is the predicted error at qubit `qi`.
-
-    Since we want to implement this in a differentiable manner, we can use the fact that:
-        e_(qi) XOR e_(qj) = e_(qi) + e_(qj) - 2 * e_(qi) * e_(qj)
-    where e_(qi) is approximated by σ(μ_(qi)).
-
-    So, the Loss function becomes:
-        L_total(μ) = L(μ, e) + λ * ∑_((qi, qj) ∈ C) [ σ(μ_(qi)) + σ(μ_(qj)) - 2 * σ(μ_(qi)) * σ(μ_(qj)) ]
-    
-    We need to express this in a matrix form for efficient computation.
-        L_total(μ) = L(μ, e) + λ * ( σ(μ(connectivity[:,1]]) + σ(μ[connectivity[:,2]]) - 2 * σ(μ[connectivity[:,1]]) .* σ(μ[connectivity[:,2]]) )
-    """
-    n_samples = size(expected_recoveries, 2)
-    # Compute the predicted errors from the left part of the connectivity matrix
-    e_pred_left = sigmoid.(posterior_llrs[connectivity[1:end, 1], 1:end])
-    e_pred_right = sigmoid.(posterior_llrs[connectivity[1:end, 2], 1:end])
-    # Compute the correlation penalty term
-    correlation_penalty_matrix = e_pred_left .+ e_pred_right .- 2 .* (e_pred_left .* e_pred_right)
-    correlation_penalty = sum(correlation_penalty_matrix) * correlation_strength / n_samples
-    return correlation_penalty
-end
-
 function compute_additional_loss_from_ising_correlations(posterior_llrs::Matrix{Float32}, connectivity::Matrix{Int}, expected_recoveries::BitMatrix, correlation_strengths::Vector{Float32})::Float32
     """
     We want to add a term to the Loss function that prefers a correlated error instead of an independent error.
@@ -88,7 +52,6 @@ function compute_additional_loss_from_ising_correlations(posterior_llrs::Matrix{
         L_total(μ) = L(μ, e) + λ .* ( σ(μ(connectivity[:,1]]) - σ(μ[connectivity[:,1]]) .* σ(μ[connectivity[:,2]]) )
     """
     n_samples = size(expected_recoveries, 2)
-    n_edges = size(connectivity, 1)
     correlation_strengths_batch = repeat(correlation_strengths, 1, n_samples)
     # println("correlation_strengths_batch of shape: ", size(correlation_strengths_batch))
     # Compute the predicted errors from the left part of the connectivity matrix
@@ -97,7 +60,9 @@ function compute_additional_loss_from_ising_correlations(posterior_llrs::Matrix{
     # Compute the correlation penalty term
     # correlation_penalty_matrix = e_pred_left .- (e_pred_left .* e_pred_right)
     # correlation_penalty = sum(correlation_penalty_matrix) * correlation_strength / n_samples
-    correlation_penalty = sum(@. e_pred_left * (1 - e_pred_right) * correlation_strengths_batch) / (n_samples * n_edges)
+    # n_edges = size(connectivity, 1)
+    # correlation_penalty = sum(@. e_pred_left * (1 - e_pred_right) * correlation_strengths_batch) / (n_samples * n_edges)
+    correlation_penalty = sum(@. e_pred_left * (1 - e_pred_right) * correlation_strengths_batch) / (n_samples)
     return correlation_penalty
 end
 

@@ -460,7 +460,7 @@ function run_bp(algo::String, parity_check_matrix::Matrix{Int}, soft_constraint_
     # Initialize messages
     messages_v2c = bp_initialize(G, initial_llrs)
 
-    old_llrs = copy(initial_llrs)
+    current_llrs = copy(initial_llrs)
     current_iteration = 1
     stop = false
     while ((stop == false) && (current_iteration <= max_interations))
@@ -474,14 +474,14 @@ function run_bp(algo::String, parity_check_matrix::Matrix{Int}, soft_constraint_
             println(io, "BP Round $(current_iteration):\nLLRs = ", new_llrs)
             println(io, "--------------------------------------------------------")
         end
-        stop = should_bp_stop(G, old_llrs, new_llrs, syndrome, llr_convergence_threshold, llr_confidence_threshold; verbose=verbose, io=io)
-        # Update old LLRs for the next iteration
-        old_llrs .= new_llrs
+        stop = should_bp_stop(G, current_llrs, new_llrs, syndrome, llr_convergence_threshold, llr_confidence_threshold; verbose=verbose, io=io)
+        # Update current LLRs for the next iteration
+        current_llrs .= new_llrs
         messages_v2c .= messages_v2c_updated
         # Increment the iteration counter
         current_iteration += 1
     end
-    return (old_llrs, current_iteration-1)
+    return (current_llrs, current_iteration-1)
 end
 
 function classical_belief_propagation_decoder(C::ClassicalCode, error::Vector{Int}, syndrome::Vector{Int}, initial_probabilities::Vector{Float64}, rounds_per_BP::Int, n_iterations_of_BP::Int; algo::String="SumProduct", llr_convergence_threshold::Float64=1e-6, llr_confidence_threshold::Float64=2.0, weight_soft_constraint::Float64=0.5, verbose::Bool=false, io::IO=stdout)::BPSettings

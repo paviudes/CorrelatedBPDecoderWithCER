@@ -73,103 +73,408 @@ end
 # Make NeuralBP work with Functors by only making the weight matrices children
 @functor NachmaniNeuralBP (weights_c2v_v2c, weights_llrs, weights_c2v_readout, weights_loss_layers)
 
-function (bpnn::NachmaniNeuralBP)(initial_llrs_batch::AbstractMatrix{<:Real}, syndromes_batch::BitMatrix)::Array{Float32, 3}
+#=
+function v2c_to_c2v(
+    m_v2c_activated,
+    syndromes_batch,
+    base
+)
     """
-    Forward pass through the Neural Network for Nachmani et al. architecture.
-    We have four main steps:
-    1. Forward pass from input layer to V2C layer. This is done using the adjacency matrix `adj_initialize_V2C` and the corresponding weights.
-    2. For N iterations:
-        a. Forward pass from V2C to C2V layer using `adj_V2C_C2V` and weights.
-        b. Apply activation functions for C2V layer:
-            f(x) = atanh(exp(x)) * (-1)^syndrome[c] * ∏_(v' ∈ N(c) - v)  (-1)^(δ(m_(v' -> c) < 0)).
-        For the V2C layer, irrespective of the particular neuron, the activation function is f(x) = log(tanh(x/2))
-        c. Forward pass from C2V to V2C layer using `adj_C2V_V2C` and weights.
-        d. Apply activation functions for V2C layer: f(x) = log(tanh(x/2)).
-    3. Forward pass from final V2C layer to readout layer using `adj_C2V_readout` and weights.
-    4. Return the output of the readout layer.
+    Compute the messages from check nodes to variable nodes (C2V) given the messages from variable nodes to check nodes (V2C) and the syndromes, for a single layer.
+    We have to compute the following for each edge (c, v):
+    a(m^t_(c->v)) = i π s_c + ∑_(v' ∈ N(c) - v) a(m^t_(v'->c))
+    where
+    - s_c is the syndrome bit corresponding to check node c
+    - N(c) is the set of variable nodes connected to check node c.
     """
-
-    # 1. Forward pass from input layer to V2C layer
-    v2c_neurons = bpnn.base.adj_initialize_V2C * initial_llrs_batch
-
-    # Apply the activation function elemenwise to all neurons in `v2c_input`
-    v2c_activated_neurons = safe_log_tanh(v2c_neurons) # Use safe version to avoid numerical issues.
-
-    # Initialize the intermediate LLRs
-    posterior_llrs = Vector{Matrix{Float32}}()
-
-    # 2. For N iterations:
-    # Precompute the selected V2C neurons for each C2V neuron.
-    # selected_v2c = [findall(col .== 1) for col in eachcol(bpnn.base.adj_V2C_C2V)]
-    # println("Selected V2C neurons for all C2V neurons: ", selected_v2c)
-    
-    # Accumulate all the posterior LLRs. This is because a for loop where we populate the LLRs cannot be acceptable for Zygote.
-    v2c_state = v2c_activated_neurons
-    posterior_llrs_tuple = ()
-
-    for layer in 1:bpnn.base.n_layers
-        v2c_state, llr = compute_llr_at_layer_t(
-            bpnn,
-            v2c_state,
-            syndromes_batch,
-            initial_llrs_batch,
-            layer
-        )
-
-        posterior_llrs_tuple = (posterior_llrs_tuple..., llr)
-    end
-
-    posterior_llrs = collect(posterior_llrs_tuple)
-    posterior_llrs_tensor = stack(posterior_llrs; dims=3)
-
-    return posterior_llrs_tensor
+    m_c2v_activated = base.adj_V2C_C2V * m_v2c_activated + im * Float32(π) .* syndromes_batch[base.neuron_to_checks, :]
+    # apply the activation function a(x) = 2 * atanh(exp(x))
+    m_c2v = safe_atanh_exp(m_c2v_activated)
+    return m_c2v
 end
 
-function compute_llr_at_layer_t(bpnn::NachmaniNeuralBP, v2c_activated_neurons_previous_layer::Matrix{ComplexF32}, syndromes_batch::BitMatrix, initial_llrs_batch::AbstractMatrix{<:Real}, layer::Int)::Tuple{Matrix{ComplexF32}, Matrix{Float32}}
+function c2v_to_v2c(
+    m_c2v_previous,
+    weights_llrs,
+    weights_messages,
+    channel_llrs,
+    base_projection,
+    base
+)
+    """
+    Compute the messages from variable nodes to check nodes (V2C) given the messages from check nodes to variable nodes (C2V) and the initial LLRs, for a single layer.
+    m^(t)_(v->c) = b^(t)_v l_v + ∑_(c' ∈ N(v) - c) m^(t-1)_(c'->v) W^(t-1)_(v,c;c',v)
+    where
+    - l_v is the initial LLR corresponding to variable node v
+    - N(v) is the set of check nodes connected to variable node v
+    - W^(t-1)_(v,c;c',v) is a weight.
+    """
+    # compute: ∑_(c' ∈ N(v) - c) m^(t-1)_(c'->v) W^(t-1)_(v,c;c',v)
+    weight_matrix = sparse(
+        base.non_zero_rows_C2V_V2C,
+        base.non_zero_cols_C2V_V2C,
+        weights_messages,
+        base.nb_neurons_per_layer,
+        base.nb_neurons_per_layer
+    )
+    # println("Matrix sizes:\nbase_projection: ", size(base_projection), "\nweights_llrs .* channel_llrs: ", size(weights_llrs .* channel_llrs), "\nweight_matrix .* base.adj_C2V_V2C: ", size(weight_matrix .* base.adj_C2V_V2C), "\nm_c2v_previous: ", size(m_c2v_previous))
+    m_v2c = base_projection * (weights_llrs .* channel_llrs) .+ (weight_matrix .* base.adj_C2V_V2C) * m_c2v_previous
+    # apply the activation function a(x) = log(tanh(x/2))
+    m_v2c_activated = safe_log_tanh(m_v2c)
+    return m_v2c_activated
+end
+
+function readout(
+    m_c2v,
+    weights_readout,
+    weights_llrs,
+    channel_llrs,
+    base
+)
+    """
+    Compute the LLRs at the readout layer given the activated neurons at the C2V layer and the initial LLRs, for a single layer.
+    μ^t_v = b^(t)_v l_v + ∑_(c ∈ N(v)) m^t_(c->v) W^t_(v; c,v)
+    where
+    - l_v is the initial LLR corresponding to variable node v
+    - N(v) is the set of check nodes connected to variable node v
+    - W^t_(v; c,v) is a weight.
+    """
+    weight_matrix = sparse(
+        base.non_zero_rows_C2V_readout,
+        base.non_zero_cols_C2V_readout,
+        weights_readout,
+        base.code_n_bits,
+        base.nb_neurons_per_layer
+    )
+    posterior_llrs = (weights_llrs .* channel_llrs) .+ (weight_matrix .* base.adj_C2V_readout) * m_c2v
+
+    return posterior_llrs
+end
+
+function compute_layer!(
+    messages_c2v,
+    syndromes_batch,
+    initial_llrs_batch,
+    base_projection,
+    bpnn,
+    layer
+)
     """
     Compute the LLRs at layer `t` given the activated neurons at the V2C layer and the syndromes, at layer `t-1`.
 
     We have to compute two forward passes:
-    1. Computing messages m_(c->v) from messages m_(v->c) and the syndrome information.
-       This is given by
-       a(m_(c->v)) = i π s_c + ∑_(v' ∈ N(c) - v) a(m_(v'->c))
-       where a(m) is the activation function for the C2V layer, given by a(m) = log(tanh(m/2))
-    2. Computing messages m_(v->c) from messages m_(c->v) and the initial LLRs.
-       This is given by
-       m_(v->c) = b_v l_v + ∑_(c' ∈ N(v) - c) m_(c'->v) W^t_(v,c;c',v)
+    1. m^t_(v->c) = b^(t)_v l_v + ∑_(c' ∈ N(v) - c) m^(t-1)_(c'->v) W^(t-1)_(v,c;c',v)
+    2. a(m^t_(c->v)) = i π s_c + ∑_(v' ∈ N(c) - v) a(m^t_(v'->c))
     
-    Finally, we compute the LLRs at layer `t` from the messages m_(c->v) and the initial LLRs using the readout weights:
-    μ^t_v = l_v + ∑_(c ∈ N(v)) m_(c->v) W^t_(v; c,v)
+    We compute the LLRs at layer `t` from the messages m^t_(c->v) and the initial LLRs using the readout weights:
+    μ^t_v = l_v + ∑_(c ∈ N(v)) m^t_(c->v) W^t_(v; c,v)
 
+    where
+    - l_v is the initial LLR corresponding to variable node v
+    - N(v) is the set of check nodes connected to variable node v
+    - W^(t-1)_(v,c;c',v) is a weight for the message from check node c' to variable node v in layer t-1
+    - W^t_(v; c,v) is a weight for the message from check node c to variable node v in layer t
+    - s_c is the syndrome bit corresponding to check node c
+    - N(c) is the set of variable nodes connected to check node c.
+    - a(x) is the activation function for the messages from check nodes to variable nodes, defined as a(x) = 2 * atanh(exp(x)).
+    - b^(t)_v is a weight for the initial LLR corresponding to variable node v in layer t.
     """
-    #=
-    1. We want to implement the message passing rule:
-    a(m_(c->v)) = i π s_c + ∑_(v' ∈ N(c) - v) a(m_(v'->c))
-    =#
-    c2v_activated_neurons = bpnn.base.adj_V2C_C2V * v2c_activated_neurons_previous_layer + im * Float32(π) * syndromes_batch[bpnn.base.neuron_to_checks, 1:end]
-    # Apply the activation function for C2V layer.
-    c2v_neurons = safe_atanh_exp(c2v_activated_neurons) # Use safe version to avoid numerical issues.
+    base = bpnn.base
+    nsamples = size(initial_llrs_batch, 2)
+
+    # ---- weights ----
+    weights_start = (layer - 1) * base.nb_weights_c2v_v2c + 1
+    weights_end   = layer * base.nb_weights_c2v_v2c
+    weights_messages = @view bpnn.weights_c2v_v2c[weights_start:weights_end]
+
+    weights_llr = bpnn.weights_llrs[
+        (layer - 1)*base.code_n_bits + 1 : layer*base.code_n_bits
+    ] .* ones(Float32, 1, nsamples)
+
+    # -------------------------
+    # 1. C2V → V2C
+    # -------------------------
+    messages_v2c_activated = c2v_to_v2c(messages_c2v, weights_llr, weights_messages, initial_llrs_batch, base_projection, base)
     
-    #=
-    2. We want to implement the message passing rule:
-    m_(v->c) = b_v l_v + ∑_(c' ∈ N(v) - c) m_(c'->v) W^t_(v,c';v,c)
-    =#
-    weights_start = (layer - 1) * bpnn.base.nb_weights_c2v_v2c + 1
-    weights_end = layer * bpnn.base.nb_weights_c2v_v2c
-    extended_weights_c2v_v2c = sparse(bpnn.base.non_zero_rows_C2V_V2C, bpnn.base.non_zero_cols_C2V_V2C, bpnn.weights_c2v_v2c[weights_start:weights_end], bpnn.base.nb_neurons_per_layer, bpnn.base.nb_neurons_per_layer) |> Matrix
-    # Compute the weights for the LLRs at layer `t`.
-    weights_start = (layer - 1) * bpnn.base.code_n_bits + 1
-    weights_end = layer * bpnn.base.code_n_bits
-    weights_llrs = bpnn.weights_llrs[weights_start:weights_end]
-    # Compute all the messages m_(v->c) using matrix operations.
-    v2c_neurons = (extended_weights_c2v_v2c .* bpnn.base.adj_C2V_V2C) * c2v_neurons + (bpnn.base.adj_initialize_V2C * (initial_llrs_batch .* weights_llrs))
+    # -------------------------
+    # 2. V2C → C2V
+    # -------------------------
+    messages_c2v = v2c_to_c2v(messages_v2c_activated, syndromes_batch, base)
 
-    # Apply the activation functions for V2C layer.
-    v2c_activated_neurons = safe_log_tanh(v2c_neurons) # Use safe version to avoid numerical issues.
+    # -------------------------
+    # 3. Readout
+    # -------------------------
+    posterior_llrs = readout(messages_c2v, bpnn.weights_c2v_readout, weights_llr, initial_llrs_batch, base)
 
-    # 3. Compute the LLRs at layer `t` from the messages m_(c->v) and the initial LLRs using the readout weights:
-    extended_weights_c2v_readout = sparse(bpnn.base.non_zero_rows_C2V_readout, bpnn.base.non_zero_cols_C2V_readout, bpnn.weights_c2v_readout, bpnn.base.code_n_bits, bpnn.base.nb_neurons_per_layer) |> Matrix
-    posteriod_llr_at_layer_t = (weights_llrs .* initial_llrs_batch) .+ (extended_weights_c2v_readout .* bpnn.base.adj_C2V_readout) * c2v_neurons
+    return posterior_llrs
+end
 
-    return (v2c_activated_neurons, posteriod_llr_at_layer_t)
+function (bpnn::NachmaniNeuralBP)(
+    initial_llrs_batch::AbstractMatrix{<:Real},
+    syndromes_batch::BitMatrix
+)
+    """
+    Forward pass through the Neural Network for Nachmani et al. architecture, returning the LLRs at each layer.
+    """
+    base = bpnn.base
+    n_batches = size(initial_llrs_batch, 2)
+    neurons_per_layer = base.nb_neurons_per_layer
+
+    # Buffers to store the messages and the posteriod LLRs at each layer.
+    messages_c2v = zeros(Float32, neurons_per_layer, n_batches)
+    posterior_llrs = Zygote.Buffer(zeros(Float32, base.code_n_bits, n_batches, base.n_layers))
+
+    for layer in 1:base.n_layers
+        posterior_llrs[:, :, layer] = compute_layer!(
+            messages_c2v,
+            syndromes_batch,
+            initial_llrs_batch,
+            base.adj_initialize_V2C,
+            bpnn,
+            layer
+        )
+    end
+
+    return copy(posterior_llrs)
+end
+=#
+
+function v2c_to_c2v!(
+    m_c2v,                 # output (final)
+    m_c2v_activated,       # buffer (same size)
+    m_v2c_activated,
+    syndromes_batch,
+    base
+)
+    """
+    Compute the messages from check nodes to variable nodes (C2V) given the messages from variable nodes to check nodes (V2C) and the syndromes, for a single layer.
+    We have to compute the following for each edge (c, v):
+    a(m^t_(c->v)) = i π s_c + ∑_(v' ∈ N(c) - v) a(m^t_(v'->c))
+    where
+    - s_c is the syndrome bit corresponding to check node c
+    - N(c) is the set of variable nodes connected to check node c.
+    """
+
+    # 1. m_c2v_activated = A * m_v2c_activated
+    mul!(m_c2v_activated, base.adj_V2C_C2V, m_v2c_activated)
+
+    # 2. add syndrome term in-place (avoid allocating new matrix)
+    @views @. m_c2v_activated += im * Float32(π) * syndromes_batch[base.neuron_to_checks, :]
+
+    # 3. apply the activation function a(x) = 2 * atanh(exp(x)) in-place
+    safe_atanh_exp!(m_c2v, m_c2v_activated)
+
+    return nothing
+end
+
+function c2v_to_v2c!(
+    m_v2c_activated,   # output
+    m_v2c,             # buffer
+    scaled_llrs,           # NEW buffer (same size as channel_llrs)
+    m_c2v_previous,
+    weights_llrs,
+    weights_messages,
+    channel_llrs,
+    base_projection,
+    base,
+    weight_matrix
+)
+    """
+    Compute the messages from variable nodes to check nodes (V2C) given the messages from check nodes to variable nodes (C2V) and the initial LLRs, for a single layer.
+    m^(t)_(v->c) = b^(t)_v l_v + ∑_(c' ∈ N(v) - c) m^(t-1)_(c'->v) W^(t-1)_(v,c;c',v)
+    where
+    - l_v is the initial LLR corresponding to variable node v
+    - N(v) is the set of check nodes connected to variable node v
+    - W^(t-1)_(v,c;c',v) is a weight.
+    """
+
+    # update sparse values instead of rebuilding structure
+    weight_matrix.nzval .= weights_messages
+
+    # compute: ∑_(c' ∈ N(v) - c) ...
+    mul!(m_v2c, weight_matrix .* base.adj_C2V_V2C, m_c2v_previous)
+
+    # ---- channel contribution ----
+    @. scaled_llrs = weights_llrs * channel_llrs
+
+    # m_v2c += base_projection * tmp_llr
+    mul!(m_v2c, base_projection, scaled_llrs, 1f0, 1f0)
+
+    # apply the activation function a(x) = log(tanh(x/2))
+    safe_log_tanh!(m_v2c_activated, m_v2c)
+
+    return nothing
+end
+
+function readout!(
+    posterior_llrs,
+    m_c2v,
+    weights_readout,
+    weights_llrs,
+    channel_llrs,
+    base,
+    weight_matrix
+)
+    """
+    Compute the LLRs at the readout layer given the activated neurons at the C2V layer and the initial LLRs, for a single layer.
+    μ^t_v = b^(t)_v l_v + ∑_(c ∈ N(v)) m^t_(c->v) W^t_(v; c,v)
+    where
+    - l_v is the initial LLR corresponding to variable node v
+    - N(v) is the set of check nodes connected to variable node v
+    - W^t_(v; c,v) is a weight.
+    """
+
+    weight_matrix.nzval .= weights_readout
+
+    mul!(posterior_llrs, weight_matrix .* base.adj_C2V_readout, m_c2v)
+
+    @. posterior_llrs += weights_llrs * channel_llrs
+
+    return nothing
+end
+
+function compute_layer!(
+    messages_c2v,
+    m_c2v_activated,
+    messages_v2c,
+    messages_v2c_activated,
+    scaled_llrs,                # ✅ NEW BUFFER
+    posterior_llrs,
+    syndromes_batch,
+    initial_llrs_batch,
+    base_projection,
+    bpnn,
+    layer,
+    weight_matrix_v2c,
+    weight_matrix_readout
+)
+    """
+    Compute the LLRs at layer `t` given the activated neurons at the V2C layer and the syndromes, at layer `t-1`.
+
+    We have to compute two forward passes:
+    1. m^t_(v->c) = b^(t)_v l_v + ∑_(c' ∈ N(v) - c) m^(t-1)_(c'->v) W^(t-1)_(v,c;c',v)
+    2. a(m^t_(c->v)) = i π s_c + ∑_(v' ∈ N(c) - v) a(m^t_(v'->c))
+    
+    We compute the LLRs at layer `t` from the messages m^t_(c->v) and the initial LLRs using the readout weights:
+    μ^t_v = l_v + ∑_(c ∈ N(v)) m^t_(c->v) W^t_(v; c,v)
+    """
+
+    base = bpnn.base
+    nsamples = size(initial_llrs_batch, 2)
+
+    # ---- weights ----
+    weights_start = (layer - 1) * base.nb_weights_c2v_v2c + 1
+    weights_end   = layer * base.nb_weights_c2v_v2c
+    weights_messages = @view bpnn.weights_c2v_v2c[weights_start:weights_end]
+
+    weights_llr = bpnn.weights_llrs[
+        (layer - 1)*base.code_n_bits + 1 : layer*base.code_n_bits
+    ] .* ones(Float32, 1, nsamples)
+
+    # -------------------------
+    # 1. C2V → V2C
+    # -------------------------
+    c2v_to_v2c!(
+        messages_v2c_activated,
+        messages_v2c,
+        scaled_llrs,
+        messages_c2v,
+        weights_llr,
+        weights_messages,
+        initial_llrs_batch,
+        base_projection,
+        base,
+        weight_matrix_v2c
+    )
+
+    # -------------------------
+    # 2. V2C → C2V
+    # -------------------------
+    v2c_to_c2v!(
+        messages_c2v,
+        m_c2v_activated,
+        messages_v2c_activated,
+        syndromes_batch,
+        base
+    )
+
+    # -------------------------
+    # 3. Readout
+    # -------------------------
+    readout!(
+        posterior_llrs,
+        messages_c2v,
+        bpnn.weights_c2v_readout,
+        weights_llr,
+        initial_llrs_batch,
+        base,
+        weight_matrix_readout
+    )
+
+    return nothing
+end
+
+function (bpnn::NachmaniNeuralBP)(
+    initial_llrs_batch::AbstractMatrix{<:Real},
+    syndromes_batch::BitMatrix
+)
+    """
+    Forward pass through the Neural Network for Nachmani et al. architecture, returning the LLRs at each layer.
+    """
+
+    base = bpnn.base
+    n_batches = size(initial_llrs_batch, 2)
+    neurons_per_layer = base.nb_neurons_per_layer
+
+    # Buffers
+    messages_c2v           = zeros(Float32, neurons_per_layer, n_batches)
+    m_c2v_activated        = Matrix{ComplexF32}(undef, size(messages_c2v))
+
+    messages_v2c           = similar(messages_c2v)
+    messages_v2c_activated = Matrix{ComplexF32}(undef, size(messages_v2c))
+
+    scaled_llrs            = similar(initial_llrs_batch) # this will carry llr weights times channel llrs, to avoid recomputing this product multiple times.
+
+    posterior_llrs_layer   = zeros(Float32, base.code_n_bits, n_batches)
+
+    # Sparse templates
+    weight_matrix_v2c = sparse(
+        base.non_zero_rows_C2V_V2C,
+        base.non_zero_cols_C2V_V2C,
+        zeros(Float32, length(base.non_zero_rows_C2V_V2C)),
+        base.nb_neurons_per_layer,
+        base.nb_neurons_per_layer
+    )
+
+    weight_matrix_readout = sparse(
+        base.non_zero_rows_C2V_readout,
+        base.non_zero_cols_C2V_readout,
+        zeros(Float32, length(base.non_zero_rows_C2V_readout)),
+        base.code_n_bits,
+        base.nb_neurons_per_layer
+    )
+
+    posterior_llrs = Zygote.Buffer(zeros(Float32, base.code_n_bits, n_batches, base.n_layers))
+
+    for layer in 1:base.n_layers
+        compute_layer!(
+            messages_c2v,
+            m_c2v_activated,
+            messages_v2c,
+            messages_v2c_activated,
+            scaled_llrs,
+            posterior_llrs_layer,
+            syndromes_batch,
+            initial_llrs_batch,
+            base.adj_initialize_V2C,
+            bpnn,
+            layer,
+            weight_matrix_v2c,
+            weight_matrix_readout
+        )
+
+        posterior_llrs[:, :, layer] = posterior_llrs_layer
+    end
+
+    return copy(posterior_llrs)
 end
