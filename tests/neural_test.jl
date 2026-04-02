@@ -301,18 +301,12 @@ function test_training_Nachmani_BP()
         connectivity=connectivity_matrix,
         correlation_strengths=correlation_strengths,
     )
+    #=
     # Explicitly define weights for testing, to be all ones since that corresponds to standard BP.
     weights_c2v_v2c = ones(Float32, base.nb_weights_c2v_v2c * n_layers)
     weights_llrs = ones(Float32, n_bits * n_layers)
     weights_c2v_readout = ones(Float32, base.nb_weights_c2v_readout)
     weights_loss_layers=ones(Float32, n_layers)
-    # bpnn = NachmaniNeuralBP(
-    #     base,
-    #     weights_c2v_v2c=random_values_around_one([base.nb_weights_c2v_v2c * n_layers]; scale=0.01f0),
-    #     weights_llrs=random_values_around_one([n_bits * n_layers]; scale=0.01f0),
-    #     weights_c2v_readout=random_values_around_one([base.nb_weights_c2v_readout]; scale=0.01f0),
-    #     weights_loss_layers=random_values_around_one([n_layers]; scale=0.01f0)
-    # )
     bpnn = NachmaniNeuralBP(
         base,
         weights_c2v_v2c=weights_c2v_v2c,
@@ -320,10 +314,18 @@ function test_training_Nachmani_BP()
         weights_c2v_readout=weights_c2v_readout,
         weights_loss_layers=weights_loss_layers
     )
+    =#
+    bpnn = NachmaniNeuralBP(
+        base,
+        weights_c2v_v2c=random_values_around_one([base.nb_weights_c2v_v2c * n_layers]; scale=0.01f0),
+        weights_llrs=random_values_around_one([n_bits * n_layers]; scale=0.01f0),
+        weights_c2v_readout=random_values_around_one([base.nb_weights_c2v_readout]; scale=0.01f0),
+        weights_loss_layers=random_values_around_one([n_layers]; scale=0.01f0)
+    )
     
     println("Going to train the Nachmani Neural BP model with $(base.nb_weights_c2v_v2c * n_layers + base.code_n_bits * n_layers + base.nb_weights_c2v_readout + n_layers) weights.")
 
-    # train_neuralbp!(bpnn, training_syndromes, expected_recoveries; n_epochs=1, batch_size=2)
+    train_neuralbp!(bpnn, training_syndromes, expected_recoveries; n_epochs=1, batch_size=2)
 
     # Save the trained weights to a file
     save_trained_neuralbp_model("./../data/test_neural_BP/models/trained_weights.json", bpnn)

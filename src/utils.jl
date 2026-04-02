@@ -35,15 +35,20 @@ function safe_log_tanh(x::Matrix{Float32})::Matrix{ComplexF32}
 end
 =#
 
-function safe_log_tanh!(
-    out::AbstractMatrix{ComplexF32},
+function safe_log_tanh_split!(
+    out_magnitudes::AbstractMatrix{Float32},
+    out_signs::AbstractMatrix{Bool},
     x::AbstractMatrix{Float32}
 )
     """
     Compute log(tanh(x/2)) safely, avoiding numerical issues, in-place.
 
-    If x is negative, we add i π to log(tanh(|x|/2)), i.e.,
-        log(tanh(x/2)) = log(tanh(|x|/2)) + i π * 1_{x < 0}.
+    Instead of returning a complex number:
+        log(tanh(x/2)) = log(tanh(|x|/2)) + i π * 1_{x < 0},
+
+    we represent this as:
+    - magnitude: log(tanh(|x|/2))
+    - sign:      1_{x < 0}
 
     For large |x|, tanh(x/2) ≈ 1 ⇒ log(tanh(x/2)) ≈ 0.
     For small |x|, tanh(x/2) ≈ 0 ⇒ log(tanh(x/2)) → -∞.
@@ -62,56 +67,51 @@ function safe_log_tanh!(
             ifelse(t > 1.0f0 - eps(Float32), 1.0f0 - eps(Float32), t)
         )
 
-        # real part
-        real_part = log(t)
+        # log magnitude
+        out_magnitudes[i] = log(t)
 
-        # imaginary part: iπ if x < 0
-        imag_part = xi < 0f0 ? Float32(π) : 0f0
-
-        out[i] = ComplexF32(real_part, imag_part)
+        # sign bit
+        out_signs[i] = xi < 0f0
     end
 
     return nothing
 end
 
-function safe_atanh_exp!(
+function safe_atanh_exp_signed!(
     out::AbstractMatrix{Float32},
-    x::AbstractMatrix{ComplexF32}
+    magnitudes::AbstractMatrix{Float32},
+    signs::AbstractMatrix{Bool}
 )
     """
     Compute 2 * atanh(exp(x)) safely, avoiding numerical issues, in-place.
 
-    We assume x is of the form:
-        x = a + i π b
-    where a ∈ ℝ and b ∈ ℤ.
+    Previously:
+        x = a + i π b  ⇒ exp(x) = exp(a) * (-1)^b
 
-    Then:
-        exp(x) = exp(a) * exp(i π b) = exp(a) * (-1)^b.
+    Now:
+    - magnitudes = a
+    - signs = b mod 2
 
-    So we:
-    - extract a = real(x)
-    - extract parity of b from imag(x)/π
-    - compute exp(a), clip it, and apply sign (-1)^b
-    - finally compute 2 * atanh(...)
+    So:
+        exp(x) = exp(magnitudes) * (sign ? -1 : +1)
+
+    We:
+    - compute exp(magnitudes), clip it
+    - apply sign flip
+    - compute 2 * atanh(...)
     """
 
-    @inbounds @simd for i in eachindex(x)
-        xi = x[i]
+    @inbounds @simd for i in eachindex(magnitudes)
+        a = magnitudes[i]
 
-        # real part
-        a = real(xi)
-
-        # compute exp(a) and clip
+        # exp + clip
         e = exp(a)
         e = ifelse(e < eps(Float32), eps(Float32),
             ifelse(e > 1.0f0 - eps(Float32), 1.0f0 - eps(Float32), e)
         )
 
-        # extract parity of b from imag(x) ≈ π * b
-        b = Int(round(imag(xi) / Float32(π)))
-
-        # apply (-1)^b efficiently
-        e = isodd(b) ? -e : e
+        # apply sign
+        e = signs[i] ? -e : e
 
         # final output
         out[i] = 2f0 * atanh(e)

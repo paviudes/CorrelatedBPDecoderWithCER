@@ -119,7 +119,7 @@ export predict_neuralbp, check_bp_solutions
 
 # Utility functions
 include("utils.jl")
-export safe_atanh_exp!, safe_log_tanh!, random_values_around_one, compute_std_assuming_bernoulli
+export safe_atanh_exp_signed!, safe_log_tanh_split!, random_values_around_one, compute_std_assuming_bernoulli
 
 #===============================================================================
                                END OF MODULE
