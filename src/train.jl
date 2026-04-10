@@ -66,7 +66,7 @@ function train_neuralbp!(
                 
             # compute loss and gradients in one shot
             loss, grads = Flux.withgradient(bpnn) do model
-                posterior_llrs = model(llrs_batch, syndromes_train_batch)
+                posterior_llrs = forward_pass(bpnn, llrs_batch, syndromes_train_batch)
                 # compute_loss_error_from_llrs(posterior_llrs, expected_recoveries_batch, bpnn.parity_check_matrix_dual) #TODO: turn on the additional loss for correlations later.
                 compute_loss_including_correlations(
                     posterior_llrs,

@@ -89,7 +89,8 @@ export StandardNeuralBP
 
 # Nachmani Neural BP model
 include("nachmani.jl")
-export NachmaniNeuralBP
+export NachmaniNeuralBP, forward_pass,
+       c2v_to_v2c, c2v_to_v2c!, v2c_to_c2v, v2c_to_c2v!, readout, readout! # these are solely for debugging and testing, not intended for external use.
 
 # Print functions for Neural BP models
 include("printfuns.jl")
@@ -119,7 +120,8 @@ export predict_neuralbp, check_bp_solutions
 
 # Utility functions
 include("utils.jl")
-export safe_atanh_exp_signed!, safe_log_tanh_split!, random_values_around_one, compute_std_assuming_bernoulli
+export safe_atanh_exp_signed, safe_atanh_exp_signed!, safe_log_tanh_split, safe_log_tanh_split!, random_values_around_one, compute_std_assuming_bernoulli,
+       debug_log_tanh_split, xor_affine!
 
 #===============================================================================
                                END OF MODULE

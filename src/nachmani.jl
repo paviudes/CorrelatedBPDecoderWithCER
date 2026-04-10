@@ -74,11 +74,11 @@ end
 @functor NachmaniNeuralBP (weights_c2v_v2c, weights_llrs, weights_c2v_readout, weights_loss_layers)
 
 function v2c_to_c2v!(
-    m_c2v,                  # output (final LLRs)
-    m_c2v_magnitudes,       # buffer: aggregated magnitudes
-    m_c2v_signs,            # buffer: aggregated signs
-    m_v2c_magnitudes,
-    m_v2c_signs,
+    m_c2v,                            # output (final LLRs)
+    activated_m_c2v_magnitudes,       # buffer: aggregated magnitudes
+    activated_m_c2v_signs,            # buffer: aggregated signs
+    activated_m_v2c_magnitudes,
+    activated_m_v2c_signs,
     syndromes_batch,
     base
 )
@@ -93,9 +93,17 @@ function v2c_to_c2v!(
     - s_c is the syndrome bit corresponding to check node c
     - N(c) is the set of variable nodes connected to check node c.
 
-    Instead of using complex numbers:
+    We then have to apply the inverse activation function to get the messages m^t_(c->v) from a(m^t_(c->v)): 
+        m^t_(c->v) = a^(-1)(a(m^t_(c->v)))
+    where a^(-1)(x) = 2 * atanh(exp(x)).
+
+    Instead of representing a(m^t_(c->v)) as a complex number, which needs to be exponentiated, we note that
+    exp(i π s_c + ∑ a(m^t_(v'->c))) = exp(∑ a(m^t_(v'->c))) * (-1)^(s_c)
+                                    = exp(∑ |a(m^t_(v'->c))|) * (-1)^(s_c + parity of signs of incoming messages)
+
+    So we will
     - magnitudes sum linearly
-    - signs combine via XOR (parity)
+    - combine the signs with the syndromes via XOR (parity)
 
     Final output:
         exp(x) = exp(magnitude) * (-1)^sign
@@ -104,50 +112,65 @@ function v2c_to_c2v!(
     # -------------------------
     # 1. Magnitude aggregation (same as before, but real)
     # -------------------------
-    mul!(m_c2v_magnitudes, base.adj_V2C_C2V, m_v2c_magnitudes)
+    mul!(activated_m_c2v_magnitudes, base.adj_V2C_C2V, activated_m_v2c_magnitudes)
 
     # -------------------------
-    # 2. Sign aggregation (XOR parity)
+    # 2. Set the signs to the parity of the incoming signs, XOR with syndrome
     # -------------------------
-
-    # Reset signs
-    fill!(m_c2v_signs, false)
-
-    # Accumulate parity from incoming messages
-    # NOTE: This is correct but not yet exploiting sparsity (we'll optimize later)
-    @inbounds for j in axes(m_v2c_signs, 2)        # over samples
-        for i in axes(m_v2c_signs, 1)              # over edges
-            if m_v2c_signs[i, j]
-                m_c2v_signs[i, j] ⊻= true
-            end
-        end
-    end
-
-    # Add syndrome contribution: XOR with s_c
-    @views @. m_c2v_signs ⊻= syndromes_batch[base.neuron_to_checks, :]
-
+    xor_affine!(activated_m_c2v_signs, base.adj_V2C_C2V, activated_m_v2c_signs, syndromes_batch[base.neuron_to_checks, :])
+    
     # -------------------------
     # 3. Activation: 2 * atanh(exp(x))
     # -------------------------
     safe_atanh_exp_signed!(
         m_c2v,
-        m_c2v_magnitudes,
-        m_c2v_signs
+        activated_m_c2v_magnitudes,
+        activated_m_c2v_signs
     )
 
     return nothing
 end
 
+function v2c_to_c2v(
+    activated_m_v2c_magnitudes,
+    activated_m_v2c_signs,
+    syndromes_batch,
+    base
+)
+    """
+    Functional (Zygote-friendly) V2C → C2V.
+    """
+
+    # Magnitudes: standard sparse matmul
+    activated_m_c2v_magnitudes = base.adj_V2C_C2V * activated_m_v2c_magnitudes
+
+    # Signs: accumulate parity via adjacency
+    # Convert Bool → Int for summation
+    signs_int = Int.(activated_m_v2c_signs)
+
+    parity = base.adj_V2C_C2V * signs_int
+
+    # mod 2 for XOR
+    activated_m_c2v_signs = mod.(parity, 2) .== 1
+
+    # add syndrome
+    activated_m_c2v_signs = xor.(activated_m_c2v_signs, syndromes_batch[base.neuron_to_checks, :])
+
+    # Compute the messages from check to vertex by applying the inverse activation function safely
+    m_c2v = safe_atanh_exp_signed(activated_m_c2v_magnitudes, activated_m_c2v_signs)
+
+    return m_c2v
+end
+
 function c2v_to_v2c!(
-    m_v2c_magnitudes,        # output: magnitudes (log-domain)
-    m_v2c_signs,             # output: sign bits
+    activated_m_v2c_magnitudes,        # output: magnitudes (log-domain)
+    activated_m_v2c_signs,             # output: sign bits
     m_v2c,                   # buffer (pre-activation real values)
     weighted_channel_llrs,   # buffer (same size as channel_llrs)
     m_c2v_previous,
     weights_llrs,
     weights_messages,
     channel_llrs,
-    base_projection,
     base,
     weight_matrix
 )
@@ -180,12 +203,44 @@ function c2v_to_v2c!(
     @. weighted_channel_llrs = weights_llrs * channel_llrs
 
     # m_v2c += base_projection * weighted_channel_llrs
-    mul!(m_v2c, base_projection, weighted_channel_llrs, 1f0, 1f0)
+    mul!(m_v2c, base.adj_initialize_V2C, weighted_channel_llrs, 1f0, 1f0)
 
     # apply the activation function a(x) = log(tanh(x/2)) split into magnitude + sign
-    safe_log_tanh_split!(m_v2c_magnitudes, m_v2c_signs, m_v2c)
+    safe_log_tanh_split!(activated_m_v2c_magnitudes, activated_m_v2c_signs, m_v2c)
 
     return nothing
+end
+
+function c2v_to_v2c(
+    m_c2v_previous,
+    weights_llrs,
+    weights_messages,
+    channel_llrs,
+    base
+)
+    """
+    Functional (Zygote-friendly) version of C2V → V2C.
+    """
+
+    weight_matrix = sparse(
+        base.non_zero_rows_C2V_V2C,
+        base.non_zero_cols_C2V_V2C,
+        weights_messages,
+        base.nb_neurons_per_layer,
+        base.nb_neurons_per_layer
+    )
+
+    # Compute \sum_(c' ∈ N(v) - c) W^(t-1)_(v,c;c',v) m^(t-1)_(c'->v)
+    m_v2c = (weight_matrix .* base.adj_C2V_V2C) * m_c2v_previous
+    # Compute b^(t)_v l_v contribution
+    scaled_llrs = base.adj_initialize_V2C * (weights_llrs .* channel_llrs)
+    m_v2c = m_v2c .+ scaled_llrs
+    
+    # apply activation
+    activated_m_v2c_magnitudes, activated_m_v2c_signs =
+        safe_log_tanh_split(m_v2c)
+
+    return (activated_m_v2c_magnitudes, activated_m_v2c_signs)
 end
 
 function readout!(
@@ -215,18 +270,48 @@ function readout!(
     return nothing
 end
 
+function readout(
+    m_c2v,
+    weights_readout,
+    weights_llrs,
+    channel_llrs,
+    base
+)
+    """
+    Functional (Zygote-friendly) version of readout.
+    """
+
+    # build sparse weight matrix (no nzval mutation)
+    weight_matrix = sparse(
+        base.non_zero_rows_C2V_readout,
+        base.non_zero_cols_C2V_readout,
+        weights_readout,
+        base.code_n_bits,
+        base.nb_neurons_per_layer
+    )
+
+    # message contribution
+    posterior_llrs =
+        (weight_matrix .* base.adj_C2V_readout) * m_c2v
+
+    # channel contribution
+    posterior_llrs =
+        posterior_llrs .+ (weights_llrs .* channel_llrs)
+
+    return posterior_llrs
+end
+
 function compute_layer!(
     messages_c2v,
-    m_c2v_magnitudes,         # buffer: C2V magnitudes
-    m_c2v_signs,              # buffer: C2V signs
+    activated_m_c2v_magnitudes,         # buffer: C2V magnitudes
+    activated_m_c2v_signs,              # buffer: C2V signs
     messages_v2c,
-    m_v2c_magnitudes,         # buffer: V2C magnitudes
-    m_v2c_signs,              # buffer: V2C signs
+    activated_m_v2c_magnitudes,         # buffer: V2C magnitudes
+    activated_m_v2c_signs,              # buffer: V2C signs
     weighted_channel_llrs,    # buffer: weights_llrs .* channel_llrs
     posterior_llrs,
     syndromes_batch,
     initial_llrs_batch,
-    base_projection,
     bpnn,
     layer,
     weight_matrix_v2c,
@@ -263,15 +348,14 @@ function compute_layer!(
     # 1. C2V → V2C
     # -------------------------
     c2v_to_v2c!(
-        m_v2c_magnitudes,
-        m_v2c_signs,
+        activated_m_v2c_magnitudes,
+        activated_m_v2c_signs,
         messages_v2c,
         weighted_channel_llrs,
         messages_c2v,
         weights_llr,
         weights_messages,
         initial_llrs_batch,
-        base_projection,
         base,
         weight_matrix_v2c
     )
@@ -281,10 +365,10 @@ function compute_layer!(
     # -------------------------
     v2c_to_c2v!(
         messages_c2v,
-        m_c2v_magnitudes,
-        m_c2v_signs,
-        m_v2c_magnitudes,
-        m_v2c_signs,
+        activated_m_c2v_magnitudes,
+        activated_m_c2v_signs,
+        activated_m_v2c_magnitudes,
+        activated_m_v2c_signs,
         syndromes_batch,
         base
     )
@@ -303,6 +387,71 @@ function compute_layer!(
     )
 
     return nothing
+end
+
+function compute_layer(
+    messages_c2v,
+    syndromes_batch,
+    initial_llrs_batch,
+    bpnn,
+    layer
+)
+    """
+    Functional (Zygote-friendly) version of one layer.
+    """
+
+    base = bpnn.base
+    nsamples = size(initial_llrs_batch, 2)
+
+    # ---- weights ----
+    weights_start = (layer - 1) * base.nb_weights_c2v_v2c + 1
+    weights_end   = layer * base.nb_weights_c2v_v2c
+
+    weights_messages = @view bpnn.weights_c2v_v2c[weights_start:weights_end]
+
+    weights_llr = bpnn.weights_llrs[
+        (layer - 1)*base.code_n_bits + 1 : layer*base.code_n_bits
+    ] .* ones(Float32, 1, nsamples)
+
+    # -------------------------
+    # 1. C2V → V2C
+    # -------------------------
+    m_v2c_magnitudes, m_v2c_signs =
+        c2v_to_v2c(
+            messages_c2v,
+            weights_llr,
+            weights_messages,
+            initial_llrs_batch,
+            base
+        )
+
+    # -------------------------
+    # 2. V2C → C2V
+    # -------------------------
+    messages_c2v_new =
+        v2c_to_c2v(
+            m_v2c_magnitudes,
+            m_v2c_signs,
+            syndromes_batch,
+            base
+        )
+
+    # -------------------------
+    # 3. Readout
+    # -------------------------
+    weight_matrix_readout = sparse(
+        base.non_zero_rows_C2V_readout,
+        base.non_zero_cols_C2V_readout,
+        bpnn.weights_c2v_readout,
+        base.code_n_bits,
+        base.nb_neurons_per_layer
+    )
+
+    posterior_llrs =
+        (weights_llr .* initial_llrs_batch) .+
+        (weight_matrix_readout .* base.adj_C2V_readout) * messages_c2v_new
+
+    return (messages_c2v_new, posterior_llrs)
 end
 
 function (bpnn::NachmaniNeuralBP)(
@@ -368,7 +517,6 @@ function (bpnn::NachmaniNeuralBP)(
             posterior_llrs_layer,
             syndromes_batch,
             initial_llrs_batch,
-            base.adj_initialize_V2C,
             bpnn,
             layer,
             weight_matrix_v2c,
@@ -379,4 +527,35 @@ function (bpnn::NachmaniNeuralBP)(
     end
 
     return copy(posterior_llrs)
+end
+
+function forward_pass(bpnn, initial_llrs_batch, syndromes_batch)
+    """
+    Functional version of the forward pass: bpnn(initial_llrs_batch, syndromes_batch), returning the LLRs at each layer as a vector of matrices.
+    """
+
+    base = bpnn.base
+    n_batches = size(initial_llrs_batch, 2)
+
+    messages_c2v = zeros(Float32, base.nb_neurons_per_layer, n_batches)
+
+    posterior_list = Vector{Matrix{Float32}}(undef, base.n_layers)
+
+    for layer in 1:base.n_layers
+        messages_c2v, posterior_llrs =
+            compute_layer(
+                messages_c2v,
+                syndromes_batch,
+                initial_llrs_batch,
+                bpnn,
+                layer
+            )
+
+        posterior_list[layer] = posterior_llrs
+    end
+
+    # Stack into 3D tensor: (n_bits × n_batches × n_layers)
+    posterior_llrs_all = cat(posterior_list...; dims=3)
+
+    return posterior_llrs_all
 end

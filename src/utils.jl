@@ -6,35 +6,6 @@ function random_values_around_one(size::Vector{Int}; scale::Float32=0.01f0)::Arr
     return ones(Float32, size...) .+ scale .* (2 .* rand(Float32, size...) .- 1)
 end
 
-#=
-# Define safe versions of atanh(exp(x)) and log(tanh(x/2)) to avoid numerical issues.
-function safe_atanh_exp(x::Matrix{ComplexF32})::Matrix{Float32}
-    """
-    Compute 2 * atanh(exp(x)) safely, avoiding numerical issues.
-    While x is complex, we will implicitly assume that x is of the form x = a + i π b
-    where a is a real number and b is an integer.
-    Hence, exp(x) = exp(a) * exp(i π b) = exp(a) * (-1)^b.
-    """
-    real_part = real.(x)
-    imaginary_part = Int.(imag.(x) ./ π)
-    clipped_exp = clamp.(exp.(real_part), eps(Float32), 1.0f0 - eps(Float32)) .* (-1) .^ imaginary_part
-    atanh_exp = 2 .* atanh.(clipped_exp)
-    return atanh_exp
-end
-
-function safe_log_tanh(x::Matrix{Float32})::Matrix{ComplexF32}
-    """
-    Compute log(tanh(x/2)) safely, avoiding numerical issues.
-    If x is negative, we will add i π to the log(tanh(|x|/2)).
-    For large x, tanh(x/2) will be close to 1, and log(tanh(x/2)) will be close to 0.
-    For small x, tanh(x/2) will be close to 0, and log(tanh(x/2)) will be close to -Inf.
-    We will clip the values of tanh(x/2) to avoid numerical issues.
-    """
-    clipped_tanh = clamp.(tanh.(abs.(x) ./ 2), eps(Float32), 1.0f0 - eps(Float32))
-    return log.(clipped_tanh) .+ im * Float32(π) * (x .< 0)
-end
-=#
-
 function safe_log_tanh_split!(
     out_magnitudes::AbstractMatrix{Float32},
     out_signs::AbstractMatrix{Bool},
@@ -75,6 +46,45 @@ function safe_log_tanh_split!(
     end
 
     return nothing
+end
+
+function safe_log_tanh_split(x::AbstractMatrix{Float32})
+    """
+    Functional version (Zygote-friendly).
+
+    Returns:
+    - magnitudes
+    - signs (Bool)
+    """
+
+    t = tanh.(abs.(x) .* 0.5f0)
+
+    t_clipped = clamp.(t, eps(Float32), 1.0f0 - eps(Float32))
+
+    magnitudes = log.(t_clipped)
+    signs = x .< 0f0
+
+    return magnitudes, signs
+end
+
+# Debugging functions
+function debug_log_tanh_split(x::AbstractMatrix{Float32})
+    """
+    Debug version: uses direct tanh-domain representation.
+
+    Instead of:
+        log(tanh(x/2)) = magnitude + iπ sign
+
+    we store:
+        tanh(x/2) = sign * magnitude
+    """
+
+    t = tanh.(x .* 0.5f0)
+
+    signs = t .< 0f0
+    magnitudes = log.(abs.(t))
+
+    return magnitudes, signs
 end
 
 function safe_atanh_exp_signed!(
@@ -120,5 +130,43 @@ function safe_atanh_exp_signed!(
     return nothing
 end
 
+function safe_atanh_exp_signed(
+    magnitudes::AbstractMatrix{Float32},
+    signs::AbstractMatrix{Bool}
+)
+    """
+    Functional version (Zygote-friendly).
+    """
+
+    e = exp.(magnitudes)
+    e_clipped = clamp.(e, eps(Float32), 1.0f0 - eps(Float32))
+
+    e_signed = ifelse.(signs, -e_clipped, e_clipped)
+
+    return 2f0 .* atanh.(e_signed)
+end
+
 # Define the sigmoid function: σ(x) = 1 / (1 + exp(x))
 sigmoid(x::T) where T <: Number = 1.0f0 / (1.0f0 + exp(x))
+
+function xor_affine!(
+    out::AbstractMatrix{Bool},
+    A,
+    X::AbstractMatrix{Bool},
+    Y::AbstractMatrix{Bool}
+)
+    """
+    Compute: out = (A * X + Y) mod 2
+    where
+    - A is a sparse integer matrix
+    - X, Y are boolean matrices
+    """
+    # Compute the integer product A * X (mod 2 will be applied later)
+    integer_product = A * X
+    # Apply XOR with Y and take mod 2 (which is just checking if the integer product is odd)
+    @inbounds @simd for i in eachindex(integer_product)
+        out[i] = isodd(integer_product[i]) ⊻ Y[i]
+    end
+
+    return nothing
+end
