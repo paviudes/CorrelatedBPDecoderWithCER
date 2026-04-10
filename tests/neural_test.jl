@@ -688,7 +688,7 @@ function test_training_Nachmani_BP()
     
     println("Going to train the Nachmani Neural BP model with $(base.nb_weights_c2v_v2c * n_layers + base.code_n_bits * n_layers + base.nb_weights_c2v_readout + n_layers) weights.")
 
-    train_neuralbp_enzyme!(bpnn, training_syndromes, expected_recoveries; n_epochs=1, batch_size=2)
+    train_neuralbp_enzyme!(bpnn, training_syndromes, expected_recoveries; learning_rate=1f-1, n_epochs=1, batch_size=2)
 
     # Save the trained weights to a file
     save_trained_neuralbp_model("./../data/test_neural_BP/models/trained_weights.json", bpnn)

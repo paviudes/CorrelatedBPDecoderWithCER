@@ -10,7 +10,14 @@ function predict_neuralbp(bpnn::NeuralBP, syndromes::BitMatrix)::Array{Bool, 3}
     """
     batch_size = size(syndromes, 2)
     initial_llrs_batch = repeat(bpnn.base.initial_llrs, 1, batch_size)
-    predicted_recoveries_LLRs = bpnn(initial_llrs_batch, syndromes)
+    predicted_recoveries_LLRs = forward_pass_with_weights(
+        bpnn.weights_c2v_v2c,
+        bpnn.weights_llrs,
+        bpnn.weights_c2v_readout,
+        bpnn.base,
+        initial_llrs_batch,
+        syndromes
+    )
     # print_neuralbp_summary(bpnn; final_llrs=predicted_recoveries_LLRs)
     predicted_recoveries = convert.(Bool, (predicted_recoveries_LLRs .< 0))
     return predicted_recoveries
