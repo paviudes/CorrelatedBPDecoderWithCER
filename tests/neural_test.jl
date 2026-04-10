@@ -105,7 +105,7 @@ function test_forward_propagation()
     syndrome = [1, 1, 0, 1, 1, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0]
 
     # Number of layers (rounds of BP)
-    n_layers = 2
+    n_layers = 3
     
     # Set the initial LLRS
     initial_llrs = convert.(Float32, log(9)) .* ones(Float32, size(H, 2)) # Initial LLRs corresponding to p=0.1
