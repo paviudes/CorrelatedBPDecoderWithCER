@@ -27,6 +27,7 @@ using Flux              # Neural network framework for neural belief propagation
 using Functors          # Making neural network parameters trainable
 using Optimisers        # Optimization algorithms for training neural networks
 using Zygote            # Automatic differentiation for gradient computation
+using Enzyme            # Alternative AD for potentially faster gradient computation
 
 # Base method extensions
 import Base: eltype, length, sort!
@@ -112,7 +113,7 @@ export compute_loss_error_from_llrs, compute_additional_loss_from_ising_correlat
 
 # Training routines
 include("train.jl")
-export train_neuralbp!, generate_training_data
+export train_neuralbp!, train_neuralbp_enzyme!, generate_training_data
 
 # Predictions with trained models
 include("predict.jl")

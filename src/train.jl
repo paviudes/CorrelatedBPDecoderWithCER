@@ -28,7 +28,7 @@ function get_loss_value(
         base.parity_check_matrix_dual,
         base.connectivity,
         base.correlation_strengths,
-        base.is_correlated,
+        base.is_correlated, # Change back to base.is_correlated for the actual implementation, set to `false` for testing without correlations for now.
         weights_loss_layers
     )
     return total_loss
@@ -57,7 +57,6 @@ function train_neuralbp!(
     - `optimizer`: The optimizer to use for training (default: ADAM).
     - `n_epochs::Int`: The number of epochs. Each epoch goes through the entire dataset once (default: 10).
     - `batch_size::Int`: The size of each batch for training (default: 32).
-    - `loss_function`: The loss function to use for training (default: binary cross-entropy).
     """
     # Batch the training data: syndromes and expected recoveries, into batches.
     # Each batch will be passed through the network as a Matrix.
@@ -124,6 +123,113 @@ function train_neuralbp!(
         # Update epoch progress bar
         ProgressMeter.next!(epoch_progress)
     end
+end
+
+function train_neuralbp_enzyme!(
+    bpnn::NachmaniNeuralBP,
+    syndromes::BitMatrix,
+    expected_recoveries::BitMatrix;
+    learning_rate::Float32 = 1f-4, # learning rate for simple SGD
+    n_epochs::Int = 10,
+    batch_size::Int = 32
+)
+    """
+    Train the NeuralBP model using the provided syndromes and expected recoveries.
+    We will use Enzyme.jl for automatic differentiation of the loss function with respect to the model parameters.
+    Arguments
+    """
+    base = bpnn.base
+
+    # ---------------------------------
+    # Create batches
+    # ---------------------------------
+    n_samples = size(syndromes, 2)
+
+    samples_grouped_by_batch = [
+        (i-1) * batch_size + 1 : min(i * batch_size, n_samples)
+        for i in 1:ceil(Int, n_samples / batch_size)
+    ]
+
+    training_dataset = [
+        (
+            syndromes[:, idx],
+            expected_recoveries[:, idx],
+            repeat(base.initial_llrs, 1, length(idx))
+        )
+        for idx in samples_grouped_by_batch
+    ]
+
+    # -------------------------
+    # Progress bars
+    # -------------------------
+    epoch_progress = Progress(n_epochs, desc="Training Epochs: ")
+
+    for epoch in 1:n_epochs
+        batch_progress = Progress(length(training_dataset), desc="Epoch $epoch Batches: ")
+
+        for b in 1:length(training_dataset)
+
+            # -------------------------
+            # Shuffle batch
+            # -------------------------
+            shuffled_indices = randperm(size(training_dataset[b][1], 2))
+
+            syndromes_batch = training_dataset[b][1][:, shuffled_indices]
+            expected_batch  = training_dataset[b][2][:, shuffled_indices]
+            llrs_batch      = training_dataset[b][3][:, shuffled_indices]
+
+            # -------------------------
+            # Allocate gradients
+            # -------------------------
+            grad_w_c2v_v2c = zeros(Float32, length(bpnn.weights_c2v_v2c))
+            grad_w_llrs    = zeros(Float32, length(bpnn.weights_llrs))
+            grad_w_readout = zeros(Float32, length(bpnn.weights_c2v_readout))
+            grad_w_loss    = zeros(Float32, length(bpnn.weights_loss_layers))
+
+            # -------------------------
+            # Enzyme autodiff
+            # -------------------------
+            loss = Enzyme.autodiff(
+                Enzyme.Reverse,
+                get_loss_value,
+                # arguments for which we want gradients:
+                Enzyme.Duplicated(bpnn.weights_c2v_v2c, grad_w_c2v_v2c),
+                Enzyme.Duplicated(bpnn.weights_llrs,    grad_w_llrs),
+                Enzyme.Duplicated(bpnn.weights_c2v_readout, grad_w_readout),
+                Enzyme.Duplicated(bpnn.weights_loss_layers, grad_w_loss),
+                # constant arguments:
+                Enzyme.Const(base),
+                Enzyme.Const(llrs_batch),
+                Enzyme.Const(syndromes_batch),
+                Enzyme.Const(expected_batch)
+            )
+
+            #=
+            println("Gradients computed for batch $b in epoch $epoch:")
+            println("  grad_w_c2v_v2c norm = ", norm(grad_w_c2v_v2c))
+            println("  grad_w_llrs norm = ", norm(grad_w_llrs))
+            println("  grad_w_readout norm = ", norm(grad_w_readout))
+            println("  grad_w_loss norm = ", norm(grad_w_loss))
+            =#
+
+            # -------------------------
+            # Gradient step (simple SGD for now)
+            # -------------------------
+            @. bpnn.weights_c2v_v2c -= learning_rate * grad_w_c2v_v2c
+            @. bpnn.weights_llrs    -= learning_rate * grad_w_llrs
+            @. bpnn.weights_c2v_readout -= learning_rate * grad_w_readout
+            @. bpnn.weights_loss_layers -= learning_rate * grad_w_loss
+
+            # -------------------------
+            # Progress update
+            # -------------------------
+            ProgressMeter.next!(batch_progress; showvalues = [(:loss, loss)])
+        end
+
+        ProgressMeter.next!(epoch_progress)
+    end
+
+    return bpnn
 end
 
 function generate_training_data(parity_check_matrix::Matrix{Int}, n_samples::Int, error_probability::Float64)::Tuple{BitMatrix, BitMatrix}

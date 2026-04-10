@@ -230,9 +230,16 @@ function c2v_to_v2c_with_weights!(
     weight_matrix_v2c.nzval .= weights_c2v_v2c_layer
 
     # compute: ∑_(c' ∈ N(v) - c) ...
-    mul!(messages_v2c, weight_matrix_v2c .* base.adj_C2V_V2C, messages_c2v)
+    mul!(messages_v2c, weight_matrix_v2c, messages_c2v)
+    
     # channel contribution
-    @. weighted_channel_llrs = weights_llr_layer * initial_llrs_batch
+    # @. weighted_channel_llrs = weights_llr_layer * initial_llrs_batch
+    @inbounds for j in axes(initial_llrs_batch, 2) # also use @simd to tell the compiler that this loop can be vectorized, since there are no data dependencies between iterations
+        for i in axes(initial_llrs_batch, 1)
+            weighted_channel_llrs[i, j] = weights_llr_layer[i, j] * initial_llrs_batch[i, j]
+        end
+    end
+    
     mul!(messages_v2c, base.adj_initialize_V2C, weighted_channel_llrs, 1f0, 1f0)
     # apply the activation function a(x) = log(tanh(x/2)) split into magnitude + sign
     safe_log_tanh_split!(activated_m_v2c_magnitudes, activated_m_v2c_signs, messages_v2c)
@@ -304,18 +311,28 @@ function readout_with_weights!(
     weights_readout,
     weights_llrs,
     channel_llrs,
-    base,
-    weight_matrix
+    weight_matrix_readout
 )
     """
     Similar to `readout!`, but with the weights for the current layer passed as arguments, so that it can be used with Enzyme.jl.
+    Compute the LLRs at the readout layer given the activated neurons at the C2V layer and the initial LLRs, for a single layer.
+    μ^t_v = b^(t)_v l_v + ∑_(c ∈ N(v)) m^t_(c->v) W^t_(v; c,v)
+    where
+    - l_v is the initial LLR corresponding to variable node v
+    - N(v) is the set of check nodes connected to variable node v
+    - W^t_(v; c,v) is a weight.
     """
-    weight_matrix.nzval .= weights_readout
+    weight_matrix_readout.nzval .= weights_readout
+    
+    # Compute ∑_(c ∈ N(v)) m^t_(c->v) W^t_(v; c,v)
+    mul!(posterior_llrs, weight_matrix_readout, m_c2v)
 
-    mul!(posterior_llrs, weight_matrix .* base.adj_C2V_readout, m_c2v)
-
-    @. posterior_llrs += weights_llrs * channel_llrs
-
+    # Add the weighted channel LLR contribution, i.e b^(t)_v l_v
+    @inbounds for j in axes(posterior_llrs, 2)
+        for i in axes(posterior_llrs, 1)
+            posterior_llrs[i, j] += weights_llrs[i] * channel_llrs[i, j]
+        end
+    end
     return nothing
 end
 
@@ -590,7 +607,6 @@ function compute_layer_with_weights!(
         weights_c2v_readout,
         weights_llr_layer,
         initial_llrs_batch,
-        base,
         weight_matrix_readout
     )
     return nothing
@@ -727,7 +743,7 @@ function forward_pass_with_weights(
     activated_m_v2c_signs = falses(size(messages_c2v))
 
     # Buffer for the weighted channel LLRs
-    weighted_channel_llrs = similar(initial_llrs_batch)
+    weighted_channel_llrs = Matrix{Float32}(undef, size(initial_llrs_batch))
 
     # Storing the posterior LLRs at each layer.
     posterior_llrs_layer = zeros(Float32, base.code_n_bits, n_samples)

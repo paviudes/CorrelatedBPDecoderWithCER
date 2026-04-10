@@ -321,7 +321,7 @@ function train_Nachmani_neuralbp(
         training_syndromes = convert.(Bool, mod.(H * expected_recoveries, 2))
         
         # Train the Neural BP model
-        train_neuralbp!(bpnn, training_syndromes, expected_recoveries; n_epochs=n_epochs, batch_size=batch_size)
+        train_neuralbp_enzyme!(bpnn, training_syndromes, expected_recoveries; n_epochs=n_epochs, batch_size=batch_size)
 
         # Save the trained weights to a file
         save_trained_neuralbp_model(weights_filename, bpnn)

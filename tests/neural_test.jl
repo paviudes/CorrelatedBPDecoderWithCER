@@ -646,7 +646,7 @@ function test_training_Nachmani_BP()
 
     ## Initialize the NeuralBP model
     n_bits = size(H, 2)
-    n_layers = 2  # Number of BP iterations / layers
+    n_layers = 10  # Number of BP iterations / layers
     
     # Train the model
     initial_llrs = convert.(Float32, log(9)) .* ones(Float32, n_bits) # Initial LLRs corresponding to p=0.1
@@ -688,7 +688,7 @@ function test_training_Nachmani_BP()
     
     println("Going to train the Nachmani Neural BP model with $(base.nb_weights_c2v_v2c * n_layers + base.code_n_bits * n_layers + base.nb_weights_c2v_readout + n_layers) weights.")
 
-    train_neuralbp!(bpnn, training_syndromes, expected_recoveries; n_epochs=1, batch_size=2)
+    train_neuralbp_enzyme!(bpnn, training_syndromes, expected_recoveries; n_epochs=1, batch_size=2)
 
     # Save the trained weights to a file
     save_trained_neuralbp_model("./../data/test_neural_BP/models/trained_weights.json", bpnn)
