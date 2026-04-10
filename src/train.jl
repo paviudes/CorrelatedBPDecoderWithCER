@@ -1,3 +1,39 @@
+function get_loss_value(
+    weights_c2v_v2c, # learanble weights for computing m^t_(v→c) from m^(t-1)_(c→v).
+    weights_llrs, # learnable weights for m^t_(v→c) from the initial LLRs, and also for computing the posterior LLRs from m^t_(c→v).
+    weights_c2v_readout, # learnable weights for computing the readout (posterior LLRs) from m^t_(c→v).
+    weights_loss_layers, # learnable weights for the loss from each layer.
+    base, # constant parameters of the model, including the parity-check matrix, connectivity, correlation strengths, etc.
+    llrs_batch, # batch of initial LLRs for the bits, to be used as input to the network
+    syndromes_batch, # batch of syndromes, to be used as input to the network
+    expected_recoveries # batch of expected recoveries (error patterns), to be used for computing the Loss function
+)::Float32
+    """
+    Compute the value of the Loss function for a given batch of data and given values for the weights.
+    This version is friendly to Enzyme.jl, which requires a functional approach where the model parameters are passed explicitly to the function computing the loss, rather than being accessed as fields of a struct.
+    """
+    # Forward pass through the network to get the posterior LLRs
+    posterior_llrs = forward_pass_with_weights(
+        weights_c2v_v2c,
+        weights_llrs,
+        weights_c2v_readout,
+        base,
+        llrs_batch,
+        syndromes_batch
+    )
+    # Compute the total Loss including the correlation penalty
+    total_loss = compute_loss_including_correlations(
+        posterior_llrs,
+        expected_recoveries,
+        base.parity_check_matrix_dual,
+        base.connectivity,
+        base.correlation_strengths,
+        base.is_correlated,
+        weights_loss_layers
+    )
+    return total_loss
+end
+
 function train_neuralbp!(
     bpnn::NeuralBP,
     syndromes::BitMatrix,

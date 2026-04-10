@@ -74,7 +74,7 @@ end
 @functor NachmaniNeuralBP (weights_c2v_v2c, weights_llrs, weights_c2v_readout, weights_loss_layers)
 
 function v2c_to_c2v!(
-    m_c2v,                            # output (final LLRs)
+    messages_c2v,                            # output (final LLRs)
     activated_m_c2v_magnitudes,       # buffer: aggregated magnitudes
     activated_m_c2v_signs,            # buffer: aggregated signs
     activated_m_v2c_magnitudes,
@@ -123,7 +123,7 @@ function v2c_to_c2v!(
     # 3. Activation: 2 * atanh(exp(x))
     # -------------------------
     safe_atanh_exp_signed!(
-        m_c2v,
+        messages_c2v,
         activated_m_c2v_magnitudes,
         activated_m_c2v_signs
     )
@@ -165,9 +165,9 @@ end
 function c2v_to_v2c!(
     activated_m_v2c_magnitudes,        # output: magnitudes (log-domain)
     activated_m_v2c_signs,             # output: sign bits
-    m_v2c,                   # buffer (pre-activation real values)
+    messages_v2c,                   # buffer (pre-activation real values)
     weighted_channel_llrs,   # buffer (same size as channel_llrs)
-    m_c2v_previous,
+    messages_c2v_previous,
     weights_llrs,
     weights_messages,
     channel_llrs,
@@ -196,18 +196,46 @@ function c2v_to_v2c!(
     weight_matrix.nzval .= weights_messages
 
     # compute: ∑_(c' ∈ N(v) - c) ...
-    mul!(m_v2c, weight_matrix .* base.adj_C2V_V2C, m_c2v_previous)
+    mul!(messages_v2c, weight_matrix .* base.adj_C2V_V2C, messages_c2v_previous)
 
     # ---- channel contribution ----
     # weighted_channel_llrs = weights_llrs .* channel_llrs
     @. weighted_channel_llrs = weights_llrs * channel_llrs
 
     # m_v2c += base_projection * weighted_channel_llrs
-    mul!(m_v2c, base.adj_initialize_V2C, weighted_channel_llrs, 1f0, 1f0)
+    mul!(messages_v2c, base.adj_initialize_V2C, weighted_channel_llrs, 1f0, 1f0)
 
     # apply the activation function a(x) = log(tanh(x/2)) split into magnitude + sign
-    safe_log_tanh_split!(activated_m_v2c_magnitudes, activated_m_v2c_signs, m_v2c)
+    safe_log_tanh_split!(activated_m_v2c_magnitudes, activated_m_v2c_signs, messages_v2c)
 
+    return nothing
+end
+
+function c2v_to_v2c_with_weights!(
+    activated_m_v2c_magnitudes,
+    activated_m_v2c_signs,
+    messages_v2c,
+    messages_c2v,
+    weighted_channel_llrs,
+    weights_llr_layer,
+    weights_c2v_v2c_layer,
+    initial_llrs_batch,
+    base,
+    weight_matrix_v2c
+)
+    """
+    Similar to `c2v_to_v2c!`, but with the weights for the current layer passed as arguments, so that it can be used with Enzyme.jl.
+    """
+    # update sparse values instead of rebuilding structure
+    weight_matrix_v2c.nzval .= weights_c2v_v2c_layer
+
+    # compute: ∑_(c' ∈ N(v) - c) ...
+    mul!(messages_v2c, weight_matrix_v2c .* base.adj_C2V_V2C, messages_c2v)
+    # channel contribution
+    @. weighted_channel_llrs = weights_llr_layer * initial_llrs_batch
+    mul!(messages_v2c, base.adj_initialize_V2C, weighted_channel_llrs, 1f0, 1f0)
+    # apply the activation function a(x) = log(tanh(x/2)) split into magnitude + sign
+    safe_log_tanh_split!(activated_m_v2c_magnitudes, activated_m_v2c_signs, messages_v2c)
     return nothing
 end
 
@@ -270,6 +298,27 @@ function readout!(
     return nothing
 end
 
+function readout_with_weights!(
+    posterior_llrs,
+    m_c2v,
+    weights_readout,
+    weights_llrs,
+    channel_llrs,
+    base,
+    weight_matrix
+)
+    """
+    Similar to `readout!`, but with the weights for the current layer passed as arguments, so that it can be used with Enzyme.jl.
+    """
+    weight_matrix.nzval .= weights_readout
+
+    mul!(posterior_llrs, weight_matrix .* base.adj_C2V_readout, m_c2v)
+
+    @. posterior_llrs += weights_llrs * channel_llrs
+
+    return nothing
+end
+
 function readout(
     m_c2v,
     weights_readout,
@@ -299,6 +348,28 @@ function readout(
         posterior_llrs .+ (weights_llrs .* channel_llrs)
 
     return posterior_llrs
+end
+
+@inline function get_layer_weights(
+    weights_c2v_v2c,
+    weights_llrs,
+    base,
+    layer,
+    nsamples
+)
+    """
+    Slice the weights relevant for the current layer.
+    """
+    weights_start = (layer - 1) * base.nb_weights_c2v_v2c + 1
+    weights_end   = layer * base.nb_weights_c2v_v2c
+
+    weights_messages = @view weights_c2v_v2c[weights_start:weights_end]
+
+    weights_llr_layer = weights_llrs[
+        (layer - 1)*base.code_n_bits + 1 : layer*base.code_n_bits
+    ] .* ones(Float32, 1, nsamples)
+
+    return weights_messages, weights_llr_layer
 end
 
 function compute_layer!(
@@ -335,14 +406,8 @@ function compute_layer!(
     base = bpnn.base
     nsamples = size(initial_llrs_batch, 2)
 
-    # ---- weights ----
-    weights_start = (layer - 1) * base.nb_weights_c2v_v2c + 1
-    weights_end   = layer * base.nb_weights_c2v_v2c
-    weights_messages = @view bpnn.weights_c2v_v2c[weights_start:weights_end]
-
-    weights_llr = bpnn.weights_llrs[
-        (layer - 1)*base.code_n_bits + 1 : layer*base.code_n_bits
-    ] .* ones(Float32, 1, nsamples)
+    # ---- Slice the weights relevant for the current layer ----
+    weights_messages, weights_llr = get_layer_weights(bpnn.weights_c2v_v2c, bpnn.weights_llrs, base, layer, nsamples)
 
     # -------------------------
     # 1. C2V → V2C
@@ -454,6 +519,83 @@ function compute_layer(
     return (messages_c2v_new, posterior_llrs)
 end
 
+function compute_layer_with_weights!(
+    # Intermediate messages
+    messages_c2v,
+    activated_m_c2v_magnitudes,
+    activated_m_c2v_signs,
+    messages_v2c,
+    activated_m_v2c_magnitudes,
+    activated_m_v2c_signs,
+    # buffers for contributions to the messages and readout
+    weighted_channel_llrs,
+    posterior_llrs,
+    # inputs
+    syndromes_batch,
+    initial_llrs_batch,
+    # Explicit learanable weights as arguments for Enzyme.jl compatibility
+    weights_c2v_v2c,
+    weights_llrs,
+    weights_c2v_readout,
+    # constant arguments
+    base,
+    layer,
+    nsamples,
+    # matrix templates for in-place operations
+    weight_matrix_v2c,
+    weight_matrix_readout
+)
+    """
+    Compute one layer forward transition in the Neural BP model (one iteration of BP).
+    Same as compute_layer!, but uses explicit weights instead of bpnn.
+    This version is for the in-place version of the forward pass, with explicit weight arguments, so that it's friendly for Enzyme.jl.
+    """
+    # ---- Slice the weights relevant for the current layer ----
+    weights_c2v_v2c_layer, weights_llr_layer = get_layer_weights(weights_c2v_v2c, weights_llrs, base, layer, nsamples)
+
+    # nsamples = size(initial_llrs_batch, 2)
+    # -------------------------
+    # 1. C2V → V2C
+    # -------------------------
+    c2v_to_v2c_with_weights!(
+        activated_m_v2c_magnitudes,
+        activated_m_v2c_signs,
+        messages_v2c,
+        messages_c2v,
+        weighted_channel_llrs,
+        weights_llr_layer,
+        weights_c2v_v2c_layer,
+        initial_llrs_batch,
+        base,
+        weight_matrix_v2c
+    )
+    # -------------------------
+    # 2. V2C → C2V
+    # -------------------------
+    v2c_to_c2v!(
+        messages_c2v,
+        activated_m_c2v_magnitudes,
+        activated_m_c2v_signs,
+        activated_m_v2c_magnitudes,
+        activated_m_v2c_signs,
+        syndromes_batch,
+        base
+    )
+    # -------------------------
+    # 3. Readout
+    # -------------------------
+    readout_with_weights!(
+        posterior_llrs,
+        messages_c2v,
+        weights_c2v_readout,
+        weights_llr_layer,
+        initial_llrs_batch,
+        base,
+        weight_matrix_readout
+    )
+    return nothing
+end
+
 function (bpnn::NachmaniNeuralBP)(
     initial_llrs_batch::AbstractMatrix{<:Real},
     syndromes_batch::BitMatrix
@@ -558,4 +700,98 @@ function forward_pass(bpnn, initial_llrs_batch, syndromes_batch)
     posterior_llrs_all = cat(posterior_list...; dims=3)
 
     return posterior_llrs_all
+end
+
+function forward_pass_with_weights(
+    weights_c2v_v2c,
+    weights_llrs,
+    weights_c2v_readout,
+    base,
+    initial_llrs_batch,
+    syndromes_batch
+)
+    """
+    Forward pass with explicit weights as arguments, so that it's friendly for Enzyme.jl.
+    """
+    n_samples = size(initial_llrs_batch, 2)
+    neurons_per_layer = base.nb_neurons_per_layer
+
+    # Define the messages m^t_(c→v), where at t=0, they are initialized to zeros.
+    messages_c2v = zeros(Float32, neurons_per_layer, n_samples)
+    messages_v2c = zeros(Float32, neurons_per_layer, n_samples)
+
+    # Buffers for the activated magnitudes and signs at C2V and V2C layers
+    activated_m_c2v_magnitudes = similar(messages_c2v)
+    activated_m_c2v_signs = falses(size(messages_c2v))
+    activated_m_v2c_magnitudes = similar(messages_c2v)
+    activated_m_v2c_signs = falses(size(messages_c2v))
+
+    # Buffer for the weighted channel LLRs
+    weighted_channel_llrs = similar(initial_llrs_batch)
+
+    # Storing the posterior LLRs at each layer.
+    posterior_llrs_layer = zeros(Float32, base.code_n_bits, n_samples)
+
+    # Sparse templates for weight matrices
+    weight_matrix_v2c = sparse(
+        base.non_zero_rows_C2V_V2C,
+        base.non_zero_cols_C2V_V2C,
+        zeros(Float32, length(base.non_zero_rows_C2V_V2C)),
+        base.nb_neurons_per_layer,
+        base.nb_neurons_per_layer
+    )
+    weight_matrix_readout = sparse(
+        base.non_zero_rows_C2V_readout,
+        base.non_zero_cols_C2V_readout,
+        zeros(Float32, length(base.non_zero_rows_C2V_readout)),
+        base.code_n_bits,
+        base.nb_neurons_per_layer
+    )
+
+    # posterior LLRs for all layers, as a 3D tensor: (n_bits × n_samples × n_layers)
+    posterior_llrs = zeros(Float32, base.code_n_bits, n_samples, base.n_layers)
+
+    # Forward pass through layers
+    for layer in 1:base.n_layers
+        compute_layer_with_weights!(
+            messages_c2v,
+            activated_m_c2v_magnitudes,
+            activated_m_c2v_signs,
+            messages_v2c,
+            activated_m_v2c_magnitudes,
+            activated_m_v2c_signs,
+            weighted_channel_llrs,
+            posterior_llrs_layer,
+            syndromes_batch,
+            initial_llrs_batch,
+            weights_c2v_v2c,
+            weights_llrs,
+            weights_c2v_readout,
+            base,
+            layer,
+            n_samples,
+            weight_matrix_v2c,
+            weight_matrix_readout
+        )
+        posterior_llrs[:, :, layer] .= posterior_llrs_layer
+    end
+    return posterior_llrs
+end
+
+function forward_pass_with_weights(
+    bpnn::NachmaniNeuralBP,
+    initial_llrs_batch,
+    syndromes_batch
+)
+    """
+    Only for testing purposes: forward pass with explicit weights as arguments, so that it's friendly for Enzyme.jl.
+    """
+    return forward_pass_with_weights(
+        bpnn.weights_c2v_v2c,
+        bpnn.weights_llrs,
+        bpnn.weights_c2v_readout,
+        bpnn.base,
+        initial_llrs_batch,
+        syndromes_batch
+    )
 end

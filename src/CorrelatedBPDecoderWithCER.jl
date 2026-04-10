@@ -89,7 +89,7 @@ export StandardNeuralBP
 
 # Nachmani Neural BP model
 include("nachmani.jl")
-export NachmaniNeuralBP, forward_pass,
+export NachmaniNeuralBP, forward_pass, forward_pass_with_weights
        c2v_to_v2c, c2v_to_v2c!, v2c_to_c2v, v2c_to_c2v!, readout, readout! # these are solely for debugging and testing, not intended for external use.
 
 # Print functions for Neural BP models

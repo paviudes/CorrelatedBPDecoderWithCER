@@ -147,7 +147,7 @@ function test_forward_propagation()
 
     # Perform a forward pass
     output_llrs_inplace_version = bpnn(initial_llrs_batch, syndromes_batch)
-    output_llrs_functional_version = forward_pass(bpnn, initial_llrs_batch, syndromes_batch)
+    output_llrs_functional_version = forward_pass_with_weights(bpnn, initial_llrs_batch, syndromes_batch)
     
     # Check if the outputs match
     println("Syndrome: ", syndrome)

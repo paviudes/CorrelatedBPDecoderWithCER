@@ -16,10 +16,8 @@ function compute_loss_error_from_llrs(posterior_llrs::Matrix{Float32}, expected_
     n_samples = size(expected_recoveries, 2)
     # Compute the average loss over all samples as a Matrix equation.
     e_total_matrix = @. sigmoid(posterior_llrs) + expected_recoveries
-    # println("e_total_matrix of shape: ", size(e_total_matrix), ": ", e_total_matrix)
     commutation_relations_matrix = parity_check_matrix_dual * e_total_matrix
     average_loss = sum(@. abs(sin(π * commutation_relations_matrix / 2))) / n_samples
-    # println("Average Loss (Matrix computation): ", average_loss)
     return average_loss
 end
 
@@ -53,13 +51,10 @@ function compute_additional_loss_from_ising_correlations(posterior_llrs::Matrix{
     """
     n_samples = size(expected_recoveries, 2)
     correlation_strengths_batch = repeat(correlation_strengths, 1, n_samples)
-    # println("correlation_strengths_batch of shape: ", size(correlation_strengths_batch))
     # Compute the predicted errors from the left part of the connectivity matrix
     e_pred_left = sigmoid.(posterior_llrs[connectivity[1:end, 1], 1:end])
     e_pred_right = sigmoid.(posterior_llrs[connectivity[1:end, 2], 1:end])
     # Compute the correlation penalty term
-    # correlation_penalty_matrix = e_pred_left .- (e_pred_left .* e_pred_right)
-    # correlation_penalty = sum(correlation_penalty_matrix) * correlation_strength / n_samples
     # n_edges = size(connectivity, 1)
     # correlation_penalty = sum(@. e_pred_left * (1 - e_pred_right) * correlation_strengths_batch) / (n_samples * n_edges)
     correlation_penalty = sum(@. e_pred_left * (1 - e_pred_right) * correlation_strengths_batch) / (n_samples)
