@@ -170,3 +170,54 @@ function xor_affine!(
 
     return nothing
 end
+
+function sparse_multiply!(
+    out::Matrix{Float32},
+    rows::Vector{Int},
+    cols::Vector{Int},
+    weights::AbstractVector{Float32},
+    X::Matrix{Float32}
+)
+    """
+    Compute Y = (A ⊙ W) * X in an efficient edge-wise manner.
+
+    Here:
+      - A is an implicit sparse binary matrix defined by (rows, cols),
+        i.e., A[r, c] = 1 for each edge (r, c), and 0 otherwise.
+      - W is a vector of learnable weights corresponding to each nonzero entry of A.
+      - ⊙ denotes the Hadamard (element-wise) product.
+      - X is a dense input matrix.
+      - Y is the output matrix (`out`), overwritten in-place.
+
+    This function avoids explicitly forming the sparse matrix A or (A ⊙ W),
+    and instead performs the multiplication using edge-wise accumulation:
+        Y[r, j] += W[e] * X[c, j]
+
+    Arguments:
+      - out      : Output matrix Y (preallocated, will be overwritten)
+      - rows     : Row indices of nonzero entries of A
+      - cols     : Column indices of nonzero entries of A
+      - weights  : Values W[e] corresponding to each (rows[e], cols[e])
+      - X        : Input matrix X
+
+    Notes:
+      - length(rows) == length(cols) == length(weights)
+      - This implementation is compatible with Enzyme.jl (no sparse structures).
+    """
+    fill!(out, 0f0)
+
+    n_edges = length(rows)
+    n_cols_input = size(X, 2)
+
+    @inbounds for e in 1:n_edges
+        r = rows[e]
+        c = cols[e]
+        w = weights[e]
+
+        @simd for j in 1:n_cols_input
+            out[r, j] += w * X[c, j]
+        end
+    end
+
+    return nothing
+end

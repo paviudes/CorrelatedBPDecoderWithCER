@@ -122,7 +122,7 @@ export predict_neuralbp, check_bp_solutions
 # Utility functions
 include("utils.jl")
 export safe_atanh_exp_signed, safe_atanh_exp_signed!, safe_log_tanh_split, safe_log_tanh_split!, random_values_around_one, compute_std_assuming_bernoulli,
-       debug_log_tanh_split, xor_affine!
+       debug_log_tanh_split, xor_affine!, sparse_multiply!
 
 #===============================================================================
                                END OF MODULE

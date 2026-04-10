@@ -223,7 +223,17 @@ function train_neuralbp_enzyme!(
             # -------------------------
             # Progress update
             # -------------------------
-            ProgressMeter.next!(batch_progress; showvalues = [(:loss, loss)])
+            current_loss = get_loss_value(
+                bpnn.weights_c2v_v2c,
+                bpnn.weights_llrs,
+                bpnn.weights_c2v_readout,
+                bpnn.weights_loss_layers,
+                base,
+                llrs_batch,
+                syndromes_batch,
+                expected_batch
+            )
+            ProgressMeter.next!(batch_progress; showvalues = [(:loss, current_loss)])
         end
 
         ProgressMeter.next!(epoch_progress)

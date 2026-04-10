@@ -220,17 +220,22 @@ function c2v_to_v2c_with_weights!(
     weights_llr_layer,
     weights_c2v_v2c_layer,
     initial_llrs_batch,
-    base,
-    weight_matrix_v2c
+    base
 )
     """
     Similar to `c2v_to_v2c!`, but with the weights for the current layer passed as arguments, so that it can be used with Enzyme.jl.
     """
     # update sparse values instead of rebuilding structure
-    weight_matrix_v2c.nzval .= weights_c2v_v2c_layer
+    # weight_matrix_v2c.nzval .= weights_c2v_v2c_layer
 
-    # compute: ∑_(c' ∈ N(v) - c) ...
-    mul!(messages_v2c, weight_matrix_v2c, messages_c2v)
+    # compute: ∑_(c' ∈ N(v) - c) w^(t-1)_(v,c;c',v) m^(t-1)_(c'->v)
+    sparse_multiply!(
+        messages_v2c,
+        base.non_zero_rows_C2V_V2C,
+        base.non_zero_cols_C2V_V2C,
+        weights_c2v_v2c_layer,
+        messages_c2v
+    )
     
     # channel contribution
     # @. weighted_channel_llrs = weights_llr_layer * initial_llrs_batch
@@ -307,11 +312,11 @@ end
 
 function readout_with_weights!(
     posterior_llrs,
-    m_c2v,
+    messages_c2v,
     weights_readout,
     weights_llrs,
     channel_llrs,
-    weight_matrix_readout
+    base
 )
     """
     Similar to `readout!`, but with the weights for the current layer passed as arguments, so that it can be used with Enzyme.jl.
@@ -322,10 +327,20 @@ function readout_with_weights!(
     - N(v) is the set of check nodes connected to variable node v
     - W^t_(v; c,v) is a weight.
     """
+    #=
     weight_matrix_readout.nzval .= weights_readout
     
     # Compute ∑_(c ∈ N(v)) m^t_(c->v) W^t_(v; c,v)
-    mul!(posterior_llrs, weight_matrix_readout, m_c2v)
+    mul!(posterior_llrs, weight_matrix_readout, messages_c2v)
+    =#
+    # Compute ∑_(c ∈ N(v)) m^t_(c->v) W^t_(v; c,v)
+    sparse_multiply!(
+        posterior_llrs,
+        base.non_zero_rows_C2V_readout,
+        base.non_zero_cols_C2V_readout,
+        weights_readout,
+        messages_c2v
+    )
 
     # Add the weighted channel LLR contribution, i.e b^(t)_v l_v
     @inbounds for j in axes(posterior_llrs, 2)
@@ -557,10 +572,7 @@ function compute_layer_with_weights!(
     # constant arguments
     base,
     layer,
-    nsamples,
-    # matrix templates for in-place operations
-    weight_matrix_v2c,
-    weight_matrix_readout
+    nsamples
 )
     """
     Compute one layer forward transition in the Neural BP model (one iteration of BP).
@@ -583,8 +595,7 @@ function compute_layer_with_weights!(
         weights_llr_layer,
         weights_c2v_v2c_layer,
         initial_llrs_batch,
-        base,
-        weight_matrix_v2c
+        base
     )
     # -------------------------
     # 2. V2C → C2V
@@ -607,7 +618,7 @@ function compute_layer_with_weights!(
         weights_c2v_readout,
         weights_llr_layer,
         initial_llrs_batch,
-        weight_matrix_readout
+        base
     )
     return nothing
 end
@@ -748,6 +759,7 @@ function forward_pass_with_weights(
     # Storing the posterior LLRs at each layer.
     posterior_llrs_layer = zeros(Float32, base.code_n_bits, n_samples)
 
+    #=
     # Sparse templates for weight matrices
     weight_matrix_v2c = sparse(
         base.non_zero_rows_C2V_V2C,
@@ -763,6 +775,7 @@ function forward_pass_with_weights(
         base.code_n_bits,
         base.nb_neurons_per_layer
     )
+    =#
 
     # posterior LLRs for all layers, as a 3D tensor: (n_bits × n_samples × n_layers)
     posterior_llrs = zeros(Float32, base.code_n_bits, n_samples, base.n_layers)
@@ -786,8 +799,8 @@ function forward_pass_with_weights(
             base,
             layer,
             n_samples,
-            weight_matrix_v2c,
-            weight_matrix_readout
+            #weight_matrix_v2c,
+            #weight_matrix_readout
         )
         posterior_llrs[:, :, layer] .= posterior_llrs_layer
     end
