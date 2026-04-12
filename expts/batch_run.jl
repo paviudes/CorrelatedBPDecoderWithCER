@@ -54,15 +54,15 @@ end
 
 function main()
     """
-    Data set for plots in APS:
+    Data set for plots in APS: aps_7q_Hamm_code_data
     p: 0.001:0.001:0.005
     q: 0.3:0.04:0.66
     """
     generate_parallel_commands(
-        0.001:0.001:0.004,
-        [0.3, 0.42],
-        7;
-        codename = "aps_7q_Hamm_code_data",
+        [0.006,0.008],
+        [0.1],
+        56;
+        codename = "perf_analysis_7q_Hamming",
         n_hidden_layers = 100,
         n_epochs = 10,
         batch_size = 8,
