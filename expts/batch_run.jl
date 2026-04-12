@@ -59,9 +59,9 @@ function main()
     q: 0.3:0.04:0.66
     """
     generate_parallel_commands(
-        0.001:0.003:0.002,
+        0.001:0.001:0.004,
         0.36:0.04:0.4,
-        14;
+        7;
         codename = "aps_7q_Hamm_code_data",
         n_hidden_layers = 100,
         n_epochs = 10,
