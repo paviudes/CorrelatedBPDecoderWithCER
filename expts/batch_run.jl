@@ -58,18 +58,19 @@ function main()
     p: 0.001:0.001:0.005
     q: 0.3:0.04:0.66
     """
+    dirname = "perf_analysis_7q_Hamming"
     generate_parallel_commands(
         [0.006,0.008],
         [0.1],
         56;
-        codename = "perf_analysis_7q_Hamming",
+        codename = dirname,
         n_hidden_layers = 100,
         n_epochs = 10,
         batch_size = 8,
         retrain = false,
         julia_project = "./../",
-        commands_file = "./../data/aps_7q_Hamm_code_data/commands.txt",
-        results_file = "./../data/aps_7q_Hamm_code_data/simulation_results.json",
+        commands_file = "./../data/$(dirname)/commands.txt",
+        results_file = "./../data/$(dirname)/simulation_results.json",
         ncpus = 56
     )
 end
