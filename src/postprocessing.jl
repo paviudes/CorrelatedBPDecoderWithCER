@@ -173,7 +173,7 @@ function collect_decoder_statistics_for_ballistic_data(per_qubit_error_probs::Ab
             all_stats[file_index, :rounds_per_BP] = stats_dataframe[1, :rounds_per_BP]
             all_stats[file_index, :weight_soft_constraint] = stats_dataframe[1, :weight_soft_constraint]
             all_stats[file_index, :num_failures] = stats_dataframe[1, :num_failures] ÷ 5
-            all_stats[file_index, :average_logical_error_rate] = stats_dataframe[1, :average_logical_error_rate] / 5
+            all_stats[file_index, :average_logical_error_rate] = stats_dataframe[1, :average_logical_error_rate]# / 5
             all_stats[file_index, :std_logical_error_rate] = compute_std_assuming_bernoulli(all_stats[file_index, :average_logical_error_rate], all_stats[file_index, :num_samples_per_error_rate])
             all_stats[file_index, :runtime] = stats_dataframe[1, :runtime]
             file_index += 1

@@ -21,6 +21,7 @@ using Statistics        # Statistical functions for analyzing decoder performanc
 
 # Visualization
 using Plots             # Plotting decoder performance and error rates
+using StatsPlots        # Additional plotting recipes for statistical visualizations
 
 # Machine learning framework
 using Flux              # Neural network framework for neural belief propagation
@@ -59,7 +60,7 @@ export DecoderStatistics, collect_decoder_statistics, save_decoder_dataframe,
 
 # Visualization and plotting
 include("plot.jl")
-export plot_statistics_for_ballistic_error_model
+export plot_statistics_for_ballistic_error_model, plot_performance_spread
 
 # Classical error correction codes
 include("hamming.jl")

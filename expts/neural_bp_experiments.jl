@@ -376,7 +376,7 @@ function collect_results()
     codename = "aps_7q_Hamm_code_data"
     prefix = "./../data/$(codename)"
     n_hidden_layers = 100
-    n_epochs = 5
+    n_epochs = 10
 
     # Collect results for the Neural BP decoder. If the results file already exists, load it instead of re-computing.
     output_csv_file_neural = "$(prefix)/results/decoder_statistics_ballistic.csv"
@@ -400,8 +400,28 @@ function collect_results()
         println("Standard decoder statistics saved to file: $output_csv_file_standard")
     end
 
+    #=
     # Plot results for the neural BP decoder
-    plot_statistics_for_ballistic_error_model(neuralbp_results, per_qubit_error_probs, neighbour_error_probs; prefix="$(prefix)/plots", data_to_compare=standardbp_results)
+    plot_statistics_for_ballistic_error_model(
+        neuralbp_results, 
+        per_qubit_error_probs, 
+        neighbour_error_probs; 
+        prefix="$(prefix)/plots", 
+        data_to_compare=standardbp_results
+    )
+    =#
+
+    # Violin plots to show the spread of the logical error rates across different samples for a given set of error parameters.
+    violin_error_parameters = [
+        (0.001, 0.3),
+        (0.001, 0.5)
+    ]
+    plot_performance_spread(
+        neuralbp_results, 
+        standardbp_results,
+        violin_error_parameters;
+        prefix="$(prefix)/plots"
+    )
     
     return nothing
 end

@@ -53,14 +53,19 @@ function generate_parallel_commands(
 end
 
 function main()
+    """
+    Data set for plots in APS:
+    p: 0.001:0.001:0.005
+    q: 0.3:0.04:0.66
+    """
     generate_parallel_commands(
-        0.001:0.001:0.005,
-        0.3:0.04:0.66,
-        10;
+        0.001:0.003:0.002,
+        0.36:0.04:0.4,
+        14;
         codename = "aps_7q_Hamm_code_data",
-        n_hidden_layers = 5,
-        n_epochs = 5,
-        batch_size = 2,
+        n_hidden_layers = 100,
+        n_epochs = 10,
+        batch_size = 8,
         retrain = false,
         julia_project = "./../",
         commands_file = "./../data/aps_7q_Hamm_code_data/commands.txt",

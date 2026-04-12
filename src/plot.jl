@@ -1,7 +1,13 @@
 using Plots
 using DelimitedFiles
 
-function plot_statistics_for_ballistic_error_model(stats_dataframe::DataFrame, per_qubit_error_probs::AbstractVector{Float64}, neighbour_error_probs::AbstractVector{Float64}; prefix::String="./../plots", data_to_compare::Union{DataFrame, Nothing}=nothing)
+function plot_statistics_for_ballistic_error_model(
+    stats_dataframe::DataFrame, 
+    per_qubit_error_probs::AbstractVector{Float64}, 
+    neighbour_error_probs::AbstractVector{Float64}; 
+    prefix::String="./../plots", 
+    data_to_compare::Union{DataFrame, Nothing}=nothing
+)
     """
     Plot the average logical error rate as a function of the error model parameters for the Ballistic Error Model.
     We will plot the `neighbour_error_prob` on the x-axis and the logical error rate on the y-axis, with different curves for different `per_qubit_error_prob` values.
@@ -39,10 +45,16 @@ function plot_statistics_for_ballistic_error_model(stats_dataframe::DataFrame, p
             # Select the rows corresponding to a specific `per_qubit_error_prob` and `neighbour_error_prob` pair.
             # These rows have their `error_model_parameters_description` field of the form ./../data/aps_7q_Hamm_code_data/testing_data/test_ballistic_p_<per_qubit_prob>_q_<neighbour_prob>_*.txt
             # We have to filter the dataframe based on the `error_model_parameters_description` column to select the relevant rows for this pair of parameters.
-            data_per_pair = filter(row -> occursin("p_$(per_qubit_prob)_q_$(neighbour_prob)", row.error_model_parameters_description), stats_dataframe)
+            data_per_pair = filter(
+                row -> occursin("p_$(per_qubit_prob)_q_$(neighbour_prob)", row.error_model_parameters_description), 
+                stats_dataframe
+            )
             
             if !isnothing(data_to_compare)
-                data_per_pair_to_compare =  filter(row -> occursin("p_$(per_qubit_prob)_q_$(neighbour_prob)", row.error_model_parameters_description), data_to_compare)
+                data_per_pair_to_compare = filter(
+                    row -> occursin("p_$(per_qubit_prob)_q_$(neighbour_prob)", row.error_model_parameters_description), 
+                    data_to_compare
+                )
             end
             
             # Now we have multiple rows corresponding to different `sample` values. We will average over these to get the average logical error rate for this pair of parameters.
@@ -61,10 +73,12 @@ function plot_statistics_for_ballistic_error_model(stats_dataframe::DataFrame, p
                 push!(std_logical_error_rates_to_compare, std_logical_error_rate_to_compare)
             end
         end
-
+        
+        #=
         println("X values (neighbour error probabilities): ", neighbour_error_probs
                 , "\nY values (average logical error rates): ", average_logical_error_rates
                 , "\nError bars (std logical error rates): ", std_logical_error_rates)
+        =#
         
         # Plot the curve for this `per_qubit_error_prob` value, with error bars.
         plot!(plt, 
@@ -80,10 +94,11 @@ function plot_statistics_for_ballistic_error_model(stats_dataframe::DataFrame, p
 
         # If we have data to compare, plot that as well.
         if !isnothing(data_to_compare)
+            #=
             println("X values (neighbour error probabilities): ", neighbour_error_probs
                 , "\nY values (average logical error rates): ", average_logical_error_rates_to_compare
                 , "\nError bars (std logical error rates): ", std_logical_error_rates_to_compare)
-            
+            =#
             plot!(plt, 
                 neighbour_error_probs, 
                 average_logical_error_rates_to_compare, 
@@ -103,4 +118,77 @@ function plot_statistics_for_ballistic_error_model(stats_dataframe::DataFrame, p
 
     # Save the plot to a file.
     savefig(plt, "$(prefix)/ballistic_error_model_plot.pdf") 
+end
+
+function plot_performance_spread(
+    neuralbp_stats_dataframe::DataFrame, 
+    standardbp_stats_dataframe::DataFrame,
+    error_parameters::Vector{Tuple{Float64, Float64}}; 
+    prefix::String="./../plots"
+)
+    """
+    Plot the spread of the performance gain:
+    
+    gain = ratio of the logical error rate of the standard BP decoder to the neural BP decoder,
+
+    across different samples for specific pairs of error model parameters (`per_qubit_error_prob` and `neighbour_error_prob`).
+    This will give us an idea of how much the performance varies across different samples for the same error model parameters.
+    We will do violin plots of the performance gains for different samples, grouped by the error model parameters.
+    """
+    # Isolate the data needed for the violin plots.
+    error_parameters_labels = [
+        String("p_$(per_qubit_prob)_q_$(neighbour_prob)") 
+        for (per_qubit_prob, neighbour_prob) in error_parameters
+    ]
+    
+    # DataFrame for the violin plot, with columns `error_parameter_labels` and `performance_gain`.
+    data_for_violin = DataFrame(
+        error_parameter_index = Int[],
+        error_parameter_labels = String[],
+        neuralbp_logerr = Float64[],
+        standardbp_logerr = Float64[],
+        performance_gain = Float64[]
+    )
+
+    # Filter out the rows in the data frame that correspond to the specific (`per_qubit_error_prob`, `neighbour_error_prob`) pairs we are interested in.
+    for (label_index, label) in enumerate(error_parameters_labels)
+        neuralbp_logerrs = filter(
+            row -> occursin(label, row.error_model_parameters_description), 
+            neuralbp_stats_dataframe
+        )
+        standardbp_logerrs = filter(
+            row -> occursin(label, row.error_model_parameters_description), 
+            standardbp_stats_dataframe
+        )
+        for i in 1:nrow(neuralbp_logerrs)
+            neuralbp_logerr = neuralbp_logerrs.average_logical_error_rate[i]
+            standardbp_logerr = standardbp_logerrs.average_logical_error_rate[i]
+            performance_gain = standardbp_logerr / neuralbp_logerr
+            push!(data_for_violin, (label_index, label, neuralbp_logerr, standardbp_logerr, performance_gain))
+        end
+    end
+
+    # Define the tick labels
+    xtick_error_parameter_labels = [
+        "\$p=$(p)\$, \$ q=$(q)\$"
+        for (p, q) in error_parameters
+    ]
+
+    # Do the violin plot.
+    plt = @df data_for_violin violin(
+        :error_parameter_index,
+        :performance_gain,
+        xlabel = "Error Model Parameters (p, q)",
+        ylabel = "Performance Gain",
+        legend = false,
+        #yscale = :log10,
+        rotation = 0,
+        xticks = (1:length(error_parameters_labels), xtick_error_parameter_labels),
+        labelfontsize = 14,
+        tickfontsize = 14,
+        size = (800, 600)
+    )
+
+    # Save the plot to a file.
+    savefig(plt, "$(prefix)/performance_spread_violin_plot.pdf")
 end
