@@ -370,9 +370,11 @@ function collect_results()
     """
     Collect results from the Neural BP experiments and save them to a CSV file.
     """
-    per_qubit_error_probs = 0.001:0.001:0.005
-    neighbour_error_probs = 0.3:0.04:0.66
-    n_samples = 10
+    # per_qubit_error_probs = 0.001:0.001:0.005
+    # neighbour_error_probs = 0.3:0.04:0.66
+    per_qubit_error_probs = 0.001:0.001:0.004
+    neighbour_error_probs = [0.3, 0.42]
+    n_samples = 7
     codename = "aps_7q_Hamm_code_data"
     prefix = "./../data/$(codename)"
     n_hidden_layers = 100
@@ -414,7 +416,9 @@ function collect_results()
     # Violin plots to show the spread of the logical error rates across different samples for a given set of error parameters.
     violin_error_parameters = [
         (0.001, 0.3),
-        (0.001, 0.5)
+        (0.004, 0.3),
+        (0.001, 0.42),
+        (0.004, 0.42)
     ]
     plot_performance_spread(
         neuralbp_results, 

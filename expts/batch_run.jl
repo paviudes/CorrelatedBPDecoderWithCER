@@ -60,7 +60,7 @@ function main()
     """
     generate_parallel_commands(
         0.001:0.001:0.004,
-        0.36:0.04:0.4,
+        [0.3, 0.42],
         7;
         codename = "aps_7q_Hamm_code_data",
         n_hidden_layers = 100,

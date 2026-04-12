@@ -20,8 +20,9 @@ using DataFrames        # Tabular data structures for decoder statistics
 using Statistics        # Statistical functions for analyzing decoder performance
 
 # Visualization
-using Plots             # Plotting decoder performance and error rates
-using StatsPlots        # Additional plotting recipes for statistical visualizations
+using Plots              # Plotting decoder performance and error rates
+using Plots.PlotMeasures # For adding margins around the plot area
+using StatsPlots         # Additional plotting recipes for statistical visualizations
 
 # Machine learning framework
 using Flux              # Neural network framework for neural belief propagation

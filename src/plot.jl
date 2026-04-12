@@ -178,15 +178,16 @@ function plot_performance_spread(
     plt = @df data_for_violin violin(
         :error_parameter_index,
         :performance_gain,
-        xlabel = "Error Model Parameters (p, q)",
+        xlabel = "Ballistic Error Model Parameters (p, q)",
         ylabel = "Performance Gain",
         legend = false,
         #yscale = :log10,
-        rotation = 0,
+        xrotation = 30,
         xticks = (1:length(error_parameters_labels), xtick_error_parameter_labels),
         labelfontsize = 14,
         tickfontsize = 14,
-        size = (800, 600)
+        size = (800, 600),
+        bottom_margin = 10mm
     )
 
     # Save the plot to a file.
