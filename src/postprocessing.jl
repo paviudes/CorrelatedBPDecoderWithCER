@@ -142,7 +142,7 @@ function collect_decoder_statistics_for_ballistic_data(per_qubit_error_probs::Ab
         end
     end
     if (size(missing_files, 1) > 0)
-        @warn ("$(size(missing_files, 1)) files are missing.")
+        @warn ("$(size(missing_files, 1)) files are missing:\n$(missing_files)")
     end
 
     all_stats = DataFrame(
@@ -182,7 +182,7 @@ function collect_decoder_statistics_for_ballistic_data(per_qubit_error_probs::Ab
     return all_stats
 end
 
-function collect_standard_decoder_statistics_for_ballistic_data(prefix::String="./../data", ntrials::Int=100000)::DataFrame
+function collect_standard_decoder_statistics_for_ballistic_data(prefix::String="./../data", ntrials::Int=100000; standard_BP_output_file::String="standard_bp_failure_rates.txt")::DataFrame
     """
     Collect decoder statistics for the ballistic error model data for the standard BP decoder (i.e., not the Neural BP decoder).
     We have one file summarizing the result for each simulation run, whose name is results/standard_BP_failure_rates.txt.
@@ -194,7 +194,7 @@ function collect_standard_decoder_statistics_for_ballistic_data(prefix::String="
     The DataFrame will have the following columns:
     algo::String (set to "SumProduct")
     error_model_name::String (set to "ExplicitErrorModel")
-    error_model_parameters_description::String (set to "./../data/aps_7q_Hamm_code_data/testing_data/test_ballistic_p_<per_qubit_error_prob>_q_<neighbour_error_prob>_s_<sample>.txt")
+    error_model_parameters_description::String (set to "./../data/$(dirname)/testing_data/test_ballistic_p_<per_qubit_error_prob>_q_<neighbour_error_prob>_s_<sample>.txt")
     num_samples_per_error_rate::Int (set to ntrials)
     n_iterations_BP::Int # denotes n_layers in Neural Network BP (set to 0, since we don't have this data for the standard BP decoder)
     rounds_per_BP::Int # denotes n_epochs in Neural Network BP (set to 0, since we don't have this data for the standard BP decoder)
@@ -204,7 +204,7 @@ function collect_standard_decoder_statistics_for_ballistic_data(prefix::String="
     std_logical_error_rate::Float64 (computed using compute_std_assuming_bernoulli with μ = num_failures / ntrials and n = ntrials)
     runtime::Float64 (set to 0.0, since we don't have runtime data for the standard BP decoder)
     """
-    results_file = "$(prefix)/results/standard_bp_failure_rates.txt"
+    results_file = "$(prefix)/results/$(standard_BP_output_file)"
     if !isfile(results_file)
         @warn ("File $(results_file) is missing.")
         return DataFrame()

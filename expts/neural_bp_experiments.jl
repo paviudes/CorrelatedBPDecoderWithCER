@@ -321,7 +321,7 @@ function train_Nachmani_neuralbp(
         training_syndromes = convert.(Bool, mod.(H * expected_recoveries, 2))
         
         # Train the Neural BP model
-        train_neuralbp_enzyme!(bpnn, training_syndromes, expected_recoveries; learning_rate=1f-1, n_epochs=n_epochs, batch_size=batch_size)
+        train_neuralbp_enzyme!(bpnn, training_syndromes, expected_recoveries; learning_rate=5f-1, n_epochs=n_epochs, batch_size=batch_size)
 
         # Save the trained weights to a file
         save_trained_neuralbp_model(weights_filename, bpnn)
@@ -372,10 +372,10 @@ function collect_results()
     """
     # per_qubit_error_probs = 0.001:0.001:0.005
     # neighbour_error_probs = 0.3:0.04:0.66
-    per_qubit_error_probs = 0.001:0.001:0.004
-    neighbour_error_probs = [0.3, 0.42]
-    n_samples = 7
-    codename = "aps_7q_Hamm_code_data"
+    per_qubit_error_probs = [0.006, 0.008]
+    neighbour_error_probs = [0.1]
+    n_samples = 56
+    codename = "perf_analysis_7q_Hamming"
     prefix = "./../data/$(codename)"
     n_hidden_layers = 100
     n_epochs = 10
@@ -386,7 +386,14 @@ function collect_results()
         # Load the dataframe from the existing CSV file
         neuralbp_results = CSV.read(output_csv_file_neural, DataFrame)
     else
-        neuralbp_results = collect_decoder_statistics_for_ballistic_data(per_qubit_error_probs, neighbour_error_probs, n_samples, n_hidden_layers, n_epochs; prefix=prefix)
+        neuralbp_results = collect_decoder_statistics_for_ballistic_data(
+            per_qubit_error_probs, 
+            neighbour_error_probs, 
+            n_samples, 
+            n_hidden_layers, 
+            n_epochs; 
+            prefix=prefix
+        )
         save_decoder_dataframe(neuralbp_results, output_csv_file_neural)
         println("Decoder statistics saved to file: $output_csv_file_neural")
     end
@@ -397,7 +404,10 @@ function collect_results()
         # Load the dataframe from the existing CSV file
         standardbp_results = CSV.read(output_csv_file_standard, DataFrame)
     else
-        standardbp_results = collect_standard_decoder_statistics_for_ballistic_data(prefix)
+        standardbp_results = collect_standard_decoder_statistics_for_ballistic_data(
+            prefix; 
+            standard_BP_output_file="standard_bp_failure_rates.txt"
+        )
         save_decoder_dataframe(standardbp_results, output_csv_file_standard)
         println("Standard decoder statistics saved to file: $output_csv_file_standard")
     end
@@ -415,10 +425,8 @@ function collect_results()
 
     # Violin plots to show the spread of the logical error rates across different samples for a given set of error parameters.
     violin_error_parameters = [
-        (0.001, 0.3),
-        (0.004, 0.3),
-        (0.001, 0.42),
-        (0.004, 0.42)
+        (0.006, 0.1),
+        (0.008, 0.1)
     ]
     plot_performance_spread(
         neuralbp_results, 
