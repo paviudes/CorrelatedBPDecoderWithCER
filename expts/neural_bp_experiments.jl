@@ -373,12 +373,12 @@ function collect_results()
     # per_qubit_error_probs = 0.001:0.001:0.005
     # neighbour_error_probs = 0.3:0.04:0.66
     per_qubit_error_probs = [0.006, 0.008]
-    neighbour_error_probs = [0.1]
+    neighbour_error_probs = [0.2]
     n_samples = 56
     codename = "perf_analysis_7q_Hamming"
     prefix = "./../data/$(codename)"
     n_hidden_layers = 100
-    n_epochs = 50
+    n_epochs = 10
 
     # Collect results for the Neural BP decoder. If the results file already exists, load it instead of re-computing.
     output_csv_file_neural = "$(prefix)/results/decoder_statistics_ballistic.csv"
@@ -425,8 +425,8 @@ function collect_results()
 
     # Violin plots to show the spread of the logical error rates across different samples for a given set of error parameters.
     violin_error_parameters = [
-        (0.006, 0.1),
-        (0.008, 0.1)
+        (0.006, 0.2),
+        (0.008, 0.2)
     ]
     plot_performance_spread(
         neuralbp_results, 

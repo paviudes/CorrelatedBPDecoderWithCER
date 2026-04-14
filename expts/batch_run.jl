@@ -61,7 +61,7 @@ function main()
     dirname = "perf_analysis_7q_Hamming"
     generate_parallel_commands(
         [0.006,0.008],
-        [0.1],
+        [0.2],
         56;
         codename = dirname,
         n_hidden_layers = 100,
