@@ -378,7 +378,7 @@ function collect_results()
     codename = "perf_analysis_7q_Hamming"
     prefix = "./../data/$(codename)"
     n_hidden_layers = 100
-    n_epochs = 10
+    n_epochs = 50
 
     # Collect results for the Neural BP decoder. If the results file already exists, load it instead of re-computing.
     output_csv_file_neural = "$(prefix)/results/decoder_statistics_ballistic.csv"
