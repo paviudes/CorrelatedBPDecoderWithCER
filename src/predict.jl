@@ -41,7 +41,7 @@ function check_bp_solutions(parity_check_matrix_dual::Matrix{Int}, errors::BitMa
     total_fails = 0
     
     # Make a progress bar
-    progress = Progress(n_samples, desc="Checking BP solutions: ")
+    # progress = Progress(n_samples, desc="Checking BP solutions: ")
     for i in 1:n_samples
         error_pattern = errors[:, i]
         # Check if any of the proposed recoveries from the layers correctly fixes the error
@@ -61,7 +61,7 @@ function check_bp_solutions(parity_check_matrix_dual::Matrix{Int}, errors::BitMa
         else
             total_fails += 1
         end
-        next!(progress, showvalues = [(:Fails, total_fails)])
+        # next!(progress, showvalues = [(:Fails, total_fails)])
     end
     return is_correct
 end
