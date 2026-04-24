@@ -19,8 +19,8 @@ function plot_statistics_for_ballistic_error_model(
     - `data_to_compare::Union{DataFrame, Nothing}`: An optional DataFrame containing data to compare with the ballistic error model (default: `nothing`).
     """
     plt = plot(;
-                xlabel="Neighbour Error Probability \$(q)\$",
-                ylabel="Average Logical Error Rate",
+                xlabel="\nNeighbour Error Probability \$(q)\$",
+                ylabel="Average Logical Error Rate\n",
                 legend=:bottomright,
                 legendfontsize=12,
                 yscale=:log10
@@ -114,7 +114,16 @@ function plot_statistics_for_ballistic_error_model(
     end
 
     # Add the legend outside the plot area to avoid overlapping with the curves.
-    plot!(plt, legend=:outertopright)
+    plot!(plt, 
+        legend=:outertopright, 
+        labelfontsize=24,
+        tickfontsize=24,
+        size=(880, 600), 
+        bottom_margin=5mm, 
+        left_margin=5mm,
+        legendfontsize=18,
+        labelpadding=2cm
+    )
 
     # Save the plot to a file.
     savefig(plt, "$(prefix)/ballistic_error_model_plot.pdf") 
@@ -167,6 +176,11 @@ function plot_performance_spread(
             push!(data_for_violin, (label_index, label, neuralbp_logerr, standardbp_logerr, performance_gain))
         end
     end
+
+    # Save the data for the voilin plot in a CSV file for record-keeping and potential future use.
+    output_csv_file = "$(prefix)/performance_spread_data.csv"
+    CSV.write(output_csv_file, data_for_violin)
+    println("Data for performance spread violin plot saved to file: $output_csv_file")
 
     # Define the tick labels
     xtick_error_parameter_labels = [
