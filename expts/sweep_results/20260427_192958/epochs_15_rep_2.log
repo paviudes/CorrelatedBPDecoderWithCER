@@ -1,1899 +1,0 @@
-Epoch 1 Batches:   2%|▌                                 |  ETA: 0:00:08[K
-   loss: 30.829128[K[A
-[K[AEpoch 1 Batches:   3%|█▏                                |  ETA: 0:00:10[K
-   loss: 25.32464[K[A
-[K[AEpoch 1 Batches:   5%|█▋                                |  ETA: 0:00:13[K
-   loss: 5.703961[K[A
-[K[AEpoch 1 Batches:   6%|██▏                               |  ETA: 0:00:12[K
-   loss: 28.930542[K[A
-[K[AEpoch 1 Batches:   8%|██▊                               |  ETA: 0:00:10[K
-   loss: 39.515358[K[A
-[K[AEpoch 1 Batches:  10%|███▎                              |  ETA: 0:00:10[K
-   loss: 49.472992[K[A
-[K[AEpoch 1 Batches:  11%|███▊                              |  ETA: 0:00:09[K
-   loss: 31.99831[K[A
-[K[AEpoch 1 Batches:  13%|████▍                             |  ETA: 0:00:09[K
-   loss: 28.20761[K[A
-[K[AEpoch 1 Batches:  14%|████▉                             |  ETA: 0:00:08[K
-   loss: 34.07623[K[A
-[K[AEpoch 1 Batches:  16%|█████▌                            |  ETA: 0:00:08[K
-   loss: 69.95788[K[A
-[K[AEpoch 1 Batches:  18%|██████                            |  ETA: 0:00:08[K
-   loss: 39.24475[K[A
-[K[AEpoch 1 Batches:  19%|██████▌                           |  ETA: 0:00:08[K
-   loss: 62.03768[K[A
-[K[AEpoch 1 Batches:  21%|███████▏                          |  ETA: 0:00:07[K
-   loss: 39.123547[K[A
-[K[AEpoch 1 Batches:  22%|███████▋                          |  ETA: 0:00:07[K
-   loss: 41.19316[K[A
-[K[AEpoch 1 Batches:  24%|████████▏                         |  ETA: 0:00:07[K
-   loss: 62.571697[K[A
-[K[AEpoch 1 Batches:  26%|████████▊                         |  ETA: 0:00:07[K
-   loss: 55.202534[K[A
-[K[AEpoch 1 Batches:  27%|█████████▎                        |  ETA: 0:00:06[K
-   loss: 44.07034[K[A
-[K[AEpoch 1 Batches:  29%|█████████▊                        |  ETA: 0:00:06[K
-   loss: 73.827965[K[A
-[K[AEpoch 1 Batches:  30%|██████████▍                       |  ETA: 0:00:06[K
-   loss: 26.174181[K[A
-[K[AEpoch 1 Batches:  32%|██████████▉                       |  ETA: 0:00:06[K
-   loss: 70.15939[K[A
-[K[AEpoch 1 Batches:  34%|███████████▍                      |  ETA: 0:00:06[K
-   loss: 49.774063[K[A
-[K[AEpoch 1 Batches:  35%|████████████                      |  ETA: 0:00:06[K
-   loss: 42.023445[K[A
-[K[AEpoch 1 Batches:  37%|████████████▌                     |  ETA: 0:00:05[K
-   loss: 74.25084[K[A
-[K[AEpoch 1 Batches:  38%|█████████████                     |  ETA: 0:00:05[K
-   loss: 32.781265[K[A
-[K[AEpoch 1 Batches:  40%|█████████████▋                    |  ETA: 0:00:05[K
-   loss: 50.479523[K[A
-[K[AEpoch 1 Batches:  42%|██████████████▏                   |  ETA: 0:00:05[K
-   loss: 33.82351[K[A
-[K[AEpoch 1 Batches:  43%|██████████████▊                   |  ETA: 0:00:05[K
-   loss: 43.375446[K[A
-[K[AEpoch 1 Batches:  44%|███████████████                   |  ETA: 0:00:05[K
-   loss: 48.19039[K[A
-[K[AEpoch 1 Batches:  46%|███████████████▌                  |  ETA: 0:00:05[K
-   loss: 89.47193[K[A
-[K[AEpoch 1 Batches:  47%|████████████████                  |  ETA: 0:00:05[K
-   loss: 59.010765[K[A
-[K[AEpoch 1 Batches:  49%|████████████████▋                 |  ETA: 0:00:05[K
-   loss: 50.03906[K[A
-[K[AEpoch 1 Batches:  50%|█████████████████▏                |  ETA: 0:00:04[K
-   loss: 40.819984[K[A
-[K[AEpoch 1 Batches:  52%|█████████████████▋                |  ETA: 0:00:04[K
-   loss: 20.537928[K[A
-[K[AEpoch 1 Batches:  54%|██████████████████▎               |  ETA: 0:00:04[K
-   loss: 31.282782[K[A
-[K[AEpoch 1 Batches:  55%|██████████████████▊               |  ETA: 0:00:04[K
-   loss: 42.476055[K[A
-[K[AEpoch 1 Batches:  57%|███████████████████▎              |  ETA: 0:00:04[K
-   loss: 32.726547[K[A
-[K[AEpoch 1 Batches:  58%|███████████████████▉              |  ETA: 0:00:04[K
-   loss: 36.620064[K[A
-[K[AEpoch 1 Batches:  60%|████████████████████▍             |  ETA: 0:00:03[K
-   loss: 35.74818[K[A
-[K[AEpoch 1 Batches:  62%|█████████████████████             |  ETA: 0:00:03[K
-   loss: 44.27632[K[A
-[K[AEpoch 1 Batches:  63%|█████████████████████▌            |  ETA: 0:00:03[K
-   loss: 19.890362[K[A
-[K[AEpoch 1 Batches:  65%|██████████████████████            |  ETA: 0:00:03[K
-   loss: 37.746445[K[A
-[K[AEpoch 1 Batches:  66%|██████████████████████▋           |  ETA: 0:00:03[K
-   loss: 56.41186[K[A
-[K[AEpoch 1 Batches:  68%|███████████████████████▏          |  ETA: 0:00:03[K
-   loss: 46.274178[K[A
-[K[AEpoch 1 Batches:  70%|███████████████████████▋          |  ETA: 0:00:03[K
-   loss: 33.173927[K[A
-[K[AEpoch 1 Batches:  71%|████████████████████████▎         |  ETA: 0:00:02[K
-   loss: 30.874659[K[A
-[K[AEpoch 1 Batches:  73%|████████████████████████▊         |  ETA: 0:00:02[K
-   loss: 40.97453[K[A
-[K[AEpoch 1 Batches:  74%|█████████████████████████▎        |  ETA: 0:00:02[K
-   loss: 31.89096[K[A
-[K[AEpoch 1 Batches:  76%|█████████████████████████▉        |  ETA: 0:00:02[K
-   loss: 30.169685[K[A
-[K[AEpoch 1 Batches:  78%|██████████████████████████▍       |  ETA: 0:00:02[K
-   loss: 24.308434[K[A
-[K[AEpoch 1 Batches:  79%|██████████████████████████▉       |  ETA: 0:00:02[K
-   loss: 36.45982[K[A
-[K[AEpoch 1 Batches:  81%|███████████████████████████▌      |  ETA: 0:00:02[K
-   loss: 42.373367[K[A
-[K[AEpoch 1 Batches:  82%|████████████████████████████      |  ETA: 0:00:01[K
-   loss: 63.754284[K[A
-[K[AEpoch 1 Batches:  84%|████████████████████████████▌     |  ETA: 0:00:01[K
-   loss: 29.59406[K[A
-[K[AEpoch 1 Batches:  86%|█████████████████████████████▏    |  ETA: 0:00:01[K
-   loss: 23.37951[K[A
-[K[AEpoch 1 Batches:  87%|█████████████████████████████▋    |  ETA: 0:00:01[K
-   loss: 48.46221[K[A
-[K[AEpoch 1 Batches:  89%|██████████████████████████████▎   |  ETA: 0:00:01[K
-   loss: 38.737526[K[A
-[K[AEpoch 1 Batches:  90%|██████████████████████████████▌   |  ETA: 0:00:01[K
-   loss: 49.866375[K[A
-[K[AEpoch 1 Batches:  91%|███████████████████████████████   |  ETA: 0:00:01[K
-   loss: 20.441837[K[A
-[K[AEpoch 1 Batches:  93%|███████████████████████████████▌  |  ETA: 0:00:01[K
-   loss: 46.24581[K[A
-[K[AEpoch 1 Batches:  94%|████████████████████████████████▏ |  ETA: 0:00:00[K
-   loss: 41.310734[K[A
-[K[AEpoch 1 Batches:  96%|████████████████████████████████▋ |  ETA: 0:00:00[K
-   loss: 31.000423[K[A
-[K[AEpoch 1 Batches:  98%|█████████████████████████████████▏|  ETA: 0:00:00[K
-   loss: 21.594591[K[A
-[K[AEpoch 1 Batches:  99%|█████████████████████████████████▊|  ETA: 0:00:00[K
-   loss: 62.16061[K[A
-[K[AEpoch 1 Batches: 100%|██████████████████████████████████| Time: 0:00:08[K
-   loss: 54.134293[K
-Epoch 2 Batches:   2%|▌                                 |  ETA: 0:00:07[K
-   loss: 20.259315[K[A
-[K[AEpoch 2 Batches:   3%|█▏                                |  ETA: 0:00:07[K
-   loss: 20.147009[K[A
-[K[AEpoch 2 Batches:   5%|█▋                                |  ETA: 0:00:07[K
-   loss: 5.3309407[K[A
-[K[AEpoch 2 Batches:   6%|██▏                               |  ETA: 0:00:07[K
-   loss: 26.355154[K[A
-[K[AEpoch 2 Batches:   8%|██▊                               |  ETA: 0:00:07[K
-   loss: 33.487595[K[A
-[K[AEpoch 2 Batches:  10%|███▎                              |  ETA: 0:00:07[K
-   loss: 44.250698[K[A
-[K[AEpoch 2 Batches:  11%|███▊                              |  ETA: 0:00:07[K
-   loss: 30.85456[K[A
-[K[AEpoch 2 Batches:  13%|████▍                             |  ETA: 0:00:07[K
-   loss: 23.171532[K[A
-[K[AEpoch 2 Batches:  14%|████▉                             |  ETA: 0:00:07[K
-   loss: 29.335487[K[A
-[K[AEpoch 2 Batches:  16%|█████▌                            |  ETA: 0:00:07[K
-   loss: 62.052914[K[A
-[K[AEpoch 2 Batches:  18%|██████                            |  ETA: 0:00:06[K
-   loss: 31.141554[K[A
-[K[AEpoch 2 Batches:  19%|██████▌                           |  ETA: 0:00:06[K
-   loss: 55.08084[K[A
-[K[AEpoch 2 Batches:  21%|███████▏                          |  ETA: 0:00:06[K
-   loss: 33.241062[K[A
-[K[AEpoch 2 Batches:  22%|███████▋                          |  ETA: 0:00:06[K
-   loss: 40.256428[K[A
-[K[AEpoch 2 Batches:  24%|████████▏                         |  ETA: 0:00:06[K
-   loss: 56.058598[K[A
-[K[AEpoch 2 Batches:  26%|████████▊                         |  ETA: 0:00:06[K
-   loss: 50.74655[K[A
-[K[AEpoch 2 Batches:  27%|█████████▎                        |  ETA: 0:00:06[K
-   loss: 42.69712[K[A
-[K[AEpoch 2 Batches:  29%|█████████▊                        |  ETA: 0:00:06[K
-   loss: 52.009144[K[A
-[K[AEpoch 2 Batches:  30%|██████████▍                       |  ETA: 0:00:05[K
-   loss: 20.13211[K[A
-[K[AEpoch 2 Batches:  32%|██████████▉                       |  ETA: 0:00:05[K
-   loss: 58.28944[K[A
-[K[AEpoch 2 Batches:  34%|███████████▍                      |  ETA: 0:00:05[K
-   loss: 43.05047[K[A
-[K[AEpoch 2 Batches:  35%|████████████                      |  ETA: 0:00:05[K
-   loss: 38.382774[K[A
-[K[AEpoch 2 Batches:  37%|████████████▌                     |  ETA: 0:00:05[K
-   loss: 60.09096[K[A
-[K[AEpoch 2 Batches:  38%|█████████████                     |  ETA: 0:00:05[K
-   loss: 28.354046[K[A
-[K[AEpoch 2 Batches:  40%|█████████████▋                    |  ETA: 0:00:05[K
-   loss: 43.16914[K[A
-[K[AEpoch 2 Batches:  42%|██████████████▏                   |  ETA: 0:00:05[K
-   loss: 28.816523[K[A
-[K[AEpoch 2 Batches:  43%|██████████████▊                   |  ETA: 0:00:05[K
-   loss: 37.326767[K[A
-[K[AEpoch 2 Batches:  45%|███████████████▎                  |  ETA: 0:00:05[K
-   loss: 48.99279[K[A
-[K[AEpoch 2 Batches:  46%|███████████████▊                  |  ETA: 0:00:04[K
-   loss: 32.541153[K[A
-[K[AEpoch 2 Batches:  48%|████████████████▍                 |  ETA: 0:00:04[K
-   loss: 46.31537[K[A
-[K[AEpoch 2 Batches:  50%|████████████████▉                 |  ETA: 0:00:04[K
-   loss: 28.001495[K[A
-[K[AEpoch 2 Batches:  51%|█████████████████▍                |  ETA: 0:00:04[K
-   loss: 36.291367[K[A
-[K[AEpoch 2 Batches:  53%|██████████████████                |  ETA: 0:00:04[K
-   loss: 47.889324[K[A
-[K[AEpoch 2 Batches:  54%|██████████████████▌               |  ETA: 0:00:04[K
-   loss: 33.390976[K[A
-[K[AEpoch 2 Batches:  56%|███████████████████               |  ETA: 0:00:04[K
-   loss: 25.240227[K[A
-[K[AEpoch 2 Batches:  58%|███████████████████▋              |  ETA: 0:00:03[K
-   loss: 35.793373[K[A
-[K[AEpoch 2 Batches:  59%|████████████████████▏             |  ETA: 0:00:03[K
-   loss: 47.96364[K[A
-[K[AEpoch 2 Batches:  61%|████████████████████▋             |  ETA: 0:00:03[K
-   loss: 17.740614[K[A
-[K[AEpoch 2 Batches:  62%|█████████████████████▎            |  ETA: 0:00:03[K
-   loss: 36.39022[K[A
-[K[AEpoch 2 Batches:  64%|█████████████████████▊            |  ETA: 0:00:03[K
-   loss: 36.77031[K[A
-[K[AEpoch 2 Batches:  66%|██████████████████████▎           |  ETA: 0:00:03[K
-   loss: 35.717934[K[A
-[K[AEpoch 2 Batches:  67%|██████████████████████▉           |  ETA: 0:00:03[K
-   loss: 42.981422[K[A
-[K[AEpoch 2 Batches:  69%|███████████████████████▍          |  ETA: 0:00:03[K
-   loss: 44.189335[K[A
-[K[AEpoch 2 Batches:  70%|███████████████████████▉          |  ETA: 0:00:02[K
-   loss: 29.814991[K[A
-[K[AEpoch 2 Batches:  72%|████████████████████████▌         |  ETA: 0:00:02[K
-   loss: 28.503279[K[A
-[K[AEpoch 2 Batches:  74%|█████████████████████████         |  ETA: 0:00:02[K
-   loss: 36.57231[K[A
-[K[AEpoch 2 Batches:  75%|█████████████████████████▋        |  ETA: 0:00:02[K
-   loss: 31.024689[K[A
-[K[AEpoch 2 Batches:  77%|██████████████████████████▏       |  ETA: 0:00:02[K
-   loss: 59.029896[K[A
-[K[AEpoch 2 Batches:  78%|██████████████████████████▋       |  ETA: 0:00:02[K
-   loss: 29.344435[K[A
-[K[AEpoch 2 Batches:  80%|███████████████████████████▎      |  ETA: 0:00:02[K
-   loss: 30.101618[K[A
-[K[AEpoch 2 Batches:  82%|███████████████████████████▊      |  ETA: 0:00:01[K
-   loss: 25.962856[K[A
-[K[AEpoch 2 Batches:  83%|████████████████████████████▎     |  ETA: 0:00:01[K
-   loss: 23.330633[K[A
-[K[AEpoch 2 Batches:  85%|████████████████████████████▉     |  ETA: 0:00:01[K
-   loss: 53.411476[K[A
-[K[AEpoch 2 Batches:  86%|█████████████████████████████▍    |  ETA: 0:00:01[K
-   loss: 31.202435[K[A
-[K[AEpoch 2 Batches:  87%|█████████████████████████████▋    |  ETA: 0:00:01[K
-   loss: 46.685814[K[A
-[K[AEpoch 2 Batches:  89%|██████████████████████████████▎   |  ETA: 0:00:01[K
-   loss: 35.72232[K[A
-[K[AEpoch 2 Batches:  90%|██████████████████████████████▊   |  ETA: 0:00:01[K
-   loss: 54.869385[K[A
-[K[AEpoch 2 Batches:  92%|███████████████████████████████▎  |  ETA: 0:00:01[K
-   loss: 38.78472[K[A
-[K[AEpoch 2 Batches:  94%|███████████████████████████████▉  |  ETA: 0:00:01[K
-   loss: 21.952684[K[A
-[K[AEpoch 2 Batches:  95%|████████████████████████████████▍ |  ETA: 0:00:00[K
-   loss: 34.54177[K[A
-[K[AEpoch 2 Batches:  97%|████████████████████████████████▉ |  ETA: 0:00:00[K
-   loss: 69.23155[K[A
-[K[AEpoch 2 Batches:  98%|█████████████████████████████████▌|  ETA: 0:00:00[K
-   loss: 58.900925[K[A
-[K[AEpoch 2 Batches: 100%|██████████████████████████████████| Time: 0:00:08[K
-   loss: 51.500393[K
-Training Epochs:  13%|████▌                             |  ETA: 0:01:49[KEpoch 3 Batches:   2%|▌                                 |  ETA: 0:00:07[K
-   loss: 17.768656[K[A
-[K[AEpoch 3 Batches:   3%|█▏                                |  ETA: 0:00:07[K
-   loss: 17.116686[K[A
-[K[AEpoch 3 Batches:   5%|█▋                                |  ETA: 0:00:07[K
-   loss: 5.2692432[K[A
-[K[AEpoch 3 Batches:   6%|██▏                               |  ETA: 0:00:07[K
-   loss: 23.490164[K[A
-[K[AEpoch 3 Batches:   8%|██▊                               |  ETA: 0:00:07[K
-   loss: 31.31961[K[A
-[K[AEpoch 3 Batches:  10%|███▎                              |  ETA: 0:00:07[K
-   loss: 41.711273[K[A
-[K[AEpoch 3 Batches:  11%|███▊                              |  ETA: 0:00:07[K
-   loss: 30.375809[K[A
-[K[AEpoch 3 Batches:  13%|████▍                             |  ETA: 0:00:07[K
-   loss: 20.460785[K[A
-[K[AEpoch 3 Batches:  14%|████▉                             |  ETA: 0:00:07[K
-   loss: 26.779758[K[A
-[K[AEpoch 3 Batches:  16%|█████▌                            |  ETA: 0:00:06[K
-   loss: 58.18701[K[A
-[K[AEpoch 3 Batches:  18%|██████                            |  ETA: 0:00:06[K
-   loss: 27.382778[K[A
-[K[AEpoch 3 Batches:  19%|██████▌                           |  ETA: 0:00:06[K
-   loss: 51.707306[K[A
-[K[AEpoch 3 Batches:  21%|███████▏                          |  ETA: 0:00:06[K
-   loss: 30.355515[K[A
-[K[AEpoch 3 Batches:  22%|███████▋                          |  ETA: 0:00:06[K
-   loss: 37.083023[K[A
-[K[AEpoch 3 Batches:  24%|████████▏                         |  ETA: 0:00:06[K
-   loss: 52.60704[K[A
-[K[AEpoch 3 Batches:  26%|████████▊                         |  ETA: 0:00:06[K
-   loss: 47.12018[K[A
-[K[AEpoch 3 Batches:  27%|█████████▎                        |  ETA: 0:00:06[K
-   loss: 43.549114[K[A
-[K[AEpoch 3 Batches:  29%|█████████▊                        |  ETA: 0:00:06[K
-   loss: 44.750965[K[A
-[K[AEpoch 3 Batches:  30%|██████████▍                       |  ETA: 0:00:05[K
-   loss: 15.696992[K[A
-[K[AEpoch 3 Batches:  32%|██████████▉                       |  ETA: 0:00:05[K
-   loss: 50.2214[K[A
-[K[AEpoch 3 Batches:  34%|███████████▍                      |  ETA: 0:00:05[K
-   loss: 39.80977[K[A
-[K[AEpoch 3 Batches:  35%|████████████                      |  ETA: 0:00:05[K
-   loss: 35.668262[K[A
-[K[AEpoch 3 Batches:  37%|████████████▌                     |  ETA: 0:00:05[K
-   loss: 54.868164[K[A
-[K[AEpoch 3 Batches:  38%|█████████████                     |  ETA: 0:00:05[K
-   loss: 27.431562[K[A
-[K[AEpoch 3 Batches:  39%|█████████████▍                    |  ETA: 0:00:05[K
-   loss: 29.0087[K[A
-[K[AEpoch 3 Batches:  41%|█████████████▉                    |  ETA: 0:00:05[K
-   loss: 46.868378[K[A
-[K[AEpoch 3 Batches:  42%|██████████████▍                   |  ETA: 0:00:05[K
-   loss: 59.95132[K[A
-[K[AEpoch 3 Batches:  44%|███████████████                   |  ETA: 0:00:05[K
-   loss: 41.373756[K[A
-[K[AEpoch 3 Batches:  46%|███████████████▌                  |  ETA: 0:00:04[K
-   loss: 56.278553[K[A
-[K[AEpoch 3 Batches:  47%|████████████████                  |  ETA: 0:00:04[K
-   loss: 45.103317[K[A
-[K[AEpoch 3 Batches:  49%|████████████████▋                 |  ETA: 0:00:04[K
-   loss: 42.358715[K[A
-[K[AEpoch 3 Batches:  50%|█████████████████▏                |  ETA: 0:00:04[K
-   loss: 32.709557[K[A
-[K[AEpoch 3 Batches:  52%|█████████████████▋                |  ETA: 0:00:04[K
-   loss: 17.09831[K[A
-[K[AEpoch 3 Batches:  54%|██████████████████▎               |  ETA: 0:00:04[K
-   loss: 24.313377[K[A
-[K[AEpoch 3 Batches:  55%|██████████████████▊               |  ETA: 0:00:04[K
-   loss: 33.659363[K[A
-[K[AEpoch 3 Batches:  57%|███████████████████▎              |  ETA: 0:00:04[K
-   loss: 23.615618[K[A
-[K[AEpoch 3 Batches:  58%|███████████████████▉              |  ETA: 0:00:03[K
-   loss: 25.545752[K[A
-[K[AEpoch 3 Batches:  60%|████████████████████▍             |  ETA: 0:00:03[K
-   loss: 29.588312[K[A
-[K[AEpoch 3 Batches:  62%|█████████████████████             |  ETA: 0:00:03[K
-   loss: 31.934078[K[A
-[K[AEpoch 3 Batches:  63%|█████████████████████▌            |  ETA: 0:00:03[K
-   loss: 14.861736[K[A
-[K[AEpoch 3 Batches:  65%|██████████████████████            |  ETA: 0:00:03[K
-   loss: 33.636436[K[A
-[K[AEpoch 3 Batches:  66%|██████████████████████▋           |  ETA: 0:00:03[K
-   loss: 48.070427[K[A
-[K[AEpoch 3 Batches:  68%|███████████████████████▏          |  ETA: 0:00:03[K
-   loss: 40.9872[K[A
-[K[AEpoch 3 Batches:  70%|███████████████████████▋          |  ETA: 0:00:02[K
-   loss: 23.642263[K[A
-[K[AEpoch 3 Batches:  71%|████████████████████████▎         |  ETA: 0:00:02[K
-   loss: 27.428793[K[A
-[K[AEpoch 3 Batches:  73%|████████████████████████▊         |  ETA: 0:00:02[K
-   loss: 34.937817[K[A
-[K[AEpoch 3 Batches:  74%|█████████████████████████▎        |  ETA: 0:00:02[K
-   loss: 25.160837[K[A
-[K[AEpoch 3 Batches:  76%|█████████████████████████▉        |  ETA: 0:00:02[K
-   loss: 26.587746[K[A
-[K[AEpoch 3 Batches:  78%|██████████████████████████▍       |  ETA: 0:00:02[K
-   loss: 20.343468[K[A
-[K[AEpoch 3 Batches:  79%|██████████████████████████▉       |  ETA: 0:00:02[K
-   loss: 31.979692[K[A
-[K[AEpoch 3 Batches:  81%|███████████████████████████▌      |  ETA: 0:00:02[K
-   loss: 31.440271[K[A
-[K[AEpoch 3 Batches:  82%|████████████████████████████      |  ETA: 0:00:01[K
-   loss: 58.614494[K[A
-[K[AEpoch 3 Batches:  84%|████████████████████████████▌     |  ETA: 0:00:01[K
-   loss: 20.846645[K[A
-[K[AEpoch 3 Batches:  86%|█████████████████████████████▏    |  ETA: 0:00:01[K
-   loss: 20.470673[K[A
-[K[AEpoch 3 Batches:  87%|█████████████████████████████▋    |  ETA: 0:00:01[K
-   loss: 45.60446[K[A
-[K[AEpoch 3 Batches:  89%|██████████████████████████████▎   |  ETA: 0:00:01[K
-   loss: 33.554832[K[A
-[K[AEpoch 3 Batches:  90%|██████████████████████████████▊   |  ETA: 0:00:01[K
-   loss: 53.031017[K[A
-[K[AEpoch 3 Batches:  92%|███████████████████████████████▎  |  ETA: 0:00:01[K
-   loss: 32.450184[K[A
-[K[AEpoch 3 Batches:  94%|███████████████████████████████▉  |  ETA: 0:00:01[K
-   loss: 19.697731[K[A
-[K[AEpoch 3 Batches:  95%|████████████████████████████████▍ |  ETA: 0:00:00[K
-   loss: 31.54358[K[A
-[K[AEpoch 3 Batches:  97%|████████████████████████████████▉ |  ETA: 0:00:00[K
-   loss: 67.24629[K[A
-[K[AEpoch 3 Batches:  98%|█████████████████████████████████▌|  ETA: 0:00:00[K
-   loss: 58.189144[K[A
-[K[AEpoch 3 Batches: 100%|██████████████████████████████████| Time: 0:00:08[K
-   loss: 50.42311[K
-Training Epochs:  20%|██████▊                           |  ETA: 0:01:40[KEpoch 4 Batches:   2%|▌                                 |  ETA: 0:00:08[K
-   loss: 14.245902[K[A
-[K[AEpoch 4 Batches:   3%|█▏                                |  ETA: 0:00:08[K
-   loss: 15.353002[K[A
-[K[AEpoch 4 Batches:   5%|█▋                                |  ETA: 0:00:07[K
-   loss: 5.084311[K[A
-[K[AEpoch 4 Batches:   6%|██▏                               |  ETA: 0:00:07[K
-   loss: 21.70996[K[A
-[K[AEpoch 4 Batches:   8%|██▊                               |  ETA: 0:00:07[K
-   loss: 30.012243[K[A
-[K[AEpoch 4 Batches:  10%|███▎                              |  ETA: 0:00:07[K
-   loss: 38.959473[K[A
-[K[AEpoch 4 Batches:  11%|███▊                              |  ETA: 0:00:07[K
-   loss: 29.766066[K[A
-[K[AEpoch 4 Batches:  13%|████▍                             |  ETA: 0:00:07[K
-   loss: 19.090742[K[A
-[K[AEpoch 4 Batches:  14%|████▉                             |  ETA: 0:00:07[K
-   loss: 25.014402[K[A
-[K[AEpoch 4 Batches:  16%|█████▌                            |  ETA: 0:00:07[K
-   loss: 50.034073[K[A
-[K[AEpoch 4 Batches:  18%|██████                            |  ETA: 0:00:06[K
-   loss: 24.754984[K[A
-[K[AEpoch 4 Batches:  19%|██████▌                           |  ETA: 0:00:06[K
-   loss: 45.52767[K[A
-[K[AEpoch 4 Batches:  21%|███████▏                          |  ETA: 0:00:06[K
-   loss: 27.750483[K[A
-[K[AEpoch 4 Batches:  22%|███████▋                          |  ETA: 0:00:06[K
-   loss: 32.413074[K[A
-[K[AEpoch 4 Batches:  24%|████████▏                         |  ETA: 0:00:06[K
-   loss: 47.412323[K[A
-[K[AEpoch 4 Batches:  26%|████████▊                         |  ETA: 0:00:06[K
-   loss: 44.73731[K[A
-[K[AEpoch 4 Batches:  27%|█████████▎                        |  ETA: 0:00:06[K
-   loss: 44.676483[K[A
-[K[AEpoch 4 Batches:  29%|█████████▊                        |  ETA: 0:00:06[K
-   loss: 40.311615[K[A
-[K[AEpoch 4 Batches:  30%|██████████▍                       |  ETA: 0:00:05[K
-   loss: 12.623518[K[A
-[K[AEpoch 4 Batches:  32%|██████████▉                       |  ETA: 0:00:05[K
-   loss: 45.73997[K[A
-[K[AEpoch 4 Batches:  34%|███████████▍                      |  ETA: 0:00:05[K
-   loss: 36.655014[K[A
-[K[AEpoch 4 Batches:  35%|████████████                      |  ETA: 0:00:05[K
-   loss: 33.82859[K[A
-[K[AEpoch 4 Batches:  37%|████████████▌                     |  ETA: 0:00:05[K
-   loss: 52.303524[K[A
-[K[AEpoch 4 Batches:  38%|█████████████                     |  ETA: 0:00:05[K
-   loss: 26.001593[K[A
-[K[AEpoch 4 Batches:  40%|█████████████▋                    |  ETA: 0:00:05[K
-   loss: 37.894245[K[A
-[K[AEpoch 4 Batches:  42%|██████████████▏                   |  ETA: 0:00:05[K
-   loss: 24.967354[K[A
-[K[AEpoch 4 Batches:  42%|██████████████▍                   |  ETA: 0:00:05[K
-   loss: 58.861366[K[A
-[K[AEpoch 4 Batches:  44%|███████████████                   |  ETA: 0:00:05[K
-   loss: 39.33953[K[A
-[K[AEpoch 4 Batches:  46%|███████████████▌                  |  ETA: 0:00:04[K
-   loss: 53.198997[K[A
-[K[AEpoch 4 Batches:  47%|████████████████                  |  ETA: 0:00:04[K
-   loss: 42.384384[K[A
-[K[AEpoch 4 Batches:  49%|████████████████▋                 |  ETA: 0:00:04[K
-   loss: 39.021034[K[A
-[K[AEpoch 4 Batches:  50%|█████████████████▏                |  ETA: 0:00:04[K
-   loss: 31.27079[K[A
-[K[AEpoch 4 Batches:  52%|█████████████████▋                |  ETA: 0:00:04[K
-   loss: 16.072762[K[A
-[K[AEpoch 4 Batches:  54%|██████████████████▎               |  ETA: 0:00:04[K
-   loss: 21.647816[K[A
-[K[AEpoch 4 Batches:  55%|██████████████████▊               |  ETA: 0:00:04[K
-   loss: 29.893717[K[A
-[K[AEpoch 4 Batches:  57%|███████████████████▎              |  ETA: 0:00:04[K
-   loss: 21.673346[K[A
-[K[AEpoch 4 Batches:  58%|███████████████████▉              |  ETA: 0:00:03[K
-   loss: 22.889397[K[A
-[K[AEpoch 4 Batches:  60%|████████████████████▍             |  ETA: 0:00:03[K
-   loss: 28.152922[K[A
-[K[AEpoch 4 Batches:  62%|█████████████████████             |  ETA: 0:00:03[K
-   loss: 27.827475[K[A
-[K[AEpoch 4 Batches:  63%|█████████████████████▌            |  ETA: 0:00:03[K
-   loss: 13.660199[K[A
-[K[AEpoch 4 Batches:  65%|██████████████████████            |  ETA: 0:00:03[K
-   loss: 31.931305[K[A
-[K[AEpoch 4 Batches:  66%|██████████████████████▋           |  ETA: 0:00:03[K
-   loss: 29.381992[K[A
-[K[AEpoch 4 Batches:  68%|███████████████████████▏          |  ETA: 0:00:03[K
-   loss: 39.65338[K[A
-[K[AEpoch 4 Batches:  70%|███████████████████████▋          |  ETA: 0:00:02[K
-   loss: 20.57443[K[A
-[K[AEpoch 4 Batches:  71%|████████████████████████▎         |  ETA: 0:00:02[K
-   loss: 25.868788[K[A
-[K[AEpoch 4 Batches:  73%|████████████████████████▊         |  ETA: 0:00:02[K
-   loss: 33.561016[K[A
-[K[AEpoch 4 Batches:  74%|█████████████████████████▎        |  ETA: 0:00:02[K
-   loss: 23.512154[K[A
-[K[AEpoch 4 Batches:  76%|█████████████████████████▉        |  ETA: 0:00:02[K
-   loss: 25.523428[K[A
-[K[AEpoch 4 Batches:  78%|██████████████████████████▍       |  ETA: 0:00:02[K
-   loss: 18.880459[K[A
-[K[AEpoch 4 Batches:  79%|██████████████████████████▉       |  ETA: 0:00:02[K
-   loss: 30.331944[K[A
-[K[AEpoch 4 Batches:  81%|███████████████████████████▌      |  ETA: 0:00:02[K
-   loss: 29.342073[K[A
-[K[AEpoch 4 Batches:  82%|████████████████████████████      |  ETA: 0:00:01[K
-   loss: 56.774094[K[A
-[K[AEpoch 4 Batches:  84%|████████████████████████████▌     |  ETA: 0:00:01[K
-   loss: 18.504295[K[A
-[K[AEpoch 4 Batches:  86%|█████████████████████████████▏    |  ETA: 0:00:01[K
-   loss: 19.455116[K[A
-[K[AEpoch 4 Batches:  87%|█████████████████████████████▋    |  ETA: 0:00:01[K
-   loss: 44.690014[K[A
-[K[AEpoch 4 Batches:  89%|██████████████████████████████▎   |  ETA: 0:00:01[K
-   loss: 31.676813[K[A
-[K[AEpoch 4 Batches:  90%|██████████████████████████████▊   |  ETA: 0:00:01[K
-   loss: 51.493813[K[A
-[K[AEpoch 4 Batches:  92%|███████████████████████████████▎  |  ETA: 0:00:01[K
-   loss: 30.155981[K[A
-[K[AEpoch 4 Batches:  94%|███████████████████████████████▉  |  ETA: 0:00:01[K
-   loss: 17.272642[K[A
-[K[AEpoch 4 Batches:  94%|████████████████████████████████▏ |  ETA: 0:00:00[K
-   loss: 30.491474[K[A
-[K[AEpoch 4 Batches:  96%|████████████████████████████████▋ |  ETA: 0:00:00[K
-   loss: 21.180473[K[A
-[K[AEpoch 4 Batches:  98%|█████████████████████████████████▏|  ETA: 0:00:00[K
-   loss: 15.463226[K[A
-[K[AEpoch 4 Batches:  99%|█████████████████████████████████▊|  ETA: 0:00:00[K
-   loss: 55.5656[K[A
-[K[AEpoch 4 Batches: 100%|██████████████████████████████████| Time: 0:00:08[K
-   loss: 49.50957[K
-Training Epochs:  27%|█████████▏                        |  ETA: 0:01:31[KEpoch 5 Batches:   2%|▌                                 |  ETA: 0:00:07[K
-   loss: 13.217473[K[A
-[K[AEpoch 5 Batches:   3%|█▏                                |  ETA: 0:00:07[K
-   loss: 14.164817[K[A
-[K[AEpoch 5 Batches:   5%|█▋                                |  ETA: 0:00:07[K
-   loss: 4.8045716[K[A
-[K[AEpoch 5 Batches:   6%|██▏                               |  ETA: 0:00:07[K
-   loss: 19.415762[K[A
-[K[AEpoch 5 Batches:   8%|██▊                               |  ETA: 0:00:07[K
-   loss: 29.221643[K[A
-[K[AEpoch 5 Batches:  10%|███▎                              |  ETA: 0:00:07[K
-   loss: 37.585415[K[A
-[K[AEpoch 5 Batches:  11%|███▊                              |  ETA: 0:00:07[K
-   loss: 29.212421[K[A
-[K[AEpoch 5 Batches:  13%|████▍                             |  ETA: 0:00:07[K
-   loss: 17.665495[K[A
-[K[AEpoch 5 Batches:  14%|████▉                             |  ETA: 0:00:07[K
-   loss: 23.382109[K[A
-[K[AEpoch 5 Batches:  16%|█████▌                            |  ETA: 0:00:06[K
-   loss: 47.306488[K[A
-[K[AEpoch 5 Batches:  18%|██████                            |  ETA: 0:00:06[K
-   loss: 22.31765[K[A
-[K[AEpoch 5 Batches:  19%|██████▌                           |  ETA: 0:00:06[K
-   loss: 43.28926[K[A
-[K[AEpoch 5 Batches:  21%|███████▏                          |  ETA: 0:00:06[K
-   loss: 25.769804[K[A
-[K[AEpoch 5 Batches:  22%|███████▋                          |  ETA: 0:00:06[K
-   loss: 30.109694[K[A
-[K[AEpoch 5 Batches:  24%|████████▏                         |  ETA: 0:00:06[K
-   loss: 45.505444[K[A
-[K[AEpoch 5 Batches:  26%|████████▊                         |  ETA: 0:00:06[K
-   loss: 42.81371[K[A
-[K[AEpoch 5 Batches:  27%|█████████▎                        |  ETA: 0:00:06[K
-   loss: 44.936993[K[A
-[K[AEpoch 5 Batches:  29%|█████████▊                        |  ETA: 0:00:06[K
-   loss: 38.078625[K[A
-[K[AEpoch 5 Batches:  30%|██████████▍                       |  ETA: 0:00:05[K
-   loss: 11.237213[K[A
-[K[AEpoch 5 Batches:  32%|██████████▉                       |  ETA: 0:00:05[K
-   loss: 44.145832[K[A
-[K[AEpoch 5 Batches:  34%|███████████▍                      |  ETA: 0:00:05[K
-   loss: 34.63877[K[A
-[K[AEpoch 5 Batches:  35%|████████████                      |  ETA: 0:00:05[K
-   loss: 32.117874[K[A
-[K[AEpoch 5 Batches:  37%|████████████▌                     |  ETA: 0:00:05[K
-   loss: 50.186306[K[A
-[K[AEpoch 5 Batches:  38%|█████████████                     |  ETA: 0:00:05[K
-   loss: 24.730145[K[A
-[K[AEpoch 5 Batches:  40%|█████████████▋                    |  ETA: 0:00:05[K
-   loss: 36.53162[K[A
-[K[AEpoch 5 Batches:  42%|██████████████▏                   |  ETA: 0:00:05[K
-   loss: 23.868166[K[A
-[K[AEpoch 5 Batches:  43%|██████████████▊                   |  ETA: 0:00:04[K
-   loss: 31.823315[K[A
-[K[AEpoch 5 Batches:  45%|███████████████▎                  |  ETA: 0:00:04[K
-   loss: 36.850376[K[A
-[K[AEpoch 5 Batches:  46%|███████████████▊                  |  ETA: 0:00:04[K
-   loss: 28.704304[K[A
-[K[AEpoch 5 Batches:  48%|████████████████▍                 |  ETA: 0:00:04[K
-   loss: 38.321392[K[A
-[K[AEpoch 5 Batches:  50%|████████████████▉                 |  ETA: 0:00:04[K
-   loss: 21.56228[K[A
-[K[AEpoch 5 Batches:  51%|█████████████████▍                |  ETA: 0:00:04[K
-   loss: 31.22707[K[A
-[K[AEpoch 5 Batches:  53%|██████████████████                |  ETA: 0:00:04[K
-   loss: 39.81517[K[A
-[K[AEpoch 5 Batches:  54%|██████████████████▌               |  ETA: 0:00:04[K
-   loss: 21.086494[K[A
-[K[AEpoch 5 Batches:  56%|███████████████████               |  ETA: 0:00:04[K
-   loss: 18.890326[K[A
-[K[AEpoch 5 Batches:  58%|███████████████████▋              |  ETA: 0:00:03[K
-   loss: 26.68704[K[A
-[K[AEpoch 5 Batches:  59%|████████████████████▏             |  ETA: 0:00:03[K
-   loss: 41.326508[K[A
-[K[AEpoch 5 Batches:  61%|████████████████████▋             |  ETA: 0:00:03[K
-   loss: 13.501143[K[A
-[K[AEpoch 5 Batches:  62%|█████████████████████▎            |  ETA: 0:00:03[K
-   loss: 26.576248[K[A
-[K[AEpoch 5 Batches:  64%|█████████████████████▊            |  ETA: 0:00:03[K
-   loss: 33.67183[K[A
-[K[AEpoch 5 Batches:  66%|██████████████████████▎           |  ETA: 0:00:03[K
-   loss: 29.77923[K[A
-[K[AEpoch 5 Batches:  67%|██████████████████████▉           |  ETA: 0:00:03[K
-   loss: 21.72988[K[A
-[K[AEpoch 5 Batches:  69%|███████████████████████▍          |  ETA: 0:00:03[K
-   loss: 31.666903[K[A
-[K[AEpoch 5 Batches:  70%|███████████████████████▉          |  ETA: 0:00:02[K
-   loss: 19.698032[K[A
-[K[AEpoch 5 Batches:  72%|████████████████████████▌         |  ETA: 0:00:02[K
-   loss: 20.934072[K[A
-[K[AEpoch 5 Batches:  74%|█████████████████████████         |  ETA: 0:00:02[K
-   loss: 29.711231[K[A
-[K[AEpoch 5 Batches:  75%|█████████████████████████▋        |  ETA: 0:00:02[K
-   loss: 21.439991[K[A
-[K[AEpoch 5 Batches:  77%|██████████████████████████▏       |  ETA: 0:00:02[K
-   loss: 48.259743[K[A
-[K[AEpoch 5 Batches:  78%|██████████████████████████▋       |  ETA: 0:00:02[K
-   loss: 20.691439[K[A
-[K[AEpoch 5 Batches:  80%|███████████████████████████▎      |  ETA: 0:00:02[K
-   loss: 15.833193[K[A
-[K[AEpoch 5 Batches:  82%|███████████████████████████▊      |  ETA: 0:00:01[K
-   loss: 20.213226[K[A
-[K[AEpoch 5 Batches:  83%|████████████████████████████▎     |  ETA: 0:00:01[K
-   loss: 17.186823[K[A
-[K[AEpoch 5 Batches:  85%|████████████████████████████▉     |  ETA: 0:00:01[K
-   loss: 43.19814[K[A
-[K[AEpoch 5 Batches:  86%|█████████████████████████████▍    |  ETA: 0:00:01[K
-   loss: 25.72822[K[A
-[K[AEpoch 5 Batches:  88%|█████████████████████████████▉    |  ETA: 0:00:01[K
-   loss: 41.458813[K[A
-[K[AEpoch 5 Batches:  90%|██████████████████████████████▌   |  ETA: 0:00:01[K
-   loss: 40.59262[K[A
-[K[AEpoch 5 Batches:  91%|███████████████████████████████   |  ETA: 0:00:01[K
-   loss: 10.248436[K[A
-[K[AEpoch 5 Batches:  93%|███████████████████████████████▌  |  ETA: 0:00:01[K
-   loss: 19.819368[K[A
-[K[AEpoch 5 Batches:  94%|████████████████████████████████▏ |  ETA: 0:00:00[K
-   loss: 28.445549[K[A
-[K[AEpoch 5 Batches:  96%|████████████████████████████████▋ |  ETA: 0:00:00[K
-   loss: 20.22806[K[A
-[K[AEpoch 5 Batches:  98%|█████████████████████████████████▏|  ETA: 0:00:00[K
-   loss: 14.433515[K[A
-[K[AEpoch 5 Batches:  99%|█████████████████████████████████▊|  ETA: 0:00:00[K
-   loss: 54.094788[K[A
-[K[AEpoch 5 Batches: 100%|██████████████████████████████████| Time: 0:00:08[K
-   loss: 48.613834[K
-Training Epochs:  33%|███████████▍                      |  ETA: 0:01:23[KEpoch 6 Batches:   2%|▌                                 |  ETA: 0:00:08[K
-   loss: 12.541643[K[A
-[K[AEpoch 6 Batches:   3%|█▏                                |  ETA: 0:00:08[K
-   loss: 13.259518[K[A
-[K[AEpoch 6 Batches:   5%|█▋                                |  ETA: 0:00:07[K
-   loss: 4.5401216[K[A
-[K[AEpoch 6 Batches:   6%|██▏                               |  ETA: 0:00:07[K
-   loss: 17.542215[K[A
-[K[AEpoch 6 Batches:   8%|██▊                               |  ETA: 0:00:07[K
-   loss: 28.65156[K[A
-[K[AEpoch 6 Batches:  10%|███▎                              |  ETA: 0:00:07[K
-   loss: 36.550533[K[A
-[K[AEpoch 6 Batches:  11%|███▊                              |  ETA: 0:00:07[K
-   loss: 28.747213[K[A
-[K[AEpoch 6 Batches:  13%|████▍                             |  ETA: 0:00:07[K
-   loss: 16.517889[K[A
-[K[AEpoch 6 Batches:  14%|████▉                             |  ETA: 0:00:07[K
-   loss: 22.194359[K[A
-[K[AEpoch 6 Batches:  16%|█████▌                            |  ETA: 0:00:07[K
-   loss: 45.429993[K[A
-[K[AEpoch 6 Batches:  18%|██████                            |  ETA: 0:00:06[K
-   loss: 20.412998[K[A
-[K[AEpoch 6 Batches:  19%|██████▌                           |  ETA: 0:00:06[K
-   loss: 39.920135[K[A
-[K[AEpoch 6 Batches:  21%|███████▏                          |  ETA: 0:00:06[K
-   loss: 24.315498[K[A
-[K[AEpoch 6 Batches:  22%|███████▋                          |  ETA: 0:00:06[K
-   loss: 28.495483[K[A
-[K[AEpoch 6 Batches:  24%|████████▏                         |  ETA: 0:00:06[K
-   loss: 44.21127[K[A
-[K[AEpoch 6 Batches:  26%|████████▊                         |  ETA: 0:00:06[K
-   loss: 41.37839[K[A
-[K[AEpoch 6 Batches:  27%|█████████▎                        |  ETA: 0:00:06[K
-   loss: 45.01568[K[A
-[K[AEpoch 6 Batches:  29%|█████████▊                        |  ETA: 0:00:06[K
-   loss: 36.280518[K[A
-[K[AEpoch 6 Batches:  30%|██████████▍                       |  ETA: 0:00:06[K
-   loss: 10.2595005[K[A
-[K[AEpoch 6 Batches:  32%|██████████▉                       |  ETA: 0:00:06[K
-   loss: 43.13183[K[A
-[K[AEpoch 6 Batches:  34%|███████████▍                      |  ETA: 0:00:06[K
-   loss: 32.891495[K[A
-[K[AEpoch 6 Batches:  35%|████████████                      |  ETA: 0:00:05[K
-   loss: 30.72128[K[A
-[K[AEpoch 6 Batches:  37%|████████████▌                     |  ETA: 0:00:05[K
-   loss: 48.2905[K[A
-[K[AEpoch 6 Batches:  38%|█████████████                     |  ETA: 0:00:05[K
-   loss: 23.716549[K[A
-[K[AEpoch 6 Batches:  40%|█████████████▋                    |  ETA: 0:00:05[K
-   loss: 35.459408[K[A
-[K[AEpoch 6 Batches:  42%|██████████████▏                   |  ETA: 0:00:05[K
-   loss: 23.025482[K[A
-[K[AEpoch 6 Batches:  43%|██████████████▊                   |  ETA: 0:00:05[K
-   loss: 30.884296[K[A
-[K[AEpoch 6 Batches:  45%|███████████████▎                  |  ETA: 0:00:05[K
-   loss: 35.45504[K[A
-[K[AEpoch 6 Batches:  46%|███████████████▊                  |  ETA: 0:00:04[K
-   loss: 27.709106[K[A
-[K[AEpoch 6 Batches:  48%|████████████████▍                 |  ETA: 0:00:04[K
-   loss: 37.474377[K[A
-[K[AEpoch 6 Batches:  50%|████████████████▉                 |  ETA: 0:00:04[K
-   loss: 19.94466[K[A
-[K[AEpoch 6 Batches:  51%|█████████████████▍                |  ETA: 0:00:04[K
-   loss: 30.253124[K[A
-[K[AEpoch 6 Batches:  53%|██████████████████                |  ETA: 0:00:04[K
-   loss: 38.246967[K[A
-[K[AEpoch 6 Batches:  54%|██████████████████▌               |  ETA: 0:00:04[K
-   loss: 19.187634[K[A
-[K[AEpoch 6 Batches:  56%|███████████████████               |  ETA: 0:00:04[K
-   loss: 17.38275[K[A
-[K[AEpoch 6 Batches:  58%|███████████████████▋              |  ETA: 0:00:03[K
-   loss: 25.012493[K[A
-[K[AEpoch 6 Batches:  59%|████████████████████▏             |  ETA: 0:00:03[K
-   loss: 39.90886[K[A
-[K[AEpoch 6 Batches:  61%|████████████████████▋             |  ETA: 0:00:03[K
-   loss: 12.725221[K[A
-[K[AEpoch 6 Batches:  62%|█████████████████████▎            |  ETA: 0:00:03[K
-   loss: 23.866009[K[A
-[K[AEpoch 6 Batches:  64%|█████████████████████▊            |  ETA: 0:00:03[K
-   loss: 33.001884[K[A
-[K[AEpoch 6 Batches:  66%|██████████████████████▎           |  ETA: 0:00:03[K
-   loss: 28.819998[K[A
-[K[AEpoch 6 Batches:  67%|██████████████████████▉           |  ETA: 0:00:03[K
-   loss: 20.399445[K[A
-[K[AEpoch 6 Batches:  69%|███████████████████████▍          |  ETA: 0:00:03[K
-   loss: 30.659578[K[A
-[K[AEpoch 6 Batches:  70%|███████████████████████▉          |  ETA: 0:00:02[K
-   loss: 18.470915[K[A
-[K[AEpoch 6 Batches:  72%|████████████████████████▌         |  ETA: 0:00:02[K
-   loss: 19.380066[K[A
-[K[AEpoch 6 Batches:  74%|█████████████████████████         |  ETA: 0:00:02[K
-   loss: 28.657612[K[A
-[K[AEpoch 6 Batches:  75%|█████████████████████████▋        |  ETA: 0:00:02[K
-   loss: 20.023191[K[A
-[K[AEpoch 6 Batches:  77%|██████████████████████████▏       |  ETA: 0:00:02[K
-   loss: 47.06402[K[A
-[K[AEpoch 6 Batches:  78%|██████████████████████████▍       |  ETA: 0:00:02[K
-   loss: 16.788973[K[A
-[K[AEpoch 6 Batches:  79%|██████████████████████████▉       |  ETA: 0:00:02[K
-   loss: 28.028507[K[A
-[K[AEpoch 6 Batches:  81%|███████████████████████████▌      |  ETA: 0:00:02[K
-   loss: 26.445225[K[A
-[K[AEpoch 6 Batches:  82%|████████████████████████████      |  ETA: 0:00:01[K
-   loss: 53.973896[K[A
-[K[AEpoch 6 Batches:  84%|████████████████████████████▌     |  ETA: 0:00:01[K
-   loss: 15.907311[K[A
-[K[AEpoch 6 Batches:  86%|█████████████████████████████▏    |  ETA: 0:00:01[K
-   loss: 17.568401[K[A
-[K[AEpoch 6 Batches:  87%|█████████████████████████████▋    |  ETA: 0:00:01[K
-   loss: 43.237164[K[A
-[K[AEpoch 6 Batches:  89%|██████████████████████████████▎   |  ETA: 0:00:01[K
-   loss: 28.965061[K[A
-[K[AEpoch 6 Batches:  90%|██████████████████████████████▊   |  ETA: 0:00:01[K
-   loss: 47.340405[K[A
-[K[AEpoch 6 Batches:  92%|███████████████████████████████▎  |  ETA: 0:00:01[K
-   loss: 26.839664[K[A
-[K[AEpoch 6 Batches:  94%|███████████████████████████████▉  |  ETA: 0:00:01[K
-   loss: 13.922282[K[A
-[K[AEpoch 6 Batches:  95%|████████████████████████████████▍ |  ETA: 0:00:00[K
-   loss: 29.188288[K[A
-[K[AEpoch 6 Batches:  97%|████████████████████████████████▉ |  ETA: 0:00:00[K
-   loss: 63.1423[K[A
-[K[AEpoch 6 Batches:  98%|█████████████████████████████████▌|  ETA: 0:00:00[K
-   loss: 54.984924[K[A
-[K[AEpoch 6 Batches: 100%|██████████████████████████████████| Time: 0:00:08[K
-   loss: 47.906273[K
-Training Epochs:  40%|█████████████▋                    |  ETA: 0:01:14[KEpoch 7 Batches:   2%|▌                                 |  ETA: 0:00:07[K
-   loss: 11.996556[K[A
-[K[AEpoch 7 Batches:   3%|█▏                                |  ETA: 0:00:07[K
-   loss: 12.53747[K[A
-[K[AEpoch 7 Batches:   5%|█▋                                |  ETA: 0:00:07[K
-   loss: 4.368993[K[A
-[K[AEpoch 7 Batches:   6%|██▏                               |  ETA: 0:00:07[K
-   loss: 16.021835[K[A
-[K[AEpoch 7 Batches:   8%|██▊                               |  ETA: 0:00:07[K
-   loss: 28.286577[K[A
-[K[AEpoch 7 Batches:  10%|███▎                              |  ETA: 0:00:07[K
-   loss: 35.731434[K[A
-[K[AEpoch 7 Batches:  11%|███▊                              |  ETA: 0:00:07[K
-   loss: 28.353083[K[A
-[K[AEpoch 7 Batches:  13%|████▍                             |  ETA: 0:00:07[K
-   loss: 15.609671[K[A
-[K[AEpoch 7 Batches:  14%|████▉                             |  ETA: 0:00:07[K
-   loss: 21.25204[K[A
-[K[AEpoch 7 Batches:  16%|█████▌                            |  ETA: 0:00:06[K
-   loss: 43.934223[K[A
-[K[AEpoch 7 Batches:  18%|██████                            |  ETA: 0:00:06[K
-   loss: 18.954872[K[A
-[K[AEpoch 7 Batches:  19%|██████▌                           |  ETA: 0:00:06[K
-   loss: 36.30497[K[A
-[K[AEpoch 7 Batches:  21%|███████▏                          |  ETA: 0:00:06[K
-   loss: 23.195862[K[A
-[K[AEpoch 7 Batches:  22%|███████▋                          |  ETA: 0:00:07[K
-   loss: 27.324343[K[A
-[K[AEpoch 7 Batches:  24%|████████▏                         |  ETA: 0:00:07[K
-   loss: 43.182777[K[A
-[K[AEpoch 7 Batches:  26%|████████▊                         |  ETA: 0:00:06[K
-   loss: 40.286053[K[A
-[K[AEpoch 7 Batches:  27%|█████████▎                        |  ETA: 0:00:06[K
-   loss: 44.990803[K[A
-[K[AEpoch 7 Batches:  29%|█████████▊                        |  ETA: 0:00:06[K
-   loss: 34.758183[K[A
-[K[AEpoch 7 Batches:  30%|██████████▍                       |  ETA: 0:00:06[K
-   loss: 9.510862[K[A
-[K[AEpoch 7 Batches:  32%|██████████▉                       |  ETA: 0:00:06[K
-   loss: 42.35388[K[A
-[K[AEpoch 7 Batches:  34%|███████████▍                      |  ETA: 0:00:06[K
-   loss: 31.312881[K[A
-[K[AEpoch 7 Batches:  35%|████████████                      |  ETA: 0:00:05[K
-   loss: 29.69066[K[A
-[K[AEpoch 7 Batches:  37%|████████████▌                     |  ETA: 0:00:05[K
-   loss: 46.753094[K[A
-[K[AEpoch 7 Batches:  38%|█████████████                     |  ETA: 0:00:05[K
-   loss: 22.863728[K[A
-[K[AEpoch 7 Batches:  40%|█████████████▋                    |  ETA: 0:00:05[K
-   loss: 34.57124[K[A
-[K[AEpoch 7 Batches:  42%|██████████████▏                   |  ETA: 0:00:05[K
-   loss: 22.330397[K[A
-[K[AEpoch 7 Batches:  43%|██████████████▊                   |  ETA: 0:00:05[K
-   loss: 30.095488[K[A
-[K[AEpoch 7 Batches:  45%|███████████████▎                  |  ETA: 0:00:05[K
-   loss: 34.41027[K[A
-[K[AEpoch 7 Batches:  46%|███████████████▊                  |  ETA: 0:00:04[K
-   loss: 26.860823[K[A
-[K[AEpoch 7 Batches:  48%|████████████████▍                 |  ETA: 0:00:04[K
-   loss: 36.769447[K[A
-[K[AEpoch 7 Batches:  50%|████████████████▉                 |  ETA: 0:00:04[K
-   loss: 18.659012[K[A
-[K[AEpoch 7 Batches:  51%|█████████████████▍                |  ETA: 0:00:04[K
-   loss: 29.474222[K[A
-[K[AEpoch 7 Batches:  53%|██████████████████                |  ETA: 0:00:04[K
-   loss: 37.030045[K[A
-[K[AEpoch 7 Batches:  54%|██████████████████▌               |  ETA: 0:00:04[K
-   loss: 18.0345[K[A
-[K[AEpoch 7 Batches:  56%|███████████████████               |  ETA: 0:00:04[K
-   loss: 16.17119[K[A
-[K[AEpoch 7 Batches:  58%|███████████████████▋              |  ETA: 0:00:03[K
-   loss: 23.68431[K[A
-[K[AEpoch 7 Batches:  59%|████████████████████▏             |  ETA: 0:00:03[K
-   loss: 38.726746[K[A
-[K[AEpoch 7 Batches:  61%|████████████████████▋             |  ETA: 0:00:03[K
-   loss: 12.083212[K[A
-[K[AEpoch 7 Batches:  62%|█████████████████████▎            |  ETA: 0:00:03[K
-   loss: 21.524797[K[A
-[K[AEpoch 7 Batches:  64%|█████████████████████▊            |  ETA: 0:00:03[K
-   loss: 32.49653[K[A
-[K[AEpoch 7 Batches:  66%|██████████████████████▎           |  ETA: 0:00:03[K
-   loss: 28.027155[K[A
-[K[AEpoch 7 Batches:  67%|██████████████████████▉           |  ETA: 0:00:03[K
-   loss: 19.360128[K[A
-[K[AEpoch 7 Batches:  69%|███████████████████████▍          |  ETA: 0:00:03[K
-   loss: 29.798267[K[A
-[K[AEpoch 7 Batches:  70%|███████████████████████▉          |  ETA: 0:00:02[K
-   loss: 17.440424[K[A
-[K[AEpoch 7 Batches:  72%|████████████████████████▌         |  ETA: 0:00:02[K
-   loss: 18.161257[K[A
-[K[AEpoch 7 Batches:  74%|█████████████████████████         |  ETA: 0:00:02[K
-   loss: 27.823792[K[A
-[K[AEpoch 7 Batches:  75%|█████████████████████████▋        |  ETA: 0:00:02[K
-   loss: 18.825724[K[A
-[K[AEpoch 7 Batches:  77%|██████████████████████████▏       |  ETA: 0:00:02[K
-   loss: 46.177525[K[A
-[K[AEpoch 7 Batches:  78%|██████████████████████████▋       |  ETA: 0:00:02[K
-   loss: 16.729908[K[A
-[K[AEpoch 7 Batches:  79%|██████████████████████████▉       |  ETA: 0:00:02[K
-   loss: 27.281498[K[A
-[K[AEpoch 7 Batches:  81%|███████████████████████████▌      |  ETA: 0:00:02[K
-   loss: 25.319319[K[A
-[K[AEpoch 7 Batches:  82%|████████████████████████████      |  ETA: 0:00:01[K
-   loss: 52.919743[K[A
-[K[AEpoch 7 Batches:  84%|████████████████████████████▌     |  ETA: 0:00:01[K
-   loss: 14.951595[K[A
-[K[AEpoch 7 Batches:  86%|█████████████████████████████▏    |  ETA: 0:00:01[K
-   loss: 16.978188[K[A
-[K[AEpoch 7 Batches:  87%|█████████████████████████████▋    |  ETA: 0:00:01[K
-   loss: 42.780113[K[A
-[K[AEpoch 7 Batches:  89%|██████████████████████████████▎   |  ETA: 0:00:01[K
-   loss: 27.993078[K[A
-[K[AEpoch 7 Batches:  90%|██████████████████████████████▊   |  ETA: 0:00:01[K
-   loss: 39.365814[K[A
-[K[AEpoch 7 Batches:  92%|███████████████████████████████▎  |  ETA: 0:00:01[K
-   loss: 25.49839[K[A
-[K[AEpoch 7 Batches:  94%|███████████████████████████████▉  |  ETA: 0:00:01[K
-   loss: 12.788609[K[A
-[K[AEpoch 7 Batches:  95%|████████████████████████████████▍ |  ETA: 0:00:00[K
-   loss: 28.613623[K[A
-[K[AEpoch 7 Batches:  97%|████████████████████████████████▉ |  ETA: 0:00:00[K
-   loss: 62.199417[K[A
-[K[AEpoch 7 Batches:  98%|█████████████████████████████████▌|  ETA: 0:00:00[K
-   loss: 54.257015[K[A
-[K[AEpoch 7 Batches: 100%|██████████████████████████████████| Time: 0:00:08[K
-   loss: 47.320396[K
-Training Epochs:  47%|███████████████▉                  |  ETA: 0:01:06[KEpoch 8 Batches:   2%|▌                                 |  ETA: 0:00:08[K
-   loss: 11.484035[K[A
-[K[AEpoch 8 Batches:   3%|█▏                                |  ETA: 0:00:07[K
-   loss: 11.945137[K[A
-[K[AEpoch 8 Batches:   5%|█▋                                |  ETA: 0:00:07[K
-   loss: 4.2261643[K[A
-[K[AEpoch 8 Batches:   6%|██▏                               |  ETA: 0:00:07[K
-   loss: 14.7014885[K[A
-[K[AEpoch 8 Batches:   8%|██▊                               |  ETA: 0:00:07[K
-   loss: 28.039902[K[A
-[K[AEpoch 8 Batches:  10%|███▎                              |  ETA: 0:00:07[K
-   loss: 34.976772[K[A
-[K[AEpoch 8 Batches:  11%|███▊                              |  ETA: 0:00:07[K
-   loss: 28.008783[K[A
-[K[AEpoch 8 Batches:  13%|████▍                             |  ETA: 0:00:07[K
-   loss: 14.868868[K[A
-[K[AEpoch 8 Batches:  14%|████▉                             |  ETA: 0:00:07[K
-   loss: 20.462934[K[A
-[K[AEpoch 8 Batches:  16%|█████▌                            |  ETA: 0:00:07[K
-   loss: 42.6301[K[A
-[K[AEpoch 8 Batches:  18%|██████                            |  ETA: 0:00:06[K
-   loss: 17.76443[K[A
-[K[AEpoch 8 Batches:  19%|██████▌                           |  ETA: 0:00:06[K
-   loss: 33.400066[K[A
-[K[AEpoch 8 Batches:  21%|███████▏                          |  ETA: 0:00:06[K
-   loss: 22.263786[K[A
-[K[AEpoch 8 Batches:  22%|███████▋                          |  ETA: 0:00:06[K
-   loss: 26.395693[K[A
-[K[AEpoch 8 Batches:  24%|████████▏                         |  ETA: 0:00:06[K
-   loss: 42.270363[K[A
-[K[AEpoch 8 Batches:  26%|████████▊                         |  ETA: 0:00:06[K
-   loss: 39.42215[K[A
-[K[AEpoch 8 Batches:  27%|█████████▎                        |  ETA: 0:00:06[K
-   loss: 44.898857[K[A
-[K[AEpoch 8 Batches:  29%|█████████▊                        |  ETA: 0:00:06[K
-   loss: 33.426334[K[A
-[K[AEpoch 8 Batches:  30%|██████████▍                       |  ETA: 0:00:06[K
-   loss: 8.9129305[K[A
-[K[AEpoch 8 Batches:  32%|██████████▉                       |  ETA: 0:00:06[K
-   loss: 41.704933[K[A
-[K[AEpoch 8 Batches:  34%|███████████▍                      |  ETA: 0:00:06[K
-   loss: 29.790009[K[A
-[K[AEpoch 8 Batches:  35%|████████████                      |  ETA: 0:00:05[K
-   loss: 28.858206[K[A
-[K[AEpoch 8 Batches:  37%|████████████▌                     |  ETA: 0:00:05[K
-   loss: 45.4888[K[A
-[K[AEpoch 8 Batches:  38%|█████████████                     |  ETA: 0:00:05[K
-   loss: 22.048174[K[A
-[K[AEpoch 8 Batches:  40%|█████████████▋                    |  ETA: 0:00:05[K
-   loss: 33.814987[K[A
-[K[AEpoch 8 Batches:  42%|██████████████▏                   |  ETA: 0:00:05[K
-   loss: 21.750877[K[A
-[K[AEpoch 8 Batches:  43%|██████████████▊                   |  ETA: 0:00:05[K
-   loss: 29.448637[K[A
-[K[AEpoch 8 Batches:  45%|███████████████▎                  |  ETA: 0:00:05[K
-   loss: 33.528183[K[A
-[K[AEpoch 8 Batches:  46%|███████████████▊                  |  ETA: 0:00:04[K
-   loss: 26.25222[K[A
-[K[AEpoch 8 Batches:  48%|████████████████▍                 |  ETA: 0:00:04[K
-   loss: 36.30883[K[A
-[K[AEpoch 8 Batches:  50%|████████████████▉                 |  ETA: 0:00:04[K
-   loss: 17.587358[K[A
-[K[AEpoch 8 Batches:  51%|█████████████████▍                |  ETA: 0:00:04[K
-   loss: 28.845781[K[A
-[K[AEpoch 8 Batches:  53%|██████████████████                |  ETA: 0:00:04[K
-   loss: 36.006824[K[A
-[K[AEpoch 8 Batches:  54%|██████████████████▌               |  ETA: 0:00:04[K
-   loss: 17.54611[K[A
-[K[AEpoch 8 Batches:  56%|███████████████████               |  ETA: 0:00:04[K
-   loss: 15.132519[K[A
-[K[AEpoch 8 Batches:  58%|███████████████████▋              |  ETA: 0:00:03[K
-   loss: 22.5931[K[A
-[K[AEpoch 8 Batches:  59%|████████████████████▏             |  ETA: 0:00:03[K
-   loss: 37.721104[K[A
-[K[AEpoch 8 Batches:  61%|████████████████████▋             |  ETA: 0:00:03[K
-   loss: 11.5602865[K[A
-[K[AEpoch 8 Batches:  62%|█████████████████████▎            |  ETA: 0:00:03[K
-   loss: 20.027996[K[A
-[K[AEpoch 8 Batches:  64%|█████████████████████▊            |  ETA: 0:00:03[K
-   loss: 32.03572[K[A
-[K[AEpoch 8 Batches:  66%|██████████████████████▎           |  ETA: 0:00:03[K
-   loss: 27.313248[K[A
-[K[AEpoch 8 Batches:  67%|██████████████████████▉           |  ETA: 0:00:03[K
-   loss: 18.44129[K[A
-[K[AEpoch 8 Batches:  69%|███████████████████████▍          |  ETA: 0:00:03[K
-   loss: 29.097246[K[A
-[K[AEpoch 8 Batches:  70%|███████████████████████▉          |  ETA: 0:00:02[K
-   loss: 16.552109[K[A
-[K[AEpoch 8 Batches:  72%|████████████████████████▌         |  ETA: 0:00:02[K
-   loss: 17.159206[K[A
-[K[AEpoch 8 Batches:  74%|█████████████████████████         |  ETA: 0:00:02[K
-   loss: 27.157848[K[A
-[K[AEpoch 8 Batches:  75%|█████████████████████████▋        |  ETA: 0:00:02[K
-   loss: 17.745852[K[A
-[K[AEpoch 8 Batches:  77%|██████████████████████████▏       |  ETA: 0:00:02[K
-   loss: 45.458984[K[A
-[K[AEpoch 8 Batches:  78%|██████████████████████████▋       |  ETA: 0:00:02[K
-   loss: 15.507764[K[A
-[K[AEpoch 8 Batches:  80%|███████████████████████████▎      |  ETA: 0:00:02[K
-   loss: 12.865139[K[A
-[K[AEpoch 8 Batches:  82%|███████████████████████████▊      |  ETA: 0:00:01[K
-   loss: 17.426647[K[A
-[K[AEpoch 8 Batches:  82%|████████████████████████████      |  ETA: 0:00:01[K
-   loss: 51.81789[K[A
-[K[AEpoch 8 Batches:  84%|████████████████████████████▌     |  ETA: 0:00:01[K
-   loss: 14.129462[K[A
-[K[AEpoch 8 Batches:  86%|█████████████████████████████▏    |  ETA: 0:00:01[K
-   loss: 16.55352[K[A
-[K[AEpoch 8 Batches:  87%|█████████████████████████████▋    |  ETA: 0:00:01[K
-   loss: 42.373806[K[A
-[K[AEpoch 8 Batches:  89%|██████████████████████████████▎   |  ETA: 0:00:01[K
-   loss: 27.20927[K[A
-[K[AEpoch 8 Batches:  90%|██████████████████████████████▊   |  ETA: 0:00:01[K
-   loss: 37.82498[K[A
-[K[AEpoch 8 Batches:  92%|███████████████████████████████▎  |  ETA: 0:00:01[K
-   loss: 24.543276[K[A
-[K[AEpoch 8 Batches:  94%|███████████████████████████████▉  |  ETA: 0:00:01[K
-   loss: 11.907577[K[A
-[K[AEpoch 8 Batches:  95%|████████████████████████████████▍ |  ETA: 0:00:00[K
-   loss: 28.165024[K[A
-[K[AEpoch 8 Batches:  97%|████████████████████████████████▉ |  ETA: 0:00:00[K
-   loss: 61.430183[K[A
-[K[AEpoch 8 Batches:  98%|█████████████████████████████████▌|  ETA: 0:00:00[K
-   loss: 53.496883[K[A
-[K[AEpoch 8 Batches: 100%|██████████████████████████████████| Time: 0:00:08[K
-   loss: 46.73219[K
-Training Epochs:  53%|██████████████████▏               |  ETA: 0:00:58[KEpoch 9 Batches:   2%|▌                                 |  ETA: 0:00:07[K
-   loss: 11.06589[K[A
-[K[AEpoch 9 Batches:   3%|█▏                                |  ETA: 0:00:07[K
-   loss: 11.403638[K[A
-[K[AEpoch 9 Batches:   5%|█▋                                |  ETA: 0:00:07[K
-   loss: 4.133389[K[A
-[K[AEpoch 9 Batches:   6%|██▏                               |  ETA: 0:00:07[K
-   loss: 13.490739[K[A
-[K[AEpoch 9 Batches:   8%|██▊                               |  ETA: 0:00:07[K
-   loss: 27.821737[K[A
-[K[AEpoch 9 Batches:  10%|███▎                              |  ETA: 0:00:07[K
-   loss: 34.335403[K[A
-[K[AEpoch 9 Batches:  11%|███▊                              |  ETA: 0:00:07[K
-   loss: 27.795292[K[A
-[K[AEpoch 9 Batches:  13%|████▍                             |  ETA: 0:00:07[K
-   loss: 14.286684[K[A
-[K[AEpoch 9 Batches:  14%|████▉                             |  ETA: 0:00:07[K
-   loss: 19.916395[K[A
-[K[AEpoch 9 Batches:  16%|█████▌                            |  ETA: 0:00:06[K
-   loss: 41.485966[K[A
-[K[AEpoch 9 Batches:  18%|██████                            |  ETA: 0:00:06[K
-   loss: 16.836319[K[A
-[K[AEpoch 9 Batches:  19%|██████▌                           |  ETA: 0:00:06[K
-   loss: 31.809423[K[A
-[K[AEpoch 9 Batches:  21%|███████▏                          |  ETA: 0:00:06[K
-   loss: 21.571144[K[A
-[K[AEpoch 9 Batches:  22%|███████▋                          |  ETA: 0:00:06[K
-   loss: 25.66218[K[A
-[K[AEpoch 9 Batches:  24%|████████▏                         |  ETA: 0:00:06[K
-   loss: 41.554733[K[A
-[K[AEpoch 9 Batches:  26%|████████▊                         |  ETA: 0:00:06[K
-   loss: 38.73936[K[A
-[K[AEpoch 9 Batches:  27%|█████████▎                        |  ETA: 0:00:06[K
-   loss: 44.79911[K[A
-[K[AEpoch 9 Batches:  29%|█████████▊                        |  ETA: 0:00:06[K
-   loss: 32.400593[K[A
-[K[AEpoch 9 Batches:  30%|██████████▍                       |  ETA: 0:00:05[K
-   loss: 8.422083[K[A
-[K[AEpoch 9 Batches:  32%|██████████▉                       |  ETA: 0:00:05[K
-   loss: 41.06435[K[A
-[K[AEpoch 9 Batches:  34%|███████████▍                      |  ETA: 0:00:06[K
-   loss: 28.59836[K[A
-[K[AEpoch 9 Batches:  35%|████████████                      |  ETA: 0:00:05[K
-   loss: 28.195135[K[A
-[K[AEpoch 9 Batches:  37%|████████████▌                     |  ETA: 0:00:05[K
-   loss: 44.469482[K[A
-[K[AEpoch 9 Batches:  38%|█████████████                     |  ETA: 0:00:05[K
-   loss: 21.363579[K[A
-[K[AEpoch 9 Batches:  40%|█████████████▋                    |  ETA: 0:00:05[K
-   loss: 33.18292[K[A
-[K[AEpoch 9 Batches:  42%|██████████████▏                   |  ETA: 0:00:05[K
-   loss: 21.292109[K[A
-[K[AEpoch 9 Batches:  43%|██████████████▊                   |  ETA: 0:00:05[K
-   loss: 28.887661[K[A
-[K[AEpoch 9 Batches:  45%|███████████████▎                  |  ETA: 0:00:05[K
-   loss: 32.83729[K[A
-[K[AEpoch 9 Batches:  46%|███████████████▊                  |  ETA: 0:00:04[K
-   loss: 25.74104[K[A
-[K[AEpoch 9 Batches:  48%|████████████████▍                 |  ETA: 0:00:04[K
-   loss: 35.76624[K[A
-[K[AEpoch 9 Batches:  50%|████████████████▉                 |  ETA: 0:00:04[K
-   loss: 16.751995[K[A
-[K[AEpoch 9 Batches:  51%|█████████████████▍                |  ETA: 0:00:04[K
-   loss: 28.316666[K[A
-[K[AEpoch 9 Batches:  53%|██████████████████                |  ETA: 0:00:04[K
-   loss: 35.113358[K[A
-[K[AEpoch 9 Batches:  54%|██████████████████▌               |  ETA: 0:00:04[K
-   loss: 17.244764[K[A
-[K[AEpoch 9 Batches:  56%|███████████████████               |  ETA: 0:00:04[K
-   loss: 14.310709[K[A
-[K[AEpoch 9 Batches:  58%|███████████████████▋              |  ETA: 0:00:03[K
-   loss: 21.756634[K[A
-[K[AEpoch 9 Batches:  59%|████████████████████▏             |  ETA: 0:00:03[K
-   loss: 36.91994[K[A
-[K[AEpoch 9 Batches:  61%|████████████████████▋             |  ETA: 0:00:03[K
-   loss: 11.120224[K[A
-[K[AEpoch 9 Batches:  62%|█████████████████████▎            |  ETA: 0:00:03[K
-   loss: 19.168331[K[A
-[K[AEpoch 9 Batches:  64%|█████████████████████▊            |  ETA: 0:00:03[K
-   loss: 31.701754[K[A
-[K[AEpoch 9 Batches:  66%|██████████████████████▎           |  ETA: 0:00:03[K
-   loss: 26.717543[K[A
-[K[AEpoch 9 Batches:  67%|██████████████████████▉           |  ETA: 0:00:03[K
-   loss: 17.770067[K[A
-[K[AEpoch 9 Batches:  69%|███████████████████████▍          |  ETA: 0:00:03[K
-   loss: 28.459501[K[A
-[K[AEpoch 9 Batches:  70%|███████████████████████▉          |  ETA: 0:00:02[K
-   loss: 15.827754[K[A
-[K[AEpoch 9 Batches:  72%|████████████████████████▌         |  ETA: 0:00:02[K
-   loss: 16.348846[K[A
-[K[AEpoch 9 Batches:  74%|█████████████████████████         |  ETA: 0:00:02[K
-   loss: 26.605005[K[A
-[K[AEpoch 9 Batches:  75%|█████████████████████████▋        |  ETA: 0:00:02[K
-   loss: 16.901897[K[A
-[K[AEpoch 9 Batches:  77%|██████████████████████████▏       |  ETA: 0:00:02[K
-   loss: 44.784748[K[A
-[K[AEpoch 9 Batches:  78%|██████████████████████████▋       |  ETA: 0:00:02[K
-   loss: 14.630957[K[A
-[K[AEpoch 9 Batches:  80%|███████████████████████████▎      |  ETA: 0:00:02[K
-   loss: 12.189163[K[A
-[K[AEpoch 9 Batches:  82%|███████████████████████████▊      |  ETA: 0:00:01[K
-   loss: 16.762608[K[A
-[K[AEpoch 9 Batches:  83%|████████████████████████████▎     |  ETA: 0:00:01[K
-   loss: 14.176918[K[A
-[K[AEpoch 9 Batches:  85%|████████████████████████████▉     |  ETA: 0:00:01[K
-   loss: 38.906673[K[A
-[K[AEpoch 9 Batches:  86%|█████████████████████████████▍    |  ETA: 0:00:01[K
-   loss: 21.558496[K[A
-[K[AEpoch 9 Batches:  88%|█████████████████████████████▉    |  ETA: 0:00:01[K
-   loss: 34.770313[K[A
-[K[AEpoch 9 Batches:  89%|██████████████████████████████▎   |  ETA: 0:00:01[K
-   loss: 26.569109[K[A
-[K[AEpoch 9 Batches:  90%|██████████████████████████████▊   |  ETA: 0:00:01[K
-   loss: 36.994026[K[A
-[K[AEpoch 9 Batches:  92%|███████████████████████████████▎  |  ETA: 0:00:01[K
-   loss: 23.75613[K[A
-[K[AEpoch 9 Batches:  94%|███████████████████████████████▉  |  ETA: 0:00:01[K
-   loss: 11.218839[K[A
-[K[AEpoch 9 Batches:  95%|████████████████████████████████▍ |  ETA: 0:00:00[K
-   loss: 27.733297[K[A
-[K[AEpoch 9 Batches:  97%|████████████████████████████████▉ |  ETA: 0:00:00[K
-   loss: 60.75243[K[A
-[K[AEpoch 9 Batches:  98%|█████████████████████████████████▌|  ETA: 0:00:00[K
-   loss: 52.80689[K[A
-[K[AEpoch 9 Batches: 100%|██████████████████████████████████| Time: 0:00:08[K
-   loss: 46.19367[K
-Training Epochs:  60%|████████████████████▍             |  ETA: 0:00:49[KEpoch 10 Batches:   2%|▌                                |  ETA: 0:00:07[K
-   loss: 10.693791[K[A
-[K[AEpoch 10 Batches:   3%|█                                |  ETA: 0:00:07[K
-   loss: 10.939814[K[A
-[K[AEpoch 10 Batches:   5%|█▋                               |  ETA: 0:00:07[K
-   loss: 4.03482[K[A
-[K[AEpoch 10 Batches:   6%|██▏                              |  ETA: 0:00:07[K
-   loss: 12.493524[K[A
-[K[AEpoch 10 Batches:   8%|██▋                              |  ETA: 0:00:07[K
-   loss: 27.61624[K[A
-[K[AEpoch 10 Batches:  10%|███▏                             |  ETA: 0:00:07[K
-   loss: 33.745617[K[A
-[K[AEpoch 10 Batches:  11%|███▊                             |  ETA: 0:00:07[K
-   loss: 27.608055[K[A
-[K[AEpoch 10 Batches:  13%|████▎                            |  ETA: 0:00:07[K
-   loss: 13.798618[K[A
-[K[AEpoch 10 Batches:  14%|████▊                            |  ETA: 0:00:07[K
-   loss: 19.483921[K[A
-[K[AEpoch 10 Batches:  16%|█████▎                           |  ETA: 0:00:06[K
-   loss: 40.49621[K[A
-[K[AEpoch 10 Batches:  18%|█████▊                           |  ETA: 0:00:06[K
-   loss: 16.044733[K[A
-[K[AEpoch 10 Batches:  19%|██████▍                          |  ETA: 0:00:06[K
-   loss: 30.654932[K[A
-[K[AEpoch 10 Batches:  21%|██████▉                          |  ETA: 0:00:06[K
-   loss: 20.98946[K[A
-[K[AEpoch 10 Batches:  22%|███████▍                         |  ETA: 0:00:06[K
-   loss: 25.03958[K[A
-[K[AEpoch 10 Batches:  24%|███████▉                         |  ETA: 0:00:06[K
-   loss: 40.785744[K[A
-[K[AEpoch 10 Batches:  26%|████████▌                        |  ETA: 0:00:06[K
-   loss: 38.211494[K[A
-[K[AEpoch 10 Batches:  27%|█████████                        |  ETA: 0:00:06[K
-   loss: 44.75501[K[A
-[K[AEpoch 10 Batches:  29%|█████████▌                       |  ETA: 0:00:06[K
-   loss: 31.63445[K[A
-[K[AEpoch 10 Batches:  30%|██████████                       |  ETA: 0:00:05[K
-   loss: 8.179067[K[A
-[K[AEpoch 10 Batches:  32%|██████████▌                      |  ETA: 0:00:05[K
-   loss: 40.406876[K[A
-[K[AEpoch 10 Batches:  34%|███████████▏                     |  ETA: 0:00:05[K
-   loss: 27.535233[K[A
-[K[AEpoch 10 Batches:  35%|███████████▋                     |  ETA: 0:00:05[K
-   loss: 27.727417[K[A
-[K[AEpoch 10 Batches:  37%|████████████▏                    |  ETA: 0:00:05[K
-   loss: 43.874584[K[A
-[K[AEpoch 10 Batches:  38%|████████████▋                    |  ETA: 0:00:05[K
-   loss: 20.937044[K[A
-[K[AEpoch 10 Batches:  40%|█████████████▎                   |  ETA: 0:00:05[K
-   loss: 32.599857[K[A
-[K[AEpoch 10 Batches:  42%|█████████████▊                   |  ETA: 0:00:05[K
-   loss: 21.200256[K[A
-[K[AEpoch 10 Batches:  43%|██████████████▎                  |  ETA: 0:00:05[K
-   loss: 28.497671[K[A
-[K[AEpoch 10 Batches:  45%|██████████████▊                  |  ETA: 0:00:05[K
-   loss: 32.16622[K[A
-[K[AEpoch 10 Batches:  46%|███████████████▎                 |  ETA: 0:00:04[K
-   loss: 25.376783[K[A
-[K[AEpoch 10 Batches:  48%|███████████████▉                 |  ETA: 0:00:04[K
-   loss: 35.318134[K[A
-[K[AEpoch 10 Batches:  50%|████████████████▍                |  ETA: 0:00:04[K
-   loss: 16.258886[K[A
-[K[AEpoch 10 Batches:  51%|████████████████▉                |  ETA: 0:00:04[K
-   loss: 27.871979[K[A
-[K[AEpoch 10 Batches:  53%|█████████████████▍               |  ETA: 0:00:04[K
-   loss: 34.3968[K[A
-[K[AEpoch 10 Batches:  54%|██████████████████               |  ETA: 0:00:04[K
-   loss: 18.430159[K[A
-[K[AEpoch 10 Batches:  56%|██████████████████▌              |  ETA: 0:00:04[K
-   loss: 13.814583[K[A
-[K[AEpoch 10 Batches:  58%|███████████████████              |  ETA: 0:00:03[K
-   loss: 21.147789[K[A
-[K[AEpoch 10 Batches:  59%|███████████████████▌             |  ETA: 0:00:03[K
-   loss: 36.267284[K[A
-[K[AEpoch 10 Batches:  61%|████████████████████▏            |  ETA: 0:00:03[K
-   loss: 10.733315[K[A
-[K[AEpoch 10 Batches:  62%|████████████████████▋            |  ETA: 0:00:03[K
-   loss: 18.642645[K[A
-[K[AEpoch 10 Batches:  64%|█████████████████████▏           |  ETA: 0:00:03[K
-   loss: 31.489912[K[A
-[K[AEpoch 10 Batches:  66%|█████████████████████▋           |  ETA: 0:00:03[K
-   loss: 26.193565[K[A
-[K[AEpoch 10 Batches:  67%|██████████████████████▏          |  ETA: 0:00:03[K
-   loss: 17.189156[K[A
-[K[AEpoch 10 Batches:  69%|██████████████████████▊          |  ETA: 0:00:03[K
-   loss: 27.926094[K[A
-[K[AEpoch 10 Batches:  70%|███████████████████████▎         |  ETA: 0:00:02[K
-   loss: 15.316147[K[A
-[K[AEpoch 10 Batches:  72%|███████████████████████▊         |  ETA: 0:00:02[K
-   loss: 15.748197[K[A
-[K[AEpoch 10 Batches:  74%|████████████████████████▎        |  ETA: 0:00:02[K
-   loss: 26.220568[K[A
-[K[AEpoch 10 Batches:  75%|████████████████████████▉        |  ETA: 0:00:02[K
-   loss: 16.16269[K[A
-[K[AEpoch 10 Batches:  77%|█████████████████████████▍       |  ETA: 0:00:02[K
-   loss: 44.19623[K[A
-[K[AEpoch 10 Batches:  78%|█████████████████████████▉       |  ETA: 0:00:02[K
-   loss: 14.012539[K[A
-[K[AEpoch 10 Batches:  80%|██████████████████████████▍      |  ETA: 0:00:02[K
-   loss: 11.778004[K[A
-[K[AEpoch 10 Batches:  82%|██████████████████████████▉      |  ETA: 0:00:01[K
-   loss: 16.31924[K[A
-[K[AEpoch 10 Batches:  83%|███████████████████████████▌     |  ETA: 0:00:01[K
-   loss: 13.7439165[K[A
-[K[AEpoch 10 Batches:  85%|████████████████████████████     |  ETA: 0:00:01[K
-   loss: 38.37623[K[A
-[K[AEpoch 10 Batches:  86%|████████████████████████████▌    |  ETA: 0:00:01[K
-   loss: 21.048857[K[A
-[K[AEpoch 10 Batches:  88%|█████████████████████████████    |  ETA: 0:00:01[K
-   loss: 33.84208[K[A
-[K[AEpoch 10 Batches:  90%|█████████████████████████████▋   |  ETA: 0:00:01[K
-   loss: 34.20801[K[A
-[K[AEpoch 10 Batches:  91%|██████████████████████████████▏  |  ETA: 0:00:01[K
-   loss: 7.475242[K[A
-[K[AEpoch 10 Batches:  93%|██████████████████████████████▋  |  ETA: 0:00:01[K
-   loss: 14.743873[K[A
-[K[AEpoch 10 Batches:  94%|███████████████████████████████▏ |  ETA: 0:00:00[K
-   loss: 23.408684[K[A
-[K[AEpoch 10 Batches:  96%|███████████████████████████████▋ |  ETA: 0:00:00[K
-   loss: 18.076412[K[A
-[K[AEpoch 10 Batches:  98%|████████████████████████████████▎|  ETA: 0:00:00[K
-   loss: 11.6608715[K[A
-[K[AEpoch 10 Batches:  99%|████████████████████████████████▊|  ETA: 0:00:00[K
-   loss: 49.026493[K[A
-[K[AEpoch 10 Batches: 100%|█████████████████████████████████| Time: 0:00:08[K
-   loss: 45.8699[K
-Training Epochs:  67%|██████████████████████▋           |  ETA: 0:00:41[KEpoch 11 Batches:   2%|▌                                |  ETA: 0:00:07[K
-   loss: 10.358231[K[A
-[K[AEpoch 11 Batches:   3%|█                                |  ETA: 0:00:07[K
-   loss: 10.5315[K[A
-[K[AEpoch 11 Batches:   5%|█▋                               |  ETA: 0:00:07[K
-   loss: 3.938654[K[A
-[K[AEpoch 11 Batches:   6%|██▏                              |  ETA: 0:00:07[K
-   loss: 11.883787[K[A
-[K[AEpoch 11 Batches:   8%|██▋                              |  ETA: 0:00:07[K
-   loss: 27.438292[K[A
-[K[AEpoch 11 Batches:  10%|███▏                             |  ETA: 0:00:07[K
-   loss: 33.262585[K[A
-[K[AEpoch 11 Batches:  11%|███▊                             |  ETA: 0:00:07[K
-   loss: 27.361769[K[A
-[K[AEpoch 11 Batches:  13%|████▎                            |  ETA: 0:00:07[K
-   loss: 13.386316[K[A
-[K[AEpoch 11 Batches:  14%|████▊                            |  ETA: 0:00:07[K
-   loss: 19.15269[K[A
-[K[AEpoch 11 Batches:  16%|█████▎                           |  ETA: 0:00:06[K
-   loss: 39.687946[K[A
-[K[AEpoch 11 Batches:  18%|█████▊                           |  ETA: 0:00:06[K
-   loss: 15.409298[K[A
-[K[AEpoch 11 Batches:  19%|██████▍                          |  ETA: 0:00:06[K
-   loss: 29.821333[K[A
-[K[AEpoch 11 Batches:  21%|██████▉                          |  ETA: 0:00:06[K
-   loss: 20.536343[K[A
-[K[AEpoch 11 Batches:  22%|███████▍                         |  ETA: 0:00:06[K
-   loss: 24.524952[K[A
-[K[AEpoch 11 Batches:  24%|███████▉                         |  ETA: 0:00:06[K
-   loss: 39.57581[K[A
-[K[AEpoch 11 Batches:  26%|████████▌                        |  ETA: 0:00:06[K
-   loss: 37.89657[K[A
-[K[AEpoch 11 Batches:  27%|█████████                        |  ETA: 0:00:06[K
-   loss: 44.47472[K[A
-[K[AEpoch 11 Batches:  29%|█████████▌                       |  ETA: 0:00:06[K
-   loss: 30.949951[K[A
-[K[AEpoch 11 Batches:  30%|██████████                       |  ETA: 0:00:05[K
-   loss: 7.711791[K[A
-[K[AEpoch 11 Batches:  32%|██████████▌                      |  ETA: 0:00:05[K
-   loss: 39.963303[K[A
-[K[AEpoch 11 Batches:  34%|███████████▏                     |  ETA: 0:00:05[K
-   loss: 26.823778[K[A
-[K[AEpoch 11 Batches:  35%|███████████▋                     |  ETA: 0:00:05[K
-   loss: 27.234333[K[A
-[K[AEpoch 11 Batches:  37%|████████████▏                    |  ETA: 0:00:05[K
-   loss: 43.03083[K[A
-[K[AEpoch 11 Batches:  38%|████████████▋                    |  ETA: 0:00:05[K
-   loss: 20.192364[K[A
-[K[AEpoch 11 Batches:  40%|█████████████▎                   |  ETA: 0:00:05[K
-   loss: 32.235874[K[A
-[K[AEpoch 11 Batches:  42%|█████████████▊                   |  ETA: 0:00:05[K
-   loss: 20.651245[K[A
-[K[AEpoch 11 Batches:  43%|██████████████▎                  |  ETA: 0:00:04[K
-   loss: 28.03565[K[A
-[K[AEpoch 11 Batches:  45%|██████████████▊                  |  ETA: 0:00:04[K
-   loss: 31.650265[K[A
-[K[AEpoch 11 Batches:  46%|███████████████▎                 |  ETA: 0:00:04[K
-   loss: 25.038818[K[A
-[K[AEpoch 11 Batches:  48%|███████████████▉                 |  ETA: 0:00:04[K
-   loss: 35.00193[K[A
-[K[AEpoch 11 Batches:  49%|████████████████▏                |  ETA: 0:00:04[K
-   loss: 24.531887[K[A
-[K[AEpoch 11 Batches:  50%|████████████████▋                |  ETA: 0:00:04[K
-   loss: 25.792301[K[A
-[K[AEpoch 11 Batches:  52%|█████████████████▏               |  ETA: 0:00:04[K
-   loss: 12.695324[K[A
-[K[AEpoch 11 Batches:  54%|█████████████████▊               |  ETA: 0:00:04[K
-   loss: 15.097656[K[A
-[K[AEpoch 11 Batches:  55%|██████████████████▎              |  ETA: 0:00:04[K
-   loss: 23.093266[K[A
-[K[AEpoch 11 Batches:  57%|██████████████████▊              |  ETA: 0:00:04[K
-   loss: 14.557517[K[A
-[K[AEpoch 11 Batches:  58%|███████████████████▎             |  ETA: 0:00:03[K
-   loss: 17.473124[K[A
-[K[AEpoch 11 Batches:  60%|███████████████████▊             |  ETA: 0:00:03[K
-   loss: 23.262928[K[A
-[K[AEpoch 11 Batches:  62%|████████████████████▍            |  ETA: 0:00:03[K
-   loss: 17.147144[K[A
-[K[AEpoch 11 Batches:  63%|████████████████████▉            |  ETA: 0:00:03[K
-   loss: 9.316845[K[A
-[K[AEpoch 11 Batches:  65%|█████████████████████▍           |  ETA: 0:00:03[K
-   loss: 26.241926[K[A
-[K[AEpoch 11 Batches:  66%|█████████████████████▉           |  ETA: 0:00:03[K
-   loss: 22.176308[K[A
-[K[AEpoch 11 Batches:  68%|██████████████████████▌          |  ETA: 0:00:03[K
-   loss: 33.902706[K[A
-[K[AEpoch 11 Batches:  70%|███████████████████████          |  ETA: 0:00:02[K
-   loss: 12.638107[K[A
-[K[AEpoch 11 Batches:  71%|███████████████████████▌         |  ETA: 0:00:02[K
-   loss: 22.466887[K[A
-[K[AEpoch 11 Batches:  73%|████████████████████████         |  ETA: 0:00:02[K
-   loss: 23.339897[K[A
-[K[AEpoch 11 Batches:  74%|████████████████████████▌        |  ETA: 0:00:02[K
-   loss: 17.746597[K[A
-[K[AEpoch 11 Batches:  76%|█████████████████████████▏       |  ETA: 0:00:02[K
-   loss: 21.580103[K[A
-[K[AEpoch 11 Batches:  78%|█████████████████████████▋       |  ETA: 0:00:02[K
-   loss: 14.13501[K[A
-[K[AEpoch 11 Batches:  79%|██████████████████████████▏      |  ETA: 0:00:02[K
-   loss: 25.343342[K[A
-[K[AEpoch 11 Batches:  81%|██████████████████████████▋      |  ETA: 0:00:02[K
-   loss: 22.118109[K[A
-[K[AEpoch 11 Batches:  82%|███████████████████████████▎     |  ETA: 0:00:01[K
-   loss: 51.602318[K[A
-[K[AEpoch 11 Batches:  84%|███████████████████████████▊     |  ETA: 0:00:01[K
-   loss: 12.444694[K[A
-[K[AEpoch 11 Batches:  86%|████████████████████████████▎    |  ETA: 0:00:01[K
-   loss: 15.623818[K[A
-[K[AEpoch 11 Batches:  87%|████████████████████████████▊    |  ETA: 0:00:01[K
-   loss: 41.57325[K[A
-[K[AEpoch 11 Batches:  89%|█████████████████████████████▎   |  ETA: 0:00:01[K
-   loss: 25.553553[K[A
-[K[AEpoch 11 Batches:  90%|█████████████████████████████▉   |  ETA: 0:00:01[K
-   loss: 35.965363[K[A
-[K[AEpoch 11 Batches:  92%|██████████████████████████████▍  |  ETA: 0:00:01[K
-   loss: 22.59127[K[A
-[K[AEpoch 11 Batches:  94%|██████████████████████████████▉  |  ETA: 0:00:01[K
-   loss: 10.299635[K[A
-[K[AEpoch 11 Batches:  95%|███████████████████████████████▍ |  ETA: 0:00:00[K
-   loss: 27.024502[K[A
-[K[AEpoch 11 Batches:  97%|████████████████████████████████ |  ETA: 0:00:00[K
-   loss: 59.706604[K[A
-[K[AEpoch 11 Batches:  98%|████████████████████████████████▌|  ETA: 0:00:00[K
-   loss: 51.62395[K[A
-[K[AEpoch 11 Batches: 100%|█████████████████████████████████| Time: 0:00:08[K
-   loss: 45.344353[K
-Training Epochs:  73%|████████████████████████▉         |  ETA: 0:00:33[KEpoch 12 Batches:   2%|▌                                |  ETA: 0:00:19[K
-   loss: 10.069629[K[A
-[K[AEpoch 12 Batches:   3%|█                                |  ETA: 0:00:13[K
-   loss: 10.169477[K[A
-[K[AEpoch 12 Batches:   5%|█▋                               |  ETA: 0:00:11[K
-   loss: 3.8564897[K[A
-[K[AEpoch 12 Batches:   6%|██▏                              |  ETA: 0:00:10[K
-   loss: 11.086006[K[A
-[K[AEpoch 12 Batches:   8%|██▋                              |  ETA: 0:00:09[K
-   loss: 27.271324[K[A
-[K[AEpoch 12 Batches:  10%|███▏                             |  ETA: 0:00:09[K
-   loss: 32.767513[K[A
-[K[AEpoch 12 Batches:  11%|███▊                             |  ETA: 0:00:08[K
-   loss: 27.239864[K[A
-[K[AEpoch 12 Batches:  13%|████▎                            |  ETA: 0:00:08[K
-   loss: 12.99813[K[A
-[K[AEpoch 12 Batches:  14%|████▊                            |  ETA: 0:00:08[K
-   loss: 18.892439[K[A
-[K[AEpoch 12 Batches:  16%|█████▎                           |  ETA: 0:00:07[K
-   loss: 38.887825[K[A
-[K[AEpoch 12 Batches:  18%|█████▊                           |  ETA: 0:00:07[K
-   loss: 14.82509[K[A
-[K[AEpoch 12 Batches:  19%|██████▍                          |  ETA: 0:00:07[K
-   loss: 29.199173[K[A
-[K[AEpoch 12 Batches:  21%|██████▉                          |  ETA: 0:00:07[K
-   loss: 20.10946[K[A
-[K[AEpoch 12 Batches:  22%|███████▍                         |  ETA: 0:00:07[K
-   loss: 24.029114[K[A
-[K[AEpoch 12 Batches:  24%|███████▉                         |  ETA: 0:00:06[K
-   loss: 30.912687[K[A
-[K[AEpoch 12 Batches:  26%|████████▌                        |  ETA: 0:00:06[K
-   loss: 38.147163[K[A
-[K[AEpoch 12 Batches:  27%|█████████                        |  ETA: 0:00:06[K
-   loss: 44.601147[K[A
-[K[AEpoch 12 Batches:  29%|█████████▌                       |  ETA: 0:00:06[K
-   loss: 31.189037[K[A
-[K[AEpoch 12 Batches:  30%|██████████                       |  ETA: 0:00:06[K
-   loss: 7.332631[K[A
-[K[AEpoch 12 Batches:  32%|██████████▌                      |  ETA: 0:00:06[K
-   loss: 39.92453[K[A
-[K[AEpoch 12 Batches:  34%|███████████▏                     |  ETA: 0:00:06[K
-   loss: 26.075087[K[A
-[K[AEpoch 12 Batches:  35%|███████████▋                     |  ETA: 0:00:06[K
-   loss: 26.837797[K[A
-[K[AEpoch 12 Batches:  37%|████████████▏                    |  ETA: 0:00:06[K
-   loss: 41.420082[K[A
-[K[AEpoch 12 Batches:  38%|████████████▋                    |  ETA: 0:00:05[K
-   loss: 19.828575[K[A
-[K[AEpoch 12 Batches:  40%|█████████████▎                   |  ETA: 0:00:05[K
-   loss: 31.879988[K[A
-[K[AEpoch 12 Batches:  42%|█████████████▊                   |  ETA: 0:00:05[K
-   loss: 20.242619[K[A
-[K[AEpoch 12 Batches:  43%|██████████████▎                  |  ETA: 0:00:05[K
-   loss: 28.047354[K[A
-[K[AEpoch 12 Batches:  45%|██████████████▊                  |  ETA: 0:00:05[K
-   loss: 31.558218[K[A
-[K[AEpoch 12 Batches:  46%|███████████████▎                 |  ETA: 0:00:05[K
-   loss: 24.65735[K[A
-[K[AEpoch 12 Batches:  48%|███████████████▉                 |  ETA: 0:00:04[K
-   loss: 35.02709[K[A
-[K[AEpoch 12 Batches:  50%|████████████████▍                |  ETA: 0:00:04[K
-   loss: 15.498479[K[A
-[K[AEpoch 12 Batches:  51%|████████████████▉                |  ETA: 0:00:04[K
-   loss: 27.059547[K[A
-[K[AEpoch 12 Batches:  53%|█████████████████▍               |  ETA: 0:00:04[K
-   loss: 33.953[K[A
-[K[AEpoch 12 Batches:  54%|██████████████████               |  ETA: 0:00:04[K
-   loss: 18.900082[K[A
-[K[AEpoch 12 Batches:  56%|██████████████████▌              |  ETA: 0:00:04[K
-   loss: 13.679363[K[A
-[K[AEpoch 12 Batches:  58%|███████████████████              |  ETA: 0:00:04[K
-   loss: 20.056356[K[A
-[K[AEpoch 12 Batches:  59%|███████████████████▌             |  ETA: 0:00:03[K
-   loss: 35.463444[K[A
-[K[AEpoch 12 Batches:  61%|████████████████████▏            |  ETA: 0:00:03[K
-   loss: 10.120644[K[A
-[K[AEpoch 12 Batches:  62%|████████████████████▋            |  ETA: 0:00:03[K
-   loss: 17.786396[K[A
-[K[AEpoch 12 Batches:  64%|█████████████████████▏           |  ETA: 0:00:03[K
-   loss: 32.032364[K[A
-[K[AEpoch 12 Batches:  66%|█████████████████████▋           |  ETA: 0:00:03[K
-   loss: 25.248228[K[A
-[K[AEpoch 12 Batches:  67%|██████████████████████▏          |  ETA: 0:00:03[K
-   loss: 16.117617[K[A
-[K[AEpoch 12 Batches:  69%|██████████████████████▊          |  ETA: 0:00:03[K
-   loss: 27.529484[K[A
-[K[AEpoch 12 Batches:  70%|███████████████████████▎         |  ETA: 0:00:02[K
-   loss: 14.564616[K[A
-[K[AEpoch 12 Batches:  72%|███████████████████████▊         |  ETA: 0:00:02[K
-   loss: 15.107574[K[A
-[K[AEpoch 12 Batches:  74%|████████████████████████▎        |  ETA: 0:00:02[K
-   loss: 25.743462[K[A
-[K[AEpoch 12 Batches:  75%|████████████████████████▉        |  ETA: 0:00:02[K
-   loss: 15.037747[K[A
-[K[AEpoch 12 Batches:  77%|█████████████████████████▍       |  ETA: 0:00:02[K
-   loss: 42.656097[K[A
-[K[AEpoch 12 Batches:  78%|█████████████████████████▉       |  ETA: 0:00:02[K
-   loss: 13.019702[K[A
-[K[AEpoch 12 Batches:  80%|██████████████████████████▍      |  ETA: 0:00:02[K
-   loss: 10.704541[K[A
-[K[AEpoch 12 Batches:  82%|██████████████████████████▉      |  ETA: 0:00:02[K
-   loss: 15.525309[K[A
-[K[AEpoch 12 Batches:  83%|███████████████████████████▌     |  ETA: 0:00:01[K
-   loss: 13.0384655[K[A
-[K[AEpoch 12 Batches:  85%|████████████████████████████     |  ETA: 0:00:01[K
-   loss: 37.214077[K[A
-[K[AEpoch 12 Batches:  86%|████████████████████████████▌    |  ETA: 0:00:01[K
-   loss: 20.86234[K[A
-[K[AEpoch 12 Batches:  88%|█████████████████████████████    |  ETA: 0:00:01[K
-   loss: 32.610355[K[A
-[K[AEpoch 12 Batches:  90%|█████████████████████████████▋   |  ETA: 0:00:01[K
-   loss: 28.39714[K[A
-[K[AEpoch 12 Batches:  91%|██████████████████████████████▏  |  ETA: 0:00:01[K
-   loss: 7.134548[K[A
-[K[AEpoch 12 Batches:  93%|██████████████████████████████▋  |  ETA: 0:00:01[K
-   loss: 14.055231[K[A
-[K[AEpoch 12 Batches:  94%|███████████████████████████████▏ |  ETA: 0:00:00[K
-   loss: 23.032682[K[A
-[K[AEpoch 12 Batches:  96%|███████████████████████████████▋ |  ETA: 0:00:00[K
-   loss: 17.848963[K[A
-[K[AEpoch 12 Batches:  98%|████████████████████████████████▎|  ETA: 0:00:00[K
-   loss: 11.395828[K[A
-[K[AEpoch 12 Batches:  99%|████████████████████████████████▊|  ETA: 0:00:00[K
-   loss: 33.098526[K[A
-[K[AEpoch 12 Batches: 100%|█████████████████████████████████| Time: 0:00:08[K
-   loss: 44.97408[K
-Training Epochs:  80%|███████████████████████████▎      |  ETA: 0:00:25[KEpoch 13 Batches:   2%|▌                                |  ETA: 0:00:08[K
-   loss: 9.627109[K[A
-[K[AEpoch 13 Batches:   3%|█                                |  ETA: 0:00:07[K
-   loss: 9.723681[K[A
-[K[AEpoch 13 Batches:   5%|█▋                               |  ETA: 0:00:07[K
-   loss: 3.7010403[K[A
-[K[AEpoch 13 Batches:   6%|██▏                              |  ETA: 0:00:07[K
-   loss: 7.3182034[K[A
-[K[AEpoch 13 Batches:   8%|██▋                              |  ETA: 0:00:07[K
-   loss: 27.073088[K[A
-[K[AEpoch 13 Batches:  10%|███▏                             |  ETA: 0:00:07[K
-   loss: 16.103079[K[A
-[K[AEpoch 13 Batches:  11%|███▊                             |  ETA: 0:00:07[K
-   loss: 26.969055[K[A
-[K[AEpoch 13 Batches:  13%|████▎                            |  ETA: 0:00:07[K
-   loss: 12.663322[K[A
-[K[AEpoch 13 Batches:  14%|████▊                            |  ETA: 0:00:07[K
-   loss: 18.64259[K[A
-[K[AEpoch 13 Batches:  16%|█████▎                           |  ETA: 0:00:07[K
-   loss: 38.230087[K[A
-[K[AEpoch 13 Batches:  18%|█████▊                           |  ETA: 0:00:06[K
-   loss: 14.203271[K[A
-[K[AEpoch 13 Batches:  19%|██████▍                          |  ETA: 0:00:06[K
-   loss: 27.904243[K[A
-[K[AEpoch 13 Batches:  21%|██████▉                          |  ETA: 0:00:06[K
-   loss: 19.693016[K[A
-[K[AEpoch 13 Batches:  22%|███████▍                         |  ETA: 0:00:06[K
-   loss: 23.452017[K[A
-[K[AEpoch 13 Batches:  24%|███████▉                         |  ETA: 0:00:06[K
-   loss: 27.058613[K[A
-[K[AEpoch 13 Batches:  26%|████████▌                        |  ETA: 0:00:06[K
-   loss: 37.681347[K[A
-[K[AEpoch 13 Batches:  27%|█████████                        |  ETA: 0:00:06[K
-   loss: 44.29996[K[A
-[K[AEpoch 13 Batches:  29%|█████████▌                       |  ETA: 0:00:06[K
-   loss: 30.439623[K[A
-[K[AEpoch 13 Batches:  30%|██████████                       |  ETA: 0:00:05[K
-   loss: 7.0110164[K[A
-[K[AEpoch 13 Batches:  32%|██████████▌                      |  ETA: 0:00:05[K
-   loss: 39.076485[K[A
-[K[AEpoch 13 Batches:  34%|███████████▏                     |  ETA: 0:00:05[K
-   loss: 24.819181[K[A
-[K[AEpoch 13 Batches:  35%|███████████▋                     |  ETA: 0:00:05[K
-   loss: 26.64658[K[A
-[K[AEpoch 13 Batches:  37%|████████████▏                    |  ETA: 0:00:05[K
-   loss: 40.59688[K[A
-[K[AEpoch 13 Batches:  38%|████████████▋                    |  ETA: 0:00:05[K
-   loss: 19.248634[K[A
-[K[AEpoch 13 Batches:  40%|█████████████▎                   |  ETA: 0:00:05[K
-   loss: 29.070995[K[A
-[K[AEpoch 13 Batches:  42%|█████████████▊                   |  ETA: 0:00:05[K
-   loss: 19.844017[K[A
-[K[AEpoch 13 Batches:  43%|██████████████▎                  |  ETA: 0:00:05[K
-   loss: 27.677526[K[A
-[K[AEpoch 13 Batches:  45%|██████████████▊                  |  ETA: 0:00:05[K
-   loss: 30.889359[K[A
-[K[AEpoch 13 Batches:  46%|███████████████▎                 |  ETA: 0:00:04[K
-   loss: 24.360334[K[A
-[K[AEpoch 13 Batches:  48%|███████████████▉                 |  ETA: 0:00:04[K
-   loss: 35.359653[K[A
-[K[AEpoch 13 Batches:  50%|████████████████▍                |  ETA: 0:00:04[K
-   loss: 15.071942[K[A
-[K[AEpoch 13 Batches:  51%|████████████████▉                |  ETA: 0:00:04[K
-   loss: 26.786316[K[A
-[K[AEpoch 13 Batches:  53%|█████████████████▍               |  ETA: 0:00:04[K
-   loss: 33.724773[K[A
-[K[AEpoch 13 Batches:  54%|██████████████████               |  ETA: 0:00:04[K
-   loss: 17.660017[K[A
-[K[AEpoch 13 Batches:  56%|██████████████████▌              |  ETA: 0:00:04[K
-   loss: 13.295029[K[A
-[K[AEpoch 13 Batches:  58%|███████████████████              |  ETA: 0:00:03[K
-   loss: 19.4351[K[A
-[K[AEpoch 13 Batches:  59%|███████████████████▌             |  ETA: 0:00:03[K
-   loss: 34.917946[K[A
-[K[AEpoch 13 Batches:  61%|████████████████████▏            |  ETA: 0:00:03[K
-   loss: 9.886674[K[A
-[K[AEpoch 13 Batches:  62%|████████████████████▋            |  ETA: 0:00:03[K
-   loss: 17.523758[K[A
-[K[AEpoch 13 Batches:  64%|█████████████████████▏           |  ETA: 0:00:03[K
-   loss: 31.039291[K[A
-[K[AEpoch 13 Batches:  66%|█████████████████████▋           |  ETA: 0:00:03[K
-   loss: 24.65294[K[A
-[K[AEpoch 13 Batches:  67%|██████████████████████▏          |  ETA: 0:00:03[K
-   loss: 15.673817[K[A
-[K[AEpoch 13 Batches:  69%|██████████████████████▊          |  ETA: 0:00:03[K
-   loss: 24.126091[K[A
-[K[AEpoch 13 Batches:  70%|███████████████████████▎         |  ETA: 0:00:02[K
-   loss: 14.249208[K[A
-[K[AEpoch 13 Batches:  72%|███████████████████████▊         |  ETA: 0:00:02[K
-   loss: 14.740881[K[A
-[K[AEpoch 13 Batches:  74%|████████████████████████▎        |  ETA: 0:00:02[K
-   loss: 27.688675[K[A
-[K[AEpoch 13 Batches:  75%|████████████████████████▉        |  ETA: 0:00:02[K
-   loss: 14.442708[K[A
-[K[AEpoch 13 Batches:  77%|█████████████████████████▍       |  ETA: 0:00:02[K
-   loss: 41.380726[K[A
-[K[AEpoch 13 Batches:  78%|█████████████████████████▉       |  ETA: 0:00:02[K
-   loss: 12.409304[K[A
-[K[AEpoch 13 Batches:  80%|██████████████████████████▍      |  ETA: 0:00:02[K
-   loss: 10.363674[K[A
-[K[AEpoch 13 Batches:  82%|██████████████████████████▉      |  ETA: 0:00:01[K
-   loss: 14.9784975[K[A
-[K[AEpoch 13 Batches:  83%|███████████████████████████▌     |  ETA: 0:00:01[K
-   loss: 12.781038[K[A
-[K[AEpoch 13 Batches:  85%|████████████████████████████     |  ETA: 0:00:01[K
-   loss: 37.302933[K[A
-[K[AEpoch 13 Batches:  86%|████████████████████████████▌    |  ETA: 0:00:01[K
-   loss: 20.46401[K[A
-[K[AEpoch 13 Batches:  88%|█████████████████████████████    |  ETA: 0:00:01[K
-   loss: 31.86557[K[A
-[K[AEpoch 13 Batches:  90%|█████████████████████████████▋   |  ETA: 0:00:01[K
-   loss: 23.359604[K[A
-[K[AEpoch 13 Batches:  91%|██████████████████████████████▏  |  ETA: 0:00:01[K
-   loss: 6.889694[K[A
-[K[AEpoch 13 Batches:  93%|██████████████████████████████▋  |  ETA: 0:00:01[K
-   loss: 13.58131[K[A
-[K[AEpoch 13 Batches:  94%|██████████████████████████████▉  |  ETA: 0:00:01[K
-   loss: 9.406201[K[A
-[K[AEpoch 13 Batches:  95%|███████████████████████████████▍ |  ETA: 0:00:00[K
-   loss: 26.271412[K[A
-[K[AEpoch 13 Batches:  97%|████████████████████████████████ |  ETA: 0:00:00[K
-   loss: 58.97939[K[A
-[K[AEpoch 13 Batches:  98%|████████████████████████████████▌|  ETA: 0:00:00[K
-   loss: 51.119457[K[A
-[K[AEpoch 13 Batches: 100%|█████████████████████████████████| Time: 0:00:08[K
-   loss: 44.289043[K
-Training Epochs:  87%|█████████████████████████████▌    |  ETA: 0:00:16[KEpoch 14 Batches:   2%|▌                                |  ETA: 0:00:07[K
-   loss: 9.380105[K[A
-[K[AEpoch 14 Batches:   3%|█                                |  ETA: 0:00:07[K
-   loss: 9.412633[K[A
-[K[AEpoch 14 Batches:   5%|█▋                               |  ETA: 0:00:07[K
-   loss: 3.6080093[K[A
-[K[AEpoch 14 Batches:   6%|██▏                              |  ETA: 0:00:07[K
-   loss: 6.937339[K[A
-[K[AEpoch 14 Batches:   8%|██▋                              |  ETA: 0:00:07[K
-   loss: 26.833368[K[A
-[K[AEpoch 14 Batches:  10%|███▏                             |  ETA: 0:00:07[K
-   loss: 12.735784[K[A
-[K[AEpoch 14 Batches:  11%|███▊                             |  ETA: 0:00:07[K
-   loss: 26.789974[K[A
-[K[AEpoch 14 Batches:  13%|████▎                            |  ETA: 0:00:07[K
-   loss: 11.557801[K[A
-[K[AEpoch 14 Batches:  14%|████▊                            |  ETA: 0:00:07[K
-   loss: 18.52384[K[A
-[K[AEpoch 14 Batches:  16%|█████▎                           |  ETA: 0:00:07[K
-   loss: 37.707268[K[A
-[K[AEpoch 14 Batches:  18%|█████▊                           |  ETA: 0:00:06[K
-   loss: 13.770498[K[A
-[K[AEpoch 14 Batches:  19%|██████▍                          |  ETA: 0:00:06[K
-   loss: 27.396082[K[A
-[K[AEpoch 14 Batches:  21%|██████▉                          |  ETA: 0:00:06[K
-   loss: 19.328445[K[A
-[K[AEpoch 14 Batches:  22%|███████▍                         |  ETA: 0:00:06[K
-   loss: 22.328173[K[A
-[K[AEpoch 14 Batches:  24%|███████▉                         |  ETA: 0:00:06[K
-   loss: 27.31156[K[A
-[K[AEpoch 14 Batches:  26%|████████▌                        |  ETA: 0:00:06[K
-   loss: 37.393[K[A
-[K[AEpoch 14 Batches:  27%|█████████                        |  ETA: 0:00:06[K
-   loss: 44.15665[K[A
-[K[AEpoch 14 Batches:  29%|█████████▌                       |  ETA: 0:00:06[K
-   loss: 30.046825[K[A
-[K[AEpoch 14 Batches:  30%|██████████                       |  ETA: 0:00:05[K
-   loss: 7.0940185[K[A
-[K[AEpoch 14 Batches:  32%|██████████▌                      |  ETA: 0:00:05[K
-   loss: 38.77704[K[A
-[K[AEpoch 14 Batches:  34%|███████████▏                     |  ETA: 0:00:05[K
-   loss: 24.083689[K[A
-[K[AEpoch 14 Batches:  35%|███████████▋                     |  ETA: 0:00:05[K
-   loss: 27.047956[K[A
-[K[AEpoch 14 Batches:  37%|████████████▏                    |  ETA: 0:00:05[K
-   loss: 40.230827[K[A
-[K[AEpoch 14 Batches:  38%|████████████▋                    |  ETA: 0:00:05[K
-   loss: 19.00624[K[A
-[K[AEpoch 14 Batches:  40%|█████████████▎                   |  ETA: 0:00:05[K
-   loss: 26.883348[K[A
-[K[AEpoch 14 Batches:  42%|█████████████▊                   |  ETA: 0:00:05[K
-   loss: 20.02226[K[A
-[K[AEpoch 14 Batches:  43%|██████████████▎                  |  ETA: 0:00:05[K
-   loss: 27.73485[K[A
-[K[AEpoch 14 Batches:  45%|██████████████▊                  |  ETA: 0:00:05[K
-   loss: 30.755337[K[A
-[K[AEpoch 14 Batches:  46%|███████████████▎                 |  ETA: 0:00:04[K
-   loss: 24.34958[K[A
-[K[AEpoch 14 Batches:  48%|███████████████▉                 |  ETA: 0:00:04[K
-   loss: 35.927227[K[A
-[K[AEpoch 14 Batches:  50%|████████████████▍                |  ETA: 0:00:04[K
-   loss: 15.03383[K[A
-[K[AEpoch 14 Batches:  51%|████████████████▉                |  ETA: 0:00:04[K
-   loss: 26.654144[K[A
-[K[AEpoch 14 Batches:  53%|█████████████████▍               |  ETA: 0:00:04[K
-   loss: 33.76836[K[A
-[K[AEpoch 14 Batches:  54%|██████████████████               |  ETA: 0:00:04[K
-   loss: 18.420017[K[A
-[K[AEpoch 14 Batches:  56%|██████████████████▌              |  ETA: 0:00:04[K
-   loss: 13.3611555[K[A
-[K[AEpoch 14 Batches:  58%|███████████████████              |  ETA: 0:00:03[K
-   loss: 19.512627[K[A
-[K[AEpoch 14 Batches:  59%|███████████████████▌             |  ETA: 0:00:03[K
-   loss: 34.531097[K[A
-[K[AEpoch 14 Batches:  61%|████████████████████▏            |  ETA: 0:00:03[K
-   loss: 9.727853[K[A
-[K[AEpoch 14 Batches:  62%|████████████████████▋            |  ETA: 0:00:03[K
-   loss: 17.54924[K[A
-[K[AEpoch 14 Batches:  64%|█████████████████████▏           |  ETA: 0:00:03[K
-   loss: 30.553999[K[A
-[K[AEpoch 14 Batches:  66%|█████████████████████▋           |  ETA: 0:00:03[K
-   loss: 24.388166[K[A
-[K[AEpoch 14 Batches:  67%|██████████████████████▏          |  ETA: 0:00:03[K
-   loss: 15.408672[K[A
-[K[AEpoch 14 Batches:  69%|██████████████████████▊          |  ETA: 0:00:03[K
-   loss: 22.656096[K[A
-[K[AEpoch 14 Batches:  70%|███████████████████████▎         |  ETA: 0:00:02[K
-   loss: 14.208225[K[A
-[K[AEpoch 14 Batches:  72%|███████████████████████▊         |  ETA: 0:00:02[K
-   loss: 14.632963[K[A
-[K[AEpoch 14 Batches:  74%|████████████████████████▎        |  ETA: 0:00:02[K
-   loss: 28.602112[K[A
-[K[AEpoch 14 Batches:  75%|████████████████████████▉        |  ETA: 0:00:02[K
-   loss: 13.993321[K[A
-[K[AEpoch 14 Batches:  77%|█████████████████████████▍       |  ETA: 0:00:02[K
-   loss: 40.513374[K[A
-[K[AEpoch 14 Batches:  78%|█████████████████████████▉       |  ETA: 0:00:02[K
-   loss: 12.122862[K[A
-[K[AEpoch 14 Batches:  80%|██████████████████████████▍      |  ETA: 0:00:02[K
-   loss: 10.421606[K[A
-[K[AEpoch 14 Batches:  82%|██████████████████████████▉      |  ETA: 0:00:01[K
-   loss: 15.01149[K[A
-[K[AEpoch 14 Batches:  83%|███████████████████████████▌     |  ETA: 0:00:01[K
-   loss: 12.567861[K[A
-[K[AEpoch 14 Batches:  85%|████████████████████████████     |  ETA: 0:00:01[K
-   loss: 37.577694[K[A
-[K[AEpoch 14 Batches:  86%|████████████████████████████▌    |  ETA: 0:00:01[K
-   loss: 20.432985[K[A
-[K[AEpoch 14 Batches:  88%|█████████████████████████████    |  ETA: 0:00:01[K
-   loss: 31.340883[K[A
-[K[AEpoch 14 Batches:  90%|█████████████████████████████▋   |  ETA: 0:00:01[K
-   loss: 22.053999[K[A
-[K[AEpoch 14 Batches:  91%|██████████████████████████████▏  |  ETA: 0:00:01[K
-   loss: 6.8009944[K[A
-[K[AEpoch 14 Batches:  93%|██████████████████████████████▋  |  ETA: 0:00:01[K
-   loss: 13.403572[K[A
-[K[AEpoch 14 Batches:  94%|███████████████████████████████▏ |  ETA: 0:00:00[K
-   loss: 22.610352[K[A
-[K[AEpoch 14 Batches:  96%|███████████████████████████████▋ |  ETA: 0:00:00[K
-   loss: 17.977686[K[A
-[K[AEpoch 14 Batches:  97%|████████████████████████████████ |  ETA: 0:00:00[K
-   loss: 58.638985[K[A
-[K[AEpoch 14 Batches:  98%|████████████████████████████████▌|  ETA: 0:00:00[K
-   loss: 50.665894[K[A
-[K[AEpoch 14 Batches: 100%|█████████████████████████████████| Time: 0:00:08[K
-   loss: 44.15532[K
-Training Epochs:  93%|███████████████████████████████▊  |  ETA: 0:00:08[KEpoch 15 Batches:   2%|▌                                |  ETA: 0:00:07[K
-   loss: 9.212109[K[A
-[K[AEpoch 15 Batches:   3%|█                                |  ETA: 0:00:07[K
-   loss: 9.18085[K[A
-[K[AEpoch 15 Batches:   5%|█▋                               |  ETA: 0:00:07[K
-   loss: 3.542368[K[A
-[K[AEpoch 15 Batches:   6%|██▏                              |  ETA: 0:00:07[K
-   loss: 6.848243[K[A
-[K[AEpoch 15 Batches:   8%|██▋                              |  ETA: 0:00:07[K
-   loss: 26.702007[K[A
-[K[AEpoch 15 Batches:  10%|███▏                             |  ETA: 0:00:07[K
-   loss: 12.64272[K[A
-[K[AEpoch 15 Batches:  11%|███▊                             |  ETA: 0:00:07[K
-   loss: 26.714073[K[A
-[K[AEpoch 15 Batches:  13%|████▎                            |  ETA: 0:00:07[K
-   loss: 11.216541[K[A
-[K[AEpoch 15 Batches:  14%|████▊                            |  ETA: 0:00:07[K
-   loss: 18.401714[K[A
-[K[AEpoch 15 Batches:  16%|█████▎                           |  ETA: 0:00:06[K
-   loss: 37.1978[K[A
-[K[AEpoch 15 Batches:  18%|█████▊                           |  ETA: 0:00:06[K
-   loss: 13.5745735[K[A
-[K[AEpoch 15 Batches:  19%|██████▍                          |  ETA: 0:00:06[K
-   loss: 26.94021[K[A
-[K[AEpoch 15 Batches:  21%|██████▉                          |  ETA: 0:00:06[K
-   loss: 19.13668[K[A
-[K[AEpoch 15 Batches:  22%|███████▍                         |  ETA: 0:00:06[K
-   loss: 21.975002[K[A
-[K[AEpoch 15 Batches:  24%|███████▉                         |  ETA: 0:00:06[K
-   loss: 27.475521[K[A
-[K[AEpoch 15 Batches:  26%|████████▌                        |  ETA: 0:00:06[K
-   loss: 37.40487[K[A
-[K[AEpoch 15 Batches:  27%|█████████                        |  ETA: 0:00:06[K
-   loss: 43.937237[K[A
-[K[AEpoch 15 Batches:  29%|█████████▌                       |  ETA: 0:00:06[K
-   loss: 29.533188[K[A
-[K[AEpoch 15 Batches:  30%|██████████                       |  ETA: 0:00:05[K
-   loss: 6.6915946[K[A
-[K[AEpoch 15 Batches:  32%|██████████▌                      |  ETA: 0:00:05[K
-   loss: 38.673054[K[A
-[K[AEpoch 15 Batches:  34%|███████████▏                     |  ETA: 0:00:05[K
-   loss: 23.453562[K[A
-[K[AEpoch 15 Batches:  35%|███████████▋                     |  ETA: 0:00:05[K
-   loss: 26.829977[K[A
-[K[AEpoch 15 Batches:  37%|████████████▏                    |  ETA: 0:00:05[K
-   loss: 39.4622[K[A
-[K[AEpoch 15 Batches:  38%|████████████▋                    |  ETA: 0:00:05[K
-   loss: 18.199965[K[A
-[K[AEpoch 15 Batches:  40%|█████████████▎                   |  ETA: 0:00:05[K
-   loss: 25.891613[K[A
-[K[AEpoch 15 Batches:  42%|█████████████▊                   |  ETA: 0:00:05[K
-   loss: 19.538094[K[A
-[K[AEpoch 15 Batches:  43%|██████████████▎                  |  ETA: 0:00:04[K
-   loss: 27.31928[K[A
-[K[AEpoch 15 Batches:  45%|██████████████▊                  |  ETA: 0:00:04[K
-   loss: 30.314896[K[A
-[K[AEpoch 15 Batches:  46%|███████████████▎                 |  ETA: 0:00:04[K
-   loss: 24.704062[K[A
-[K[AEpoch 15 Batches:  48%|███████████████▉                 |  ETA: 0:00:04[K
-   loss: 36.81935[K[A
-[K[AEpoch 15 Batches:  50%|████████████████▍                |  ETA: 0:00:04[K
-   loss: 14.713377[K[A
-[K[AEpoch 15 Batches:  51%|████████████████▉                |  ETA: 0:00:04[K
-   loss: 26.434933[K[A
-[K[AEpoch 15 Batches:  53%|█████████████████▍               |  ETA: 0:00:04[K
-   loss: 33.54228[K[A
-[K[AEpoch 15 Batches:  54%|██████████████████               |  ETA: 0:00:04[K
-   loss: 15.712339[K[A
-[K[AEpoch 15 Batches:  56%|██████████████████▌              |  ETA: 0:00:04[K
-   loss: 13.192711[K[A
-[K[AEpoch 15 Batches:  58%|███████████████████              |  ETA: 0:00:03[K
-   loss: 19.01809[K[A
-[K[AEpoch 15 Batches:  59%|███████████████████▌             |  ETA: 0:00:03[K
-   loss: 34.07869[K[A
-[K[AEpoch 15 Batches:  61%|████████████████████▏            |  ETA: 0:00:03[K
-   loss: 9.501429[K[A
-[K[AEpoch 15 Batches:  62%|████████████████████▋            |  ETA: 0:00:03[K
-   loss: 17.28723[K[A
-[K[AEpoch 15 Batches:  64%|█████████████████████▏           |  ETA: 0:00:03[K
-   loss: 28.920565[K[A
-[K[AEpoch 15 Batches:  66%|█████████████████████▋           |  ETA: 0:00:03[K
-   loss: 23.273394[K[A
-[K[AEpoch 15 Batches:  67%|██████████████████████▏          |  ETA: 0:00:03[K
-   loss: 15.110263[K[A
-[K[AEpoch 15 Batches:  69%|██████████████████████▊          |  ETA: 0:00:03[K
-   loss: 21.050817[K[A
-[K[AEpoch 15 Batches:  70%|███████████████████████▎         |  ETA: 0:00:02[K
-   loss: 13.528558[K[A
-[K[AEpoch 15 Batches:  72%|███████████████████████▊         |  ETA: 0:00:02[K
-   loss: 14.248738[K[A
-[K[AEpoch 15 Batches:  74%|████████████████████████▎        |  ETA: 0:00:02[K
-   loss: 28.637125[K[A
-[K[AEpoch 15 Batches:  75%|████████████████████████▉        |  ETA: 0:00:02[K
-   loss: 13.520417[K[A
-[K[AEpoch 15 Batches:  77%|█████████████████████████▍       |  ETA: 0:00:02[K
-   loss: 40.69332[K[A
-[K[AEpoch 15 Batches:  78%|█████████████████████████▉       |  ETA: 0:00:02[K
-   loss: 11.578975[K[A
-[K[AEpoch 15 Batches:  80%|██████████████████████████▍      |  ETA: 0:00:02[K
-   loss: 9.947671[K[A
-[K[AEpoch 15 Batches:  82%|██████████████████████████▉      |  ETA: 0:00:01[K
-   loss: 14.556541[K[A
-[K[AEpoch 15 Batches:  83%|███████████████████████████▌     |  ETA: 0:00:01[K
-   loss: 12.40028[K[A
-[K[AEpoch 15 Batches:  85%|████████████████████████████     |  ETA: 0:00:01[K
-   loss: 36.13063[K[A
-[K[AEpoch 15 Batches:  86%|████████████████████████████▌    |  ETA: 0:00:01[K
-   loss: 20.147257[K[A
-[K[AEpoch 15 Batches:  88%|█████████████████████████████    |  ETA: 0:00:01[K
-   loss: 30.807594[K[A
-[K[AEpoch 15 Batches:  90%|█████████████████████████████▋   |  ETA: 0:00:01[K
-   loss: 20.80066[K[A
-[K[AEpoch 15 Batches:  91%|██████████████████████████████▏  |  ETA: 0:00:01[K
-   loss: 6.6397176[K[A
-[K[AEpoch 15 Batches:  93%|██████████████████████████████▋  |  ETA: 0:00:01[K
-   loss: 13.105016[K[A
-[K[AEpoch 15 Batches:  94%|███████████████████████████████▏ |  ETA: 0:00:00[K
-   loss: 22.182009[K[A
-[K[AEpoch 15 Batches:  96%|███████████████████████████████▋ |  ETA: 0:00:00[K
-   loss: 17.978884[K[A
-[K[AEpoch 15 Batches:  98%|████████████████████████████████▎|  ETA: 0:00:00[K
-   loss: 10.704314[K[A
-[K[AEpoch 15 Batches:  99%|████████████████████████████████▊|  ETA: 0:00:00[K
-   loss: 30.96011[K[A
-[K[AEpoch 15 Batches: 100%|█████████████████████████████████| Time: 0:00:07[K
-   loss: 42.787617[K
-Training Epochs: 100%|██████████████████████████████████| Time: 0:02:03[K
-[153.9326410293579s] elapsed. Predicted recoveries computed.
-[155.2954821586609s] elapsed. Recoveries verified.
-Out of (100000,) test samples, 97195 were correctly decoded.
-{"error_model_name":"ExplicitErrorModel","num_samples_per_error_rate":100000,"rounds_per_BP":15,"runtime":311.3157320022583,"n_iterations_BP":100,"std_logical_error_rate":0.01651157094282673,"error_model_parameters_description":"./../data/7q_Hamm_code_data_q_mean_0.1_std_0.2/testing_data/test_ballistic_p_0.006_q_0.1_s_1.txt","weight_soft_constraint":0.005747126415371895,"num_failures":2805,"algo":"NN","average_logical_error_rate":0.02805}
