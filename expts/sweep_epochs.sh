@@ -49,7 +49,7 @@ for n_epochs in "${EPOCHS[@]}"; do
     for rep in $(seq 1 "$N_REPS"); do
         log_file="$OUT_DIR/epochs_${n_epochs}_rep_${rep}.log"
         printf "julia --project='%s' neural_bp_experiments.jl --codename '%s' --n_hidden_layers %d --n_epochs %d --batch_size %d --correlation_strengths_file '%s' --train '%s' --test '%s' --retrain true > '%s' 2>&1\n" \
-            "$EXPTS_DIR" "$PROJECT_DIR" "$CODENAME" \
+            "$PROJECT_DIR" "$CODENAME" \
             "$N_HIDDEN_LAYERS" "$n_epochs" "$BATCH_SIZE" \
             "$CORR_FILE" "$TRAIN_FILE" "$TEST_FILE" \
             "$log_file" >> "$COMMANDS_FILE"
