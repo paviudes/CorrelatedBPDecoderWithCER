@@ -4,6 +4,7 @@ function get_loss_value(
     weights_c2v_readout, # learnable weights for computing the readout (posterior LLRs) from m^t_(c→v).
     weights_loss_layers, # learnable weights for the loss from each layer.
     correlation_importance, # hyperparameter for the importance of the correlation penalty in the total Loss function.
+    smooth_temp, # temperature for the smooth minimum approximation when combining losses from different layers.
     base, # constant parameters of the model, including the parity-check matrix, connectivity, correlation strengths, etc.
     llrs_batch, # batch of initial LLRs for the bits, to be used as input to the network
     syndromes_batch, # batch of syndromes, to be used as input to the network
@@ -31,7 +32,8 @@ function get_loss_value(
         base.correlation_strengths,
         false, # base.is_correlated, # Change back to base.is_correlated for the actual implementation, set to `false` for testing without correlations for now.
         weights_loss_layers,
-        correlation_importance # correlation_importance is passed as a 1-element array to be compatible with Enzyme's autodiff, so we take the first element here.
+        correlation_importance, # correlation_importance is passed as a 1-element array to be compatible with Enzyme's autodiff, so we take the first element here.
+        smooth_temp # temperature for the smooth minimum approximation when combining losses from different layers, to be annealed during training.
     )
     return total_loss
 end
@@ -116,7 +118,8 @@ function train_neuralbp!(
                     bpnn.base.correlation_strengths,
                     bpnn.base.is_correlated, #TODO: set explicitly to `false` for excluding correlations
                     bpnn.weights_loss_layers,
-                    bpnn.correlation_importance
+                    bpnn.correlation_importance,
+                    smooth_temp
                 )
             end
             # apply update. grads[1] contains gradients for the model
@@ -132,13 +135,25 @@ function train_neuralbp!(
 end
 =#
 
+function clip_grad!(grad_vector::AbstractArray{Float32}; max_grad_norm::Float32=5f0)
+    """
+    Clip the gradient in-place to have a maximum L2 norm of `max_grad_norm`.
+    """
+    grad_norm = sqrt(sum(abs2, grad_vector))
+    if grad_norm > max_grad_norm
+        grad_vector .*= (max_grad_norm / grad_norm)
+    end
+    return nothing
+end
+
 function train_neuralbp_enzyme!(
     bpnn::NachmaniNeuralBP,
     syndromes::BitMatrix,
     expected_recoveries::BitMatrix;
     learning_rate::Float32 = 1f-4, # learning rate for simple SGD
     n_epochs::Int = 10,
-    batch_size::Int = 32
+    batch_size::Int = 32,
+    max_grad_norm::Float32 = 5f0 # maximum gradient norm for clipping
 )
     """
     Train the NeuralBP model using the provided syndromes and expected recoveries.
@@ -166,6 +181,10 @@ function train_neuralbp_enzyme!(
         for idx in samples_grouped_by_batch
     ]
 
+    temp_max::Float32 = 1f-1
+    temp_min::Float32 = 1f-3
+    decay::Float32 = 0.9f0 # decay factor for the annealing schedule of the temperature for the smooth minimum approximation.
+
     # -------------------------
     # Progress bars
     # -------------------------
@@ -173,6 +192,7 @@ function train_neuralbp_enzyme!(
 
     for epoch in 1:n_epochs
         # batch_progress = Progress(length(training_dataset), desc="Epoch $epoch Batches: ")
+        smooth_temp = max(temp_min, temp_max * decay^(epoch - 1))
 
         for b in 1:length(training_dataset)
 
@@ -208,6 +228,7 @@ function train_neuralbp_enzyme!(
                 Enzyme.Const(bpnn.weights_loss_layers), # Temporary fix to not compute gradients for the loss layer weights for now.
                 Enzyme.Duplicated(bpnn.correlation_importance, grad_correlation_importance),
                 # constant arguments:
+                Enzyme.Const(smooth_temp),
                 Enzyme.Const(base),
                 Enzyme.Const(llrs_batch),
                 Enzyme.Const(syndromes_batch),
@@ -221,6 +242,15 @@ function train_neuralbp_enzyme!(
             println("  grad_w_readout norm = ", norm(grad_w_readout))
             # println("  grad_w_loss norm = ", norm(grad_w_loss))
             =#
+
+            # -------------------------
+            # Gradient clipping
+            # -------------------------
+            clip_grad!(grad_w_c2v_v2c; max_grad_norm=max_grad_norm)
+            clip_grad!(grad_w_llrs; max_grad_norm=max_grad_norm)
+            clip_grad!(grad_w_readout; max_grad_norm=max_grad_norm)
+            # clip_grad!(grad_w_loss; max_grad_norm=max_grad_norm)
+            clip_grad!(grad_correlation_importance; max_grad_norm=max_grad_norm)
 
             # -------------------------
             # Gradient step (simple SGD for now)
@@ -239,6 +269,7 @@ function train_neuralbp_enzyme!(
                 bpnn.weights_c2v_readout,
                 bpnn.weights_loss_layers,
                 bpnn.correlation_importance,
+                smooth_temp,
                 base,
                 llrs_batch,
                 syndromes_batch,

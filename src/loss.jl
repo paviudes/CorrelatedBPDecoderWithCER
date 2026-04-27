@@ -184,7 +184,8 @@ function compute_loss_including_correlations(
     correlation_strengths::Vector{Float32},
     is_correlated::Bool,
     weights_loss_layers::Vector{Float32},
-    correlation_importance::Vector{Float32}
+    correlation_importance::Vector{Float32},
+    smooth_temp::Float32 = 1f-3
 )::Float32
     """
     Compute the total Loss function including the correlation penalty.
@@ -208,7 +209,8 @@ function compute_loss_including_correlations(
             correlation_penalty = 0.0f0
         end
         loss_per_layer = base_loss + syndrome_regularizer_importance * syndrome_regularizer + correlation_importance[1] * correlation_penalty
-        total_loss += loss_per_layer * sigmoid(weights_loss_layers[layer])
+        # total_loss += loss_per_layer * sigmoid(weights_loss_layers[layer])
+        total_loss -= smooth_temp * log(sum(exp(-loss_per_layer / smooth_temp))) # Temporary hack to ensure that we only need to focus on a single layer's loss.
     end
     return total_loss
 end
