@@ -11,13 +11,15 @@ struct NachmaniNeuralBP <: NeuralBP
     weights_llrs::Vector{Float32}
     weights_c2v_readout::Vector{Float32}
     weights_loss_layers::Vector{Float32}
+    correlation_importance::Vector{Float32}
 
     function NachmaniNeuralBP(
         base::NeuralBPBase;
         weights_c2v_v2c::Vector{Float32}=Vector{Float32}(undef, 0),
         weights_llrs::Vector{Float32}=Vector{Float32}(undef, 0),
         weights_c2v_readout::Vector{Float32}=Vector{Float32}(undef, 0),
-        weights_loss_layers::Vector{Float32}=Vector{Float32}(undef, 0)
+        weights_loss_layers::Vector{Float32}=Vector{Float32}(undef, 0),
+        correlation_importance::Vector{Float32}=Vector{Float32}(undef, 0)
     )
         """
         Define the NeuralBP model.
@@ -42,13 +44,19 @@ struct NachmaniNeuralBP <: NeuralBP
             weights_loss_layers = randn(Float32, base.n_layers)
         end
 
+        if size(correlation_importance, 1) == 0
+            # If correlation_importance is not explicitly set, we can initialize it to a random value or keep it at 0.0f0. Here we choose to keep it at 0.0f0 by default.
+            correlation_importance = [1f-3]
+        end
+
         return new(
             base,
             # learnable_parameters,
             weights_c2v_v2c,
             weights_llrs,
             weights_c2v_readout,
-            weights_loss_layers
+            weights_loss_layers,
+            correlation_importance
         )
     end
 
@@ -58,20 +66,22 @@ struct NachmaniNeuralBP <: NeuralBP
         weights_c2v_v2c::Vector{Float32},
         weights_llrs::Vector{Float32},
         weights_c2v_readout::Vector{Float32},
-        weights_loss_layers::Vector{Float32}
+        weights_loss_layers::Vector{Float32},
+        correlation_importance::Vector{Float32}
     )
         return new(
             base,
             weights_c2v_v2c,
             weights_llrs,
             weights_c2v_readout,
-            weights_loss_layers
+            weights_loss_layers,
+            correlation_importance
         )
     end
 end
 
 # Make NeuralBP work with Functors by only making the weight matrices children
-@functor NachmaniNeuralBP (weights_c2v_v2c, weights_llrs, weights_c2v_readout, weights_loss_layers)
+@functor NachmaniNeuralBP (weights_c2v_v2c, weights_llrs, weights_c2v_readout, weights_loss_layers, correlation_importance)
 
 function v2c_to_c2v!(
     messages_c2v,                            # output (final LLRs)

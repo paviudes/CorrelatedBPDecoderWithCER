@@ -3,6 +3,7 @@ function get_loss_value(
     weights_llrs, # learnable weights for m^t_(v→c) from the initial LLRs, and also for computing the posterior LLRs from m^t_(c→v).
     weights_c2v_readout, # learnable weights for computing the readout (posterior LLRs) from m^t_(c→v).
     weights_loss_layers, # learnable weights for the loss from each layer.
+    correlation_importance, # hyperparameter for the importance of the correlation penalty in the total Loss function.
     base, # constant parameters of the model, including the parity-check matrix, connectivity, correlation strengths, etc.
     llrs_batch, # batch of initial LLRs for the bits, to be used as input to the network
     syndromes_batch, # batch of syndromes, to be used as input to the network
@@ -28,12 +29,16 @@ function get_loss_value(
         base.parity_check_matrix_dual,
         base.connectivity,
         base.correlation_strengths,
-        base.is_correlated, # Change back to base.is_correlated for the actual implementation, set to `false` for testing without correlations for now.
-        weights_loss_layers
+        false, # base.is_correlated, # Change back to base.is_correlated for the actual implementation, set to `false` for testing without correlations for now.
+        weights_loss_layers,
+        correlation_importance # correlation_importance is passed as a 1-element array to be compatible with Enzyme's autodiff, so we take the first element here.
     )
     return total_loss
 end
 
+#=
+TODO: This function should be removed eventually since we are no more using Flux.jl.
+TODO: We have this commented code to be able to port this optimizer over to the Enzyme.jl version of the training loop.
 function train_neuralbp!(
     bpnn::NeuralBP,
     syndromes::BitMatrix,
@@ -110,7 +115,8 @@ function train_neuralbp!(
                     bpnn.base.connectivity,
                     bpnn.base.correlation_strengths,
                     bpnn.base.is_correlated, #TODO: set explicitly to `false` for excluding correlations
-                    bpnn.weights_loss_layers
+                    bpnn.weights_loss_layers,
+                    bpnn.correlation_importance
                 )
             end
             # apply update. grads[1] contains gradients for the model
@@ -124,6 +130,7 @@ function train_neuralbp!(
         ProgressMeter.next!(epoch_progress)
     end
 end
+=#
 
 function train_neuralbp_enzyme!(
     bpnn::NachmaniNeuralBP,
@@ -162,10 +169,10 @@ function train_neuralbp_enzyme!(
     # -------------------------
     # Progress bars
     # -------------------------
-    # epoch_progress = Progress(n_epochs, desc="Training Epochs: ")
+    epoch_progress = Progress(n_epochs, desc="Training Epochs: ")
 
     for epoch in 1:n_epochs
-        # batch_progress = Progress(length(training_dataset), desc="Epoch $epoch Batches: ")
+        batch_progress = Progress(length(training_dataset), desc="Epoch $epoch Batches: ")
 
         for b in 1:length(training_dataset)
 
@@ -184,7 +191,8 @@ function train_neuralbp_enzyme!(
             grad_w_c2v_v2c = zeros(Float32, length(bpnn.weights_c2v_v2c))
             grad_w_llrs    = zeros(Float32, length(bpnn.weights_llrs))
             grad_w_readout = zeros(Float32, length(bpnn.weights_c2v_readout))
-            grad_w_loss    = zeros(Float32, length(bpnn.weights_loss_layers))
+            # grad_w_loss    = zeros(Float32, length(bpnn.weights_loss_layers))
+            grad_correlation_importance = zeros(Float32, length(bpnn.correlation_importance))
 
             # -------------------------
             # Enzyme autodiff
@@ -194,9 +202,11 @@ function train_neuralbp_enzyme!(
                 get_loss_value,
                 # arguments for which we want gradients:
                 Enzyme.Duplicated(bpnn.weights_c2v_v2c, grad_w_c2v_v2c),
-                Enzyme.Duplicated(bpnn.weights_llrs,    grad_w_llrs),
+                Enzyme.Duplicated(bpnn.weights_llrs, grad_w_llrs),
                 Enzyme.Duplicated(bpnn.weights_c2v_readout, grad_w_readout),
-                Enzyme.Duplicated(bpnn.weights_loss_layers, grad_w_loss),
+                # Enzyme.Duplicated(bpnn.weights_loss_layers, grad_w_loss),
+                Enzyme.Const(bpnn.weights_loss_layers), # Temporary fix to not compute gradients for the loss layer weights for now.
+                Enzyme.Duplicated(bpnn.correlation_importance, grad_correlation_importance),
                 # constant arguments:
                 Enzyme.Const(base),
                 Enzyme.Const(llrs_batch),
@@ -209,7 +219,7 @@ function train_neuralbp_enzyme!(
             println("  grad_w_c2v_v2c norm = ", norm(grad_w_c2v_v2c))
             println("  grad_w_llrs norm = ", norm(grad_w_llrs))
             println("  grad_w_readout norm = ", norm(grad_w_readout))
-            println("  grad_w_loss norm = ", norm(grad_w_loss))
+            # println("  grad_w_loss norm = ", norm(grad_w_loss))
             =#
 
             # -------------------------
@@ -218,8 +228,8 @@ function train_neuralbp_enzyme!(
             @. bpnn.weights_c2v_v2c -= learning_rate * grad_w_c2v_v2c
             @. bpnn.weights_llrs    -= learning_rate * grad_w_llrs
             @. bpnn.weights_c2v_readout -= learning_rate * grad_w_readout
-            @. bpnn.weights_loss_layers -= learning_rate * grad_w_loss
-
+            # @. bpnn.weights_loss_layers -= learning_rate * grad_w_loss # Temporary fix to not update the loss layer weights for now.
+            @. bpnn.correlation_importance -= learning_rate * grad_correlation_importance
             # -------------------------
             # Progress update
             # -------------------------
@@ -228,15 +238,16 @@ function train_neuralbp_enzyme!(
                 bpnn.weights_llrs,
                 bpnn.weights_c2v_readout,
                 bpnn.weights_loss_layers,
+                bpnn.correlation_importance,
                 base,
                 llrs_batch,
                 syndromes_batch,
                 expected_batch
             )
-            # ProgressMeter.next!(batch_progress; showvalues = [(:loss, current_loss)])
+            ProgressMeter.next!(batch_progress; showvalues = [(:loss, current_loss)])
         end
 
-        # ProgressMeter.next!(epoch_progress)
+        ProgressMeter.next!(epoch_progress)
     end
 
     return bpnn

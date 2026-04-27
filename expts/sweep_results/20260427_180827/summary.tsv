@@ -1,0 +1,2 @@
+n_epochs	rep	num_failures	average_LER	std_LER	runtime_s	log_file
+5	1	NA	NA	NA	NA	/Users/pavi/Documents/IQC/CorrelatedBPDecoderWithCER/expts/sweep_results/20260427_180827/epochs_5_rep_1.log

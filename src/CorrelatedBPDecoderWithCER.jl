@@ -86,10 +86,6 @@ export parse_command_line_args_BP, parse_command_line_args_NN, print_arguments, 
 include("neuralbase.jl")
 export NeuralBPBase, NeuralBP, add_soft_constraints_to_neuralbpbase, parse_correlation_strengths_connectivity
 
-# Standard Neural BP model
-include("standardbp.jl")
-export StandardNeuralBP
-
 # Nachmani Neural BP model
 include("nachmani.jl")
 export NachmaniNeuralBP, forward_pass, forward_pass_with_weights
@@ -124,7 +120,7 @@ export predict_neuralbp, check_bp_solutions
 # Utility functions
 include("utils.jl")
 export safe_atanh_exp_signed, safe_atanh_exp_signed!, safe_log_tanh_split, safe_log_tanh_split!, random_values_around_one, compute_std_assuming_bernoulli,
-       debug_log_tanh_split, xor_affine!, sparse_multiply!
+       debug_log_tanh_split, xor_affine!, sparse_multiply!, sigmoid, binary_entropy, binary_entropy_of_sigmoid
 
 #===============================================================================
                                END OF MODULE

@@ -1,0 +1,10 @@
+n_epochs	rep	num_failures	average_LER	std_LER	runtime_s	log_file
+5	1	3508	0.03508	0.018398204695023915	228.59005904197693	/Users/pavi/Documents/IQC/CorrelatedBPDecoderWithCER/expts/sweep_results/20260427_192958/epochs_5_rep_1.log
+5	2	3890	0.0389	0.019335663939984062	231.69328498840332	/Users/pavi/Documents/IQC/CorrelatedBPDecoderWithCER/expts/sweep_results/20260427_192958/epochs_5_rep_2.log
+5	3	3405	0.03405	0.018135765078981365	230.89573097229004	/Users/pavi/Documents/IQC/CorrelatedBPDecoderWithCER/expts/sweep_results/20260427_192958/epochs_5_rep_3.log
+10	1	3476	0.03476	0.018317134710428923	269.4658718109131	/Users/pavi/Documents/IQC/CorrelatedBPDecoderWithCER/expts/sweep_results/20260427_192958/epochs_10_rep_1.log
+10	2	3691	0.03691	0.018854084941995992	269.73750615119934	/Users/pavi/Documents/IQC/CorrelatedBPDecoderWithCER/expts/sweep_results/20260427_192958/epochs_10_rep_2.log
+10	3	3741	0.03741	0.018976430618006117	269.1298141479492	/Users/pavi/Documents/IQC/CorrelatedBPDecoderWithCER/expts/sweep_results/20260427_192958/epochs_10_rep_3.log
+15	1	2907	0.02907	0.016800278301266323	310.3040261268616	/Users/pavi/Documents/IQC/CorrelatedBPDecoderWithCER/expts/sweep_results/20260427_192958/epochs_15_rep_1.log
+15	2	2805	0.02805	0.01651157094282673	311.3157320022583	/Users/pavi/Documents/IQC/CorrelatedBPDecoderWithCER/expts/sweep_results/20260427_192958/epochs_15_rep_2.log
+15	3	2818	0.02818	0.01654868200189973	310.27982687950134	/Users/pavi/Documents/IQC/CorrelatedBPDecoderWithCER/expts/sweep_results/20260427_192958/epochs_15_rep_3.log
