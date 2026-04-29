@@ -45,6 +45,7 @@ COMMANDS_FILE="$OUT_DIR/commands.txt"
 : > "$COMMANDS_FILE"
 
 # ---- emit one command per (n_epochs, rep) ----
+n_commands=0
 for n_epochs in "${EPOCHS[@]}"; do
     for rep in $(seq 1 "$N_REPS"); do
         log_file="$OUT_DIR/epochs_${n_epochs}_rep_${rep}.log"
@@ -53,12 +54,40 @@ for n_epochs in "${EPOCHS[@]}"; do
             "$N_HIDDEN_LAYERS" "$n_epochs" "$BATCH_SIZE" \
             "$CORR_FILE" "$TRAIN_FILE" "$TEST_FILE" \
             "$log_file" >> "$COMMANDS_FILE"
+        n_commands=$((n_commands + 1))
     done
 done
 
-echo "Generated $(wc -l < "$COMMANDS_FILE") commands."
+echo "Generated $n_commands commands."
 echo "  Output dir:    $OUT_DIR"
 echo "  Commands file: $COMMANDS_FILE"
 echo ""
-echo "Run with:"
-echo "  parallel --bar -j 4 < $COMMANDS_FILE"
+
+# Number of CPUs = maximum of 32 and the number of commands, to avoid overloading the machine if there are too many commands.
+N_CPUS=$(nproc)
+if [ "$n_commands" -lt "$N_CPUS" ]; then
+    N_CPUS="$n_commands"
+fi
+
+echo "Running with parallel:"
+COMMAND_TO_RUN="parallel --bar --jobs $N_CPUS < $COMMANDS_FILE"
+echo "  $COMMAND_TO_RUN"
+
+# Take a shell prompt from the user before executing the parallel command. [y/n] and if the user enters 'y', execute the parallel command, else exit the script.
+read -p "Do you want to execute the commands now? [y/n] " -n
+if [[ "$REPLY" == "y" ]]; then
+    eval "$COMMAND_TO_RUN"
+else
+    echo "Exiting without executing commands."
+    exit 0
+fi
+
+# Shutdown the Google Cloud VM after the parallel job completes.
+# Only do this on the Google Clould VM where `whoami` returns `pavithran_sridhar_gmail_com`, to avoid accidentally shutting down a local machine.
+if [[ "$(whoami)" == "pavithran_sridhar_gmail_com" ]]; then
+    echo "Parallel job completed. Shutting down the VM..."
+    sudo shutdown -h now
+fi
+
+# Send an email notification when the `parallel` job completes using `mutt`
+# parallel --bar --jobs 30 < $COMMANDS_FILE; echo "Neural BP epoch sweep complete" | mutt -s "Neural BP epoch sweep complete" pavithran.sridhar@gmail.com

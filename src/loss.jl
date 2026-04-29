@@ -176,6 +176,18 @@ function compute_additional_loss_from_ising_correlations(
     return correlation_penalty
 end
 
+function softmin_loss(losses_per_layer::AbstractVector{Float32}, temp::Float32)::Float32
+    """
+    Compute a smooth approximation to the minimum of the per-layer losses using the softmin function.
+    We want to derive a function that approximates the minimum of the losses across layers, but is differentiable and allows for gradient flow to all layers.
+    The softmin function is defined as:
+    softmin(x_i) = - temp * log(sum(exp(-x_i / temp)))
+    where temp is a temperature parameter that controls the smoothness of the approximation. As temp approaches zero, the softmin approaches the true minimum, but for larger temp, it provides a smoother approximation that allows for gradient flow to all layers.
+    """
+    min_loss = minimum(losses_per_layer)
+    return min_loss - temp * log(sum(exp.(-(losses_per_layer .- min_loss) ./ temp)))
+end
+
 function compute_loss_including_correlations(
     posterior_llrs::Array{Float32, 3},
     expected_recoveries::BitMatrix,
@@ -198,9 +210,10 @@ function compute_loss_including_correlations(
         - L_correlations is the additional penalty from violating correlations, computed by `compute_additional_loss_from_ising_correlations`.
         - α is a hyperparameter (`correlation_importance`) that controls the relative importance of the correlation penalty compared to the original Loss.
     """
-    total_loss::Float32 = 0.0f0
+    n_layers::Int = size(posterior_llrs, 3)
+    losses_per_layer = zeros(Float32, n_layers)
     syndrome_regularizer_importance = 1f-1
-    for layer in 1:size(posterior_llrs, 3)
+    for layer in 1:n_layers
         base_loss = compute_quadratic_residue_loss_from_llrs(posterior_llrs[:, :, layer], expected_recoveries, parity_check_matrix_dual)
         syndrome_regularizer = syndrome_loss_regularizer(posterior_llrs[:, :, layer])
         if is_correlated
@@ -210,7 +223,9 @@ function compute_loss_including_correlations(
         end
         loss_per_layer = base_loss + syndrome_regularizer_importance * syndrome_regularizer + correlation_importance[1] * correlation_penalty
         # total_loss += loss_per_layer * sigmoid(weights_loss_layers[layer])
-        total_loss -= smooth_temp * log(sum(exp(-loss_per_layer / smooth_temp))) # Temporary hack to ensure that we only need to focus on a single layer's loss.
+        # total_loss -= smooth_temp * log(sum(exp(-loss_per_layer / smooth_temp))) # Temporary hack to ensure that we only need to focus on a single layer's loss.
+        losses_per_layer[layer] = loss_per_layer
     end
+    total_loss = softmin_loss(losses_per_layer, smooth_temp)
     return total_loss
 end
