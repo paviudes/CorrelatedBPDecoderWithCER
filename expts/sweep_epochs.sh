@@ -22,7 +22,7 @@ EXPTS_DIR="$PROJECT_ROOT/expts"
 DATA_DIR="$PROJECT_ROOT/data"
 PROJECT_DIR="$PROJECT_ROOT"
 
-CODENAME="7q_Hamm_code_data_q_mean_0.1_std_0.2"
+CODENAME="7q_Hamm_code_data_10000_train"
 N_HIDDEN_LAYERS=100
 BATCH_SIZE=8
 CORR_FILE="correlated_weights_p_0.006_q_0.1_s_1.txt"
@@ -33,7 +33,7 @@ TEST_FILE="test_ballistic_p_0.006_q_0.1_s_1.txt"
 if [ "$#" -gt 0 ]; then
     EPOCHS=("$@")
 else
-    EPOCHS=(10 20 30 40 50)
+    EPOCHS=(5 10 20 30 40 50)
 fi
 N_REPS="${N_REPS:-1}"
 
