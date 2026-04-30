@@ -58,9 +58,9 @@ function main()
     p: 0.001:0.001:0.005
     q: 0.3:0.04:0.66
     """
-    dirname = "7q_Hamm_code_data_q_mean_0.1_std_0.2"
+    dirname = "7q_Hamm_code_data_10000_train"
     generate_parallel_commands(
-        [0.006],
+        [0.006, 0.008],
         [0.1],
         56;
         codename = dirname,
