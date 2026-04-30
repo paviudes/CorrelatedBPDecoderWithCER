@@ -65,7 +65,7 @@ function main()
         56;
         codename = dirname,
         n_hidden_layers = 100,
-        n_epochs = 10,
+        n_epochs = 20,
         batch_size = 8,
         retrain = false,
         julia_project = "./../",
