@@ -188,10 +188,10 @@ function train_neuralbp_enzyme!(
     # -------------------------
     # Progress bars
     # -------------------------
-    epoch_progress = Progress(n_epochs, desc="Training Epochs: ")
+    # epoch_progress = Progress(n_epochs, desc="Training Epochs: ")
 
     for epoch in 1:n_epochs
-        batch_progress = Progress(length(training_dataset), desc="Epoch $epoch Batches: ")
+        # batch_progress = Progress(length(training_dataset), desc="Epoch $epoch Batches: ")
         smooth_temp = max(temp_min, temp_max * decay^(epoch - 1))
 
         for b in 1:length(training_dataset)
@@ -275,10 +275,10 @@ function train_neuralbp_enzyme!(
                 syndromes_batch,
                 expected_batch
             )
-            ProgressMeter.next!(batch_progress; showvalues = [(:loss, current_loss)])
+            # ProgressMeter.next!(batch_progress; showvalues = [(:loss, current_loss)])
         end
 
-        ProgressMeter.next!(epoch_progress)
+        # ProgressMeter.next!(epoch_progress)
     end
 
     return bpnn
