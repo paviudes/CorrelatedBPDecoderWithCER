@@ -75,12 +75,8 @@ function shut_down_vm(job_cmd::String)
         "# Run the commands in parallel and save results to a file",
         job_cmd,
         "",
-        "# Fetch the instance name and zone from the metadata server",
-        r"INSTANCE_NAME=$(curl -s -H \"Metadata-Flavor: Google\" http://metadata.google.internal/computeMetadata/v1/instance/name)",
-        r"ZONE=$(curl -s -H \"Metadata-Flavor: Google\" http://metadata.google.internal/computeMetadata/v1/instance/zone | awk -F/ '{print $NF}')",
-        "",
         "# Stop the instance",
-        r"gcloud compute instances stop $INSTANCE_NAME --zone=$ZONE"
+        "sudo shutdown -h now"
     ]
 
     return join(wrapped_cmd, "\n")

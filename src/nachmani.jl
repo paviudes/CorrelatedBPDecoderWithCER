@@ -770,24 +770,6 @@ function forward_pass_with_weights(
     # Storing the posterior LLRs at each layer.
     posterior_llrs_layer = zeros(Float32, base.code_n_bits, n_samples)
 
-    #=
-    # Sparse templates for weight matrices
-    weight_matrix_v2c = sparse(
-        base.non_zero_rows_C2V_V2C,
-        base.non_zero_cols_C2V_V2C,
-        zeros(Float32, length(base.non_zero_rows_C2V_V2C)),
-        base.nb_neurons_per_layer,
-        base.nb_neurons_per_layer
-    )
-    weight_matrix_readout = sparse(
-        base.non_zero_rows_C2V_readout,
-        base.non_zero_cols_C2V_readout,
-        zeros(Float32, length(base.non_zero_rows_C2V_readout)),
-        base.code_n_bits,
-        base.nb_neurons_per_layer
-    )
-    =#
-
     # posterior LLRs for all layers, as a 3D tensor: (n_bits × n_samples × n_layers)
     posterior_llrs = zeros(Float32, base.code_n_bits, n_samples, base.n_layers)
 
