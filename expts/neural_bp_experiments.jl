@@ -291,9 +291,7 @@ function train_Nachmani_neuralbp(
         base,
         weights_c2v_v2c=random_values_around_one([base.nb_weights_c2v_v2c * n_hidden_layers]; scale=0.1f0),
         weights_llrs=random_values_around_one([n_bits * n_hidden_layers]; scale=0.1f0),
-        weights_c2v_readout=random_values_around_one([base.nb_weights_c2v_readout]; scale=0.1f0),
-        #weights_loss_layers=random_values_around_one([n_hidden_layers]; scale=0.1f0)
-        weights_loss_layers=ones(Float32, n_hidden_layers) 
+        weights_c2v_readout=random_values_around_one([base.nb_weights_c2v_readout]; scale=0.1f0)
     )
     
     # Extract the name of the training file name to include in the weights file name for clarity on what data the model was trained on.

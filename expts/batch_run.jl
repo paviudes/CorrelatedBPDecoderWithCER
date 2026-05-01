@@ -13,7 +13,7 @@ function generate_parallel_commands(
     retrain::Bool=false,
     julia_project::String="./../",
     commands_file::String="commands.txt",
-    results_file::String="simulation_results.json",
+    output_file::String="simulation_results.log",
     ncpus::Int=10
 )
     """
@@ -49,11 +49,11 @@ function generate_parallel_commands(
 
     println("$(length(pvals) * length(qvals) * n_samples) commands written to: $commands_file\n")
 
-    # Write a shell script to run the commands in `commands_file` in parallel, save results to `results_file`, and halt the Google Cloud VM when done.
+    # Write a shell script to run the commands in `commands_file` in parallel, save results to `output_file`, and halt the Google Cloud VM when done.
     # The shell script should be named `run_<timestamp>.sh` and should be saved in the same directory as `commands_file`.
     timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")
     shell_script_file = joinpath(dirname(commands_file), "run_$(timestamp).sh")
-    job_cmd = """parallel --bar --keep-order --jobs $ncpus --results $(results_file) --arg-file $(commands_file)"""
+    job_cmd = """parallel --bar --keep-order --jobs $ncpus --results $(output_file) --arg-file $(commands_file)"""
     open(shell_script_file, "w") do io
         wrapped_cmd = shut_down_vm(job_cmd)
         println(io, wrapped_cmd)
@@ -104,7 +104,7 @@ function main()
         retrain = false,
         julia_project = "./../",
         commands_file = "./../data/$(dirname)/commands.txt",
-        results_file = "./../data/$(dirname)/simulation_results.json",
+        output_file = "./../data/$(dirname)/simulation_results.log",
         ncpus = 56
     )
 end
