@@ -2,9 +2,8 @@ function get_loss_value(
     weights_c2v_v2c, # learanble weights for computing m^t_(v→c) from m^(t-1)_(c→v).
     weights_llrs, # learnable weights for m^t_(v→c) from the initial LLRs, and also for computing the posterior LLRs from m^t_(c→v).
     weights_c2v_readout, # learnable weights for computing the readout (posterior LLRs) from m^t_(c→v).
-    weights_loss_layers, # learnable weights for the loss from each layer.
-    correlation_importance, # hyperparameter for the importance of the correlation penalty in the total Loss function.
-    smooth_temp, # temperature for the smooth minimum approximation when combining losses from different layers.
+    correlation_importance, # importance of the correlation penalty in the Loss function, to be annealed during training.
+    loss_layer_regularizer, # temperature for the smooth minimum approximation when combining losses from different layers, to be annealed during training.
     base, # constant parameters of the model, including the parity-check matrix, connectivity, correlation strengths, etc.
     llrs_batch, # batch of initial LLRs for the bits, to be used as input to the network
     syndromes_batch, # batch of syndromes, to be used as input to the network
@@ -30,10 +29,9 @@ function get_loss_value(
         base.parity_check_matrix_dual,
         base.connectivity,
         base.correlation_strengths,
-        false, # base.is_correlated, # Change back to base.is_correlated for the actual implementation, set to `false` for testing without correlations for now.
-        weights_loss_layers,
+        base.is_correlated, # Change back to base.is_correlated for the actual implementation, set to `false` for testing without correlations for now.
         correlation_importance, # correlation_importance is passed as a 1-element array to be compatible with Enzyme's autodiff, so we take the first element here.
-        smooth_temp # temperature for the smooth minimum approximation when combining losses from different layers, to be annealed during training.
+        loss_layer_regularizer # temperature for the smooth minimum approximation when combining losses from different layers, to be annealed during training.
     )
     return total_loss
 end
@@ -158,7 +156,20 @@ function train_neuralbp_enzyme!(
     """
     Train the NeuralBP model using the provided syndromes and expected recoveries.
     We will use Enzyme.jl for automatic differentiation of the loss function with respect to the model parameters.
-    Arguments
+    
+    The Loss function per layer for training can be expressed in two parts: L_layer = L_syn + α L_corr,
+    where
+    - L_syn is the part of the Loss that penalizes the model for not producing the correct syndrome, and logical errors.
+    - L_corr is the part of the Loss that penalizes the model for not capturing the correlations between qubits.
+    - α is a hyperparameter that controls the importance of the correlation penalty (given by `correlation_importance`)
+
+    At the beginning of the training, the model chooses errors that largely violate the syndrome constraints, and here the training is largerly clueless about the error patterns,
+    so we want to use the noise dynamics to guide the training by focusing on minimizing L_corr. In other words, we want to start with a large value of α.
+
+    As the training progresses, the model starts to learn to satisfy the syndrome constraints, and here we want to focus more on minimizing L_syn to further improve the performance, so we want to anneal α down to a smaller value.
+
+    Ideally we want BP to stop at any layer that results in the minimum Loss. To achieve this, we use a smooth minimum approximation to combine the Loss values from different layers, which allows the gradients to flow to all layers while still encouraging the model to focus on the layer with the lowest Loss.
+    The temperature for the smooth minimum approximation is annealed during training to encourage sharper minima as training progresses.
     """
     base = bpnn.base
 
@@ -180,19 +191,28 @@ function train_neuralbp_enzyme!(
         )
         for idx in samples_grouped_by_batch
     ]
+    
 
-    temp_max::Float32 = 1f-1
-    temp_min::Float32 = 1f-3
-    decay::Float32 = 0.9f0 # decay factor for the annealing schedule of the temperature for the smooth minimum approximation.
+    # Annealing schedule parameters for the temperature of the smooth minimum approximation when combining losses from different layers.
+    layer_temp_max::Float32 = 1f-1
+    layer_temp_min::Float32 = 1f-3
+    layer_temp_decay::Float32 = 0.9f0 # decay factor for the annealing schedule of the temperature for the smooth minimum approximation.
+
+    # Annealing schedule parameters for the importance of the correlation penalty in the Loss function.
+    correlation_importance_max::Float32 = 1f-1
+    correlation_importance_min::Float32 = 1f-3
+    correlation_importance_decay::Float32 = 0.1f0 # decay factor for the annealing schedule of the correlation importance in the Loss function.
 
     # -------------------------
     # Progress bars
     # -------------------------
-    # epoch_progress = Progress(n_epochs, desc="Training Epochs: ")
+    epoch_progress = Progress(n_epochs, desc="Training Epochs: ")
 
     for epoch in 1:n_epochs
-        # batch_progress = Progress(length(training_dataset), desc="Epoch $epoch Batches: ")
-        smooth_temp = max(temp_min, temp_max * decay^(epoch - 1))
+        batch_progress = Progress(length(training_dataset), desc="Epoch $epoch Batches: ")
+        
+        bpnn.loss_layer_regularizer[1] = max(layer_temp_min, layer_temp_max * layer_temp_decay^(epoch - 1))
+        bpnn.correlation_importance[1] = max(correlation_importance_min, correlation_importance_max * correlation_importance_decay^(epoch - 1))
 
         for b in 1:length(training_dataset)
 
@@ -211,9 +231,7 @@ function train_neuralbp_enzyme!(
             grad_w_c2v_v2c = zeros(Float32, length(bpnn.weights_c2v_v2c))
             grad_w_llrs    = zeros(Float32, length(bpnn.weights_llrs))
             grad_w_readout = zeros(Float32, length(bpnn.weights_c2v_readout))
-            # grad_w_loss    = zeros(Float32, length(bpnn.weights_loss_layers))
-            grad_correlation_importance = zeros(Float32, length(bpnn.correlation_importance))
-
+            
             # -------------------------
             # Enzyme autodiff
             # -------------------------
@@ -224,11 +242,9 @@ function train_neuralbp_enzyme!(
                 Enzyme.Duplicated(bpnn.weights_c2v_v2c, grad_w_c2v_v2c),
                 Enzyme.Duplicated(bpnn.weights_llrs, grad_w_llrs),
                 Enzyme.Duplicated(bpnn.weights_c2v_readout, grad_w_readout),
-                # Enzyme.Duplicated(bpnn.weights_loss_layers, grad_w_loss),
-                Enzyme.Const(bpnn.weights_loss_layers), # Temporary fix to not compute gradients for the loss layer weights for now.
-                Enzyme.Duplicated(bpnn.correlation_importance, grad_correlation_importance),
                 # constant arguments:
-                Enzyme.Const(smooth_temp),
+                Enzyme.Const(bpnn.correlation_importance),
+                Enzyme.Const(bpnn.loss_layer_regularizer),
                 Enzyme.Const(base),
                 Enzyme.Const(llrs_batch),
                 Enzyme.Const(syndromes_batch),
@@ -249,17 +265,14 @@ function train_neuralbp_enzyme!(
             clip_grad!(grad_w_c2v_v2c; max_grad_norm=max_grad_norm)
             clip_grad!(grad_w_llrs; max_grad_norm=max_grad_norm)
             clip_grad!(grad_w_readout; max_grad_norm=max_grad_norm)
-            # clip_grad!(grad_w_loss; max_grad_norm=max_grad_norm)
-            clip_grad!(grad_correlation_importance; max_grad_norm=max_grad_norm)
-
+            
             # -------------------------
             # Gradient step (simple SGD for now)
             # -------------------------
             @. bpnn.weights_c2v_v2c -= learning_rate * grad_w_c2v_v2c
             @. bpnn.weights_llrs    -= learning_rate * grad_w_llrs
             @. bpnn.weights_c2v_readout -= learning_rate * grad_w_readout
-            # @. bpnn.weights_loss_layers -= learning_rate * grad_w_loss # Temporary fix to not update the loss layer weights for now.
-            @. bpnn.correlation_importance -= learning_rate * grad_correlation_importance
+            
             # -------------------------
             # Progress update
             # -------------------------
@@ -267,18 +280,17 @@ function train_neuralbp_enzyme!(
                 bpnn.weights_c2v_v2c,
                 bpnn.weights_llrs,
                 bpnn.weights_c2v_readout,
-                bpnn.weights_loss_layers,
                 bpnn.correlation_importance,
-                smooth_temp,
+                bpnn.loss_layer_regularizer,
                 base,
                 llrs_batch,
                 syndromes_batch,
                 expected_batch
             )
-            # ProgressMeter.next!(batch_progress; showvalues = [(:loss, current_loss)])
+            ProgressMeter.next!(batch_progress; showvalues = [(:loss, current_loss)])
         end
 
-        # ProgressMeter.next!(epoch_progress)
+        ProgressMeter.next!(epoch_progress)
     end
 
     return bpnn

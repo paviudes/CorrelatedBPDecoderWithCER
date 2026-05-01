@@ -6,7 +6,6 @@ function load_trained_neuralbp_model(weights_filename::String, bpnn::NachmaniNeu
     1. weights_c2v_v2c
     2. weights_llrs
     3. weights_c2v_readout
-    4. weights_loss_layers
     They will be stored in a dictionary with the corresponding keys. The values will be vectorized versions of the weight matrices.
     The function will reconstruct the weight matrices from the vectorized versions and create a NeuralBP model with these weights.
     """
@@ -17,8 +16,7 @@ function load_trained_neuralbp_model(weights_filename::String, bpnn::NachmaniNeu
         bpnn.base,
         weights_c2v_v2c=weights_data["weights_c2v_v2c"],
         weights_llrs=weights_data["weights_llrs"],
-        weights_c2v_readout=weights_data["weights_c2v_readout"],
-        weights_loss_layers=weights_data["weights_loss_layers"]
+        weights_c2v_readout=weights_data["weights_c2v_readout"]
     )
     return loaded_bpnn
 end
@@ -31,7 +29,6 @@ function save_trained_neuralbp_model(weights_filename::String, bpnn::NeuralBP)
     1. weights_c2v_v2c
     2. weights_llrs
     3. weights_c2v_readout
-    4. weights_loss_layers
     They will be stored in a dictionary with the corresponding keys. The values will be vectorized versions of the weight matrices.
     """
     # Create a dictionary to store the weights
@@ -39,7 +36,6 @@ function save_trained_neuralbp_model(weights_filename::String, bpnn::NeuralBP)
     weights_data["weights_c2v_v2c"] = vec(bpnn.weights_c2v_v2c)
     weights_data["weights_llrs"] = vec(bpnn.weights_llrs)
     weights_data["weights_c2v_readout"] = vec(bpnn.weights_c2v_readout)
-    weights_data["weights_loss_layers"] = vec(bpnn.weights_loss_layers)
     # Save the weights to the file
     fp = open(weights_filename, "w")
     JSON.print(fp, weights_data)

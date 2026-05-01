@@ -10,16 +10,16 @@ struct NachmaniNeuralBP <: NeuralBP
     weights_c2v_v2c::Vector{Float32}
     weights_llrs::Vector{Float32}
     weights_c2v_readout::Vector{Float32}
-    weights_loss_layers::Vector{Float32}
     correlation_importance::Vector{Float32}
+    loss_layer_regularizer::Vector{Float32}
 
     function NachmaniNeuralBP(
         base::NeuralBPBase;
         weights_c2v_v2c::Vector{Float32}=Vector{Float32}(undef, 0),
         weights_llrs::Vector{Float32}=Vector{Float32}(undef, 0),
         weights_c2v_readout::Vector{Float32}=Vector{Float32}(undef, 0),
-        weights_loss_layers::Vector{Float32}=Vector{Float32}(undef, 0),
-        correlation_importance::Vector{Float32}=Vector{Float32}(undef, 0)
+        correlation_importance::Vector{Float32}=Vector{Float32}(undef, 0),
+        loss_layer_regularizer::Vector{Float32}=Vector{Float32}(undef, 0)
     )
         """
         Define the NeuralBP model.
@@ -27,8 +27,8 @@ struct NachmaniNeuralBP <: NeuralBP
         1. Weights for the connections from C2V to V2C: `weights_c2v_v2c`
         2. Weights for the connections from C2V to V2C: `weights_llrs`
         3. Weights for the connections from C2V to readout: `weights_c2v_readout`
-        4. Weights for the loss at each layer: `weights_loss_layers`
-
+        4. Importance of the correlation penalty in the Loss function: `correlation_importance`
+        5. Temperature for the smooth minimum approximation when combining losses from different layers: `loss_layer_regularizer`
         """
         # We will initialize the learnable parameters to Gaussian random values, if they are not explicitly provided.
         if (size(weights_c2v_v2c, 1) == 0)
@@ -40,13 +40,14 @@ struct NachmaniNeuralBP <: NeuralBP
         if (size(weights_c2v_readout, 1) == 0)
             weights_c2v_readout = randn(Float32, base.nb_weights_c2v_readout)
         end
-        if (size(weights_loss_layers, 1) == 0)
-            weights_loss_layers = randn(Float32, base.n_layers)
-        end
-
         if size(correlation_importance, 1) == 0
             # If correlation_importance is not explicitly set, we can initialize it to a random value or keep it at 0.0f0. Here we choose to keep it at 0.0f0 by default.
             correlation_importance = [1f-3]
+        end
+
+        if size(loss_layer_regularizer, 1) == 0
+            # If loss_layer_regularizer is not explicitly set, we can initialize it to a random value or keep it at a default value. Here we choose to keep it at 0.1f0 by default.
+            loss_layer_regularizer = [0.1f0]
         end
 
         return new(
@@ -55,8 +56,8 @@ struct NachmaniNeuralBP <: NeuralBP
             weights_c2v_v2c,
             weights_llrs,
             weights_c2v_readout,
-            weights_loss_layers,
-            correlation_importance
+            correlation_importance,
+            loss_layer_regularizer
         )
     end
 
@@ -66,22 +67,22 @@ struct NachmaniNeuralBP <: NeuralBP
         weights_c2v_v2c::Vector{Float32},
         weights_llrs::Vector{Float32},
         weights_c2v_readout::Vector{Float32},
-        weights_loss_layers::Vector{Float32},
-        correlation_importance::Vector{Float32}
+        correlation_importance::Vector{Float32},
+        loss_layer_regularizer::Vector{Float32}
     )
         return new(
             base,
             weights_c2v_v2c,
             weights_llrs,
             weights_c2v_readout,
-            weights_loss_layers,
-            correlation_importance
+            correlation_importance,
+            loss_layer_regularizer
         )
     end
 end
 
 # Make NeuralBP work with Functors by only making the weight matrices children
-@functor NachmaniNeuralBP (weights_c2v_v2c, weights_llrs, weights_c2v_readout, weights_loss_layers, correlation_importance)
+@functor NachmaniNeuralBP (weights_c2v_v2c, weights_llrs, weights_c2v_readout, correlation_importance, loss_layer_regularizer)
 
 function v2c_to_c2v!(
     messages_c2v,                            # output (final LLRs)

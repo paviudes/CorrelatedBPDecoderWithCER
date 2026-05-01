@@ -73,9 +73,6 @@ function compute_quadratic_residue_loss_from_llrs(
        each smooth piece — linear in distance from the nearest valid
        solution, vs. the sinusoidal penalty which is shallow near the zeros.
 
-    Same input/output shape as the original — substitute at the call site
-    in `compute_loss_including_correlations` with no other changes.
-
     L(μ, e) = ∑_i  g ( ∑_(jk) H^⟂_ij [ e_k + σ(μ_k) ] )
     with
         σ(μ_k) = 1 / (1 + exp(μ_k))
@@ -118,12 +115,12 @@ function compute_additional_loss_from_ising_correlations(
     Suppose we have a list of qubit indices that are correlated: (q1, q2), (q3, q4), ... specified by `C`.
     Then we want to add a term to the Loss function that penalizes solutions where the errors at these qubit indices are not correlated.
     For example, if we have an error on q1 but not on q2, we want to penalize that solution. Hence, between q1 and q2, the favoured configurations are
-    (0, 0), (0, 1) and (1, 1), while the disfavoured configuration is (1, 0).
-    This can be achieved by adding a term proportional to `e_(q1) * (1 - e_(q2))` to the Loss function, where `e_(qi)` is the predicted error at qubit `qi`.
+    (0, 0), and (1, 1), while the disfavoured configurations are (0,1) and (1, 0).
+    This can be achieved by adding a term proportional to `(e_(q1) - e_(q2))^2` to the Loss function, where `e_(qi)` is the predicted error at qubit `qi`.
     At the end of the day, we want to prioritize solutions that show no errors. So, we don't end up choosing an error solely because it is correlated.
     
     Hence the penalty for violating correlations is:
-        L_corr(μ) = exp(-|s|) ∑_((qi, qj) ∈ C)  λ_(i,j) [ e_(qi) * (1 - e_(qj)) ]
+        L_corr(μ) = exp(-|s|) ∑_((qi, qj) ∈ C)  λ_(i,j) (e_(qi) - e_(qj))^2
     where
         - L(μ, e) is the original Loss function from `compute_loss_error_from_llrs`.
         - λ_(i,j) is a hyperparameter that controls the strength of the correlation penalty for the pair (qi, qj).
@@ -134,14 +131,9 @@ function compute_additional_loss_from_ising_correlations(
         - e_total = e_pred + e_expected is the total predicted error.
 
     Since we want to implement this in a differentiable manner, we can use the fact that:
-        e_(qi) * (1 - e_(qj)) = e_(qi) - e_(qi) * e_(qj)
+        (e_(qi) - e_(qj))^2 = (σ(μ_(qi)) - σ(μ_(qj)))^2
     where e_(qi) is approximated by σ(μ_(qi)).
 
-    So, the Loss function becomes:
-        L_total(μ) = L(μ, e) + ∑_((qi, qj) ∈ C) λ_(i,j) [ σ(μ_(qi)) - σ(μ_(qi)) * σ(μ_(qj)) ]
-    
-    We need to express this in a matrix form for efficient computation.
-        L_total(μ) = L(μ, e) + λ .* ( σ(μ(connectivity[:,1]]) - σ(μ[connectivity[:,1]]) .* σ(μ[connectivity[:,2]]) )
     """
 
     n_samples = size(posterior_llrs, 2)
@@ -195,9 +187,8 @@ function compute_loss_including_correlations(
     connectivity::Matrix{Int},
     correlation_strengths::Vector{Float32},
     is_correlated::Bool,
-    weights_loss_layers::Vector{Float32},
     correlation_importance::Vector{Float32},
-    smooth_temp::Float32 = 1f-3
+    loss_layer_regularizer::Vector{Float32}
 )::Float32
     """
     Compute the total Loss function including the correlation penalty.
@@ -212,7 +203,6 @@ function compute_loss_including_correlations(
     """
     n_layers::Int = size(posterior_llrs, 3)
     losses_per_layer = zeros(Float32, n_layers)
-    syndrome_regularizer_importance = 1f-1
     for layer in 1:n_layers
         base_loss = compute_quadratic_residue_loss_from_llrs(posterior_llrs[:, :, layer], expected_recoveries, parity_check_matrix_dual)
         syndrome_regularizer = syndrome_loss_regularizer(posterior_llrs[:, :, layer])
@@ -221,11 +211,9 @@ function compute_loss_including_correlations(
         else
             correlation_penalty = 0.0f0
         end
-        loss_per_layer = base_loss + syndrome_regularizer_importance * syndrome_regularizer + correlation_importance[1] * correlation_penalty
-        # total_loss += loss_per_layer * sigmoid(weights_loss_layers[layer])
-        # total_loss -= smooth_temp * log(sum(exp(-loss_per_layer / smooth_temp))) # Temporary hack to ensure that we only need to focus on a single layer's loss.
+        loss_per_layer = base_loss + syndrome_regularizer + correlation_importance[1] * correlation_penalty
         losses_per_layer[layer] = loss_per_layer
     end
-    total_loss = softmin_loss(losses_per_layer, smooth_temp)
+    total_loss = softmin_loss(losses_per_layer, loss_layer_regularizer[1])
     return total_loss
 end
