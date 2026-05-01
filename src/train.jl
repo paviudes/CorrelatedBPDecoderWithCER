@@ -206,10 +206,10 @@ function train_neuralbp_enzyme!(
     # -------------------------
     # Progress bars
     # -------------------------
-    epoch_progress = Progress(n_epochs, desc="Training Epochs: ")
+    # epoch_progress = Progress(n_epochs, desc="Training Epochs: ")
 
     for epoch in 1:n_epochs
-        batch_progress = Progress(length(training_dataset), desc="Epoch $epoch Batches: ")
+        # batch_progress = Progress(length(training_dataset), desc="Epoch $epoch Batches: ")
         
         bpnn.loss_layer_regularizer[1] = max(layer_temp_min, layer_temp_max * layer_temp_decay^(epoch - 1))
         bpnn.correlation_importance[1] = max(correlation_importance_min, correlation_importance_max * correlation_importance_decay^(epoch - 1))
@@ -287,10 +287,10 @@ function train_neuralbp_enzyme!(
                 syndromes_batch,
                 expected_batch
             )
-            ProgressMeter.next!(batch_progress; showvalues = [(:loss, current_loss)])
+            # ProgressMeter.next!(batch_progress; showvalues = [(:loss, current_loss)])
         end
 
-        ProgressMeter.next!(epoch_progress)
+        # ProgressMeter.next!(epoch_progress)
     end
 
     return bpnn
