@@ -82,10 +82,20 @@ function predict_and_check_neuralbp(
     We check if the recovery at any of the intermediate layers correctly fixes the error, since the final layer's LLRs might not always be the best predictor.
     """
     n_samples = size(syndromes, 2)
-    is_correct = falses(n_samples)
-
+    
     H_dual = convert.(Int, bpnn.base.parity_check_matrix)
 
+    # When the GPU option is disabled, we can process all samples at once without batching.
+    # This is when `USE_GPU` is set to `false` in `CorrelatedBPDecoderWithCER.jl`.
+    # In this case, we will use `forward_pass_with_weights` instead of `forward_pass_gpu`.
+    if USE_GPU == false
+        posterior_llrs = forward_pass_with_weights(bpnn, repeat(bpnn.base.initial_llrs, 1, n_samples), syndromes)
+        proposed_recoveries = posterior_llrs .< 0
+        is_correct = check_bp_solutions(H_dual, errors, proposed_recoveries)
+        return is_correct
+    end
+
+    is_correct = falses(n_samples)
     for start in 1:batch_size:n_samples
         stop = min(start + batch_size - 1, n_samples)
 

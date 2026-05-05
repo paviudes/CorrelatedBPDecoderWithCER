@@ -28,11 +28,17 @@
 #module NeuralBPGPU
 
 # ============================================================================
-# BACKEND — change exactly these two lines to retarget the GPU.
-#   Apple Silicon (M-series): using Metal;  const ArrayT = Metal.MtlArray
-#   NVIDIA:                   using CUDA;   const ArrayT = CUDA.CuArray
+# BACKEND — conditionally defined based on USE_GPU environment variable
+#   Apple Silicon (M-series): ArrayT = Metal.MtlArray (when USE_GPU=1)
+#   CPU fallback:             ArrayT = Array (when USE_GPU=0)
 # ============================================================================
-const ArrayT = Metal.MtlArray
+@static if CorrelatedBPDecoderWithCER.USE_GPU && CorrelatedBPDecoderWithCER.METAL_LOADED
+    const ArrayT = CorrelatedBPDecoderWithCER.Metal.MtlArray
+    const GPU_AVAILABLE = true
+else
+    const ArrayT = Array
+    const GPU_AVAILABLE = false
+end
 # ============================================================================
 
 # ----------------------------------------------------------------------------
@@ -250,7 +256,11 @@ function forward_pass_gpu(
     # the per-layer intermediates, masked weights, syndromes, etc., still fit.
     if chunk_size <= 0
         budget_bytes = try
-            Int(Metal.device().maxBufferLength) ÷ 4
+            if GPU_AVAILABLE && CorrelatedBPDecoderWithCER.METAL_LOADED
+                Int(CorrelatedBPDecoderWithCER.Metal.device().maxBufferLength) ÷ 4
+            else
+                Int(2^30)   # 1 GB fallback for CPU
+            end
         catch
             Int(2^30)   # 1 GB fallback if the device query is unavailable
         end

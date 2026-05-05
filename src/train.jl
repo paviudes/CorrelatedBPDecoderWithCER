@@ -203,6 +203,7 @@ function train_neuralbp_enzyme!(
     correlation_importance_min::Float32 = 1f-3
     correlation_importance_decay::Float32 = 0.1f0 # decay factor for the annealing schedule of the correlation importance in the Loss function.
 
+    #=
     # --------------------------
     # Debugging: log the individual losses for samples and epochs.
     n_samples_to_log = n_epochs * length(training_dataset)
@@ -223,14 +224,15 @@ function train_neuralbp_enzyme!(
         median_weight_c2v_readout = zeros(Float32, n_samples_to_log)
     )
     # --------------------------
+    =#
 
     # -------------------------
     # Progress bars
     # -------------------------
-    epoch_progress = Progress(n_epochs, desc="Training Epochs: ")
+    # epoch_progress = Progress(n_epochs, desc="Training Epochs: ")
 
     for epoch in 1:n_epochs
-        batch_progress = Progress(length(training_dataset), desc="Epoch $epoch Batches: ")
+        # batch_progress = Progress(length(training_dataset), desc="Epoch $epoch Batches: ")
         
         bpnn.loss_layer_regularizer[1] = max(layer_temp_min, layer_temp_max * layer_temp_decay^(epoch - 1))
         bpnn.correlation_importance[1] = max(correlation_importance_min, correlation_importance_max * correlation_importance_decay^(epoch - 1))
@@ -310,6 +312,7 @@ function train_neuralbp_enzyme!(
             )
             ProgressMeter.next!(batch_progress; showvalues = [(:loss, current_loss)])
 
+            #=
             # --------------------------------------------------
             # Log the hyperparameters and loss for this batch and epoch for debugging and visualization later.
             hyperparameters[(epoch - 1) * length(training_dataset) + b, :epoch] = epoch
@@ -327,13 +330,14 @@ function train_neuralbp_enzyme!(
             hyperparameters[(epoch - 1) * length(training_dataset) + b, :max_weight_c2v_readout] = maximum(bpnn.weights_c2v_readout)
             hyperparameters[(epoch - 1) * length(training_dataset) + b, :median_weight_c2v_readout] = median(bpnn.weights_c2v_readout)
             # --------------------------------------------------
+            =#
         end
 
-        ProgressMeter.next!(epoch_progress)
+        # ProgressMeter.next!(epoch_progress)
     end
 
     # Debugging: write the hyperparameters and loss values into a file for visualization later.
-    CSV.write("./../data/15q_Hamm_code_data_10000_train/training_log.csv", hyperparameters)
+    # CSV.write("./../data/15q_Hamm_code_data_10000_train/training_log.csv", hyperparameters)
 
     return bpnn
 end

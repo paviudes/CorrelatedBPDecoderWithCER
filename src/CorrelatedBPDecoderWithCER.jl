@@ -15,9 +15,17 @@ using DelimitedFiles    # File I/O for CSV-like data formats
 using CSV               # CSV file reading and writing
 using ProgressMeter     # Progress bars for training and other long operations
 
-# GPU acceleration
-using Metal             # GPU acceleration on Apple Silicon (M-series)
-# using CUDA             # GPU acceleration on NVIDIA GPUs (uncomment if using CUDA)
+
+# GPU acceleration (conditionally loaded based on environment variable)
+const USE_GPU = get(ENV, "USE_GPU", "0") == "1"
+@static if USE_GPU
+    @eval begin
+        import Metal
+        const METAL_LOADED = true
+    end
+else
+    const METAL_LOADED = false
+end
 
 # Data manipulation and analysis
 using DataFrames        # Tabular data structures for decoder statistics
@@ -45,6 +53,9 @@ import Base: eltype, length, sort!
 # Core data structures and graph representations
 include("tanner_graph.jl")
 export TannerGraph, print_tanner_graph, QuantumCode, measure_syndrome, print_code_info
+
+# Configuration constants
+export USE_GPU, METAL_LOADED
 
 # Quantum error correction codes
 include("hypergraph_product_code.jl")
