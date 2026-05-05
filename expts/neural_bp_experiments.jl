@@ -302,8 +302,29 @@ if abspath(PROGRAM_FILE) == @__FILE__
 
     Example run command:
     ```sh
-    julia --project="./../" neural_bp_experiments.jl --codename hamming --n_hidden_layers 5 --n_epochs 5 --batch_size 2 --correlation_strengths_file correlation_strengths.txt --train training_errors.txt --test testing_errors.txt --retrain false
+    julia --project="./../" neural_bp_experiments.jl --codename <codename> --n_hidden_layers <n_hidden_layers> --n_epochs <n_epochs> --batch_size <batch_size> --correlation_strengths_file <correlation_strengths_file> --train <training_errors_file> --test <testing_errors_file> --retrain <retrain> --learning_rate <learning_rate> --max_grad_norm <max_grad_norm>
     ```
+    Where:
+    ```
+    <codename>: (String) The codename for the experiment.
+    <n_hidden_layers>: (Int) Number of hidden layers in the Neural BP model.
+    <n_epochs>: (Int) Number of training epochs.
+    <batch_size>: (Int) Batch size for training.
+    <correlation_strengths_file>: (String) File containing correlation strengths.
+    <training_errors_file>: (String) File containing training errors.
+    <testing_errors_file>: (String) File containing testing errors.
+    <retrain>: (Bool) Whether to retrain the model (true/false).
+    <learning_rate>: (Float) Learning rate for training.
+    <max_grad_norm>: (Float) Maximum gradient norm for training.
+    ```
+
+    Before running this experiment, ensure that there is a directory in `./../data/` with the name corresponding to `<codename>` that contains:
+    - code/ : containing `HX.txt`, `HZ.txt`, `LX.txt` and `LZ.txt`
+    - correlated_weights/ : containing the correlation strengths file specified by `<correlation_strengths_file>`
+    - training_data/ : containing the training errors file specified by `<training_errors_file>`
+    - testing_data/ : containing the testing errors file specified by `<testing_errors_file>`
+
+    The trained Neural BP model will be saved in `./../data/<codename>/models/` and the results of the experiment will be saved in `./../data/<codename>/results/`.
     """
 
     # If no arguments are provided, print a message and exit.
@@ -311,6 +332,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
         println("No command-line arguments provided. Please provide the necessary arguments to run the experiment.")
         println("Example run command:")
         println("julia --project=\"./../\" neural_bp_experiments.jl --codename hamming --n_hidden_layers 5 --n_epochs 5 --batch_size 2 --correlation_strengths_file correlation_strengths.txt --train training_errors.txt --test testing_errors.txt --retrain false --learning_rate 0.1 --max_grad_norm 2.0")
+        println("Please refer to the script for details on the required and optional command-line arguments.")
         exit(1)
     end
     
