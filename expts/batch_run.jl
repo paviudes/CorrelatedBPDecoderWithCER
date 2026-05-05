@@ -59,7 +59,7 @@ function generate_parallel_commands(
     n_cpus_to_use = min(ncpus, n_simulations)
 
     # Write a shell script to run the commands in `commands_file` in parallel, save results to `output_file`, and halt the Google Cloud VM when done.
-    run_on_Google_VM(commands_file, n_cpus_to_use)
+    run_on_Google_VM(commands_file, output_file, n_cpus_to_use)
 end
 
 function run_on_SLURM(commands_file::String, n_cpus::Int=10)
@@ -117,9 +117,9 @@ function run_on_SLURM(commands_file::String, n_cpus::Int=10)
     println("sbatch $(slurm_script_file)\n")
 end
 
-function run_on_Google_VM(commands_file::String, n_cpus::Int=10)
+function run_on_Google_VM(commands_file::String, output_file::String, n_cpus::Int=10)
     """
-    Run the commands in `commands_file` in parallel on a Google Cloud VM, save results to `simulation_results.log`, and halt the VM when done.
+    Run the commands in `commands_file` in parallel on a Google Cloud VM, save results to `output_file`, and halt the VM when done.
     """
     # Write a shell script to run the commands in `commands_file` in parallel, save results to `output_file`, and halt the Google Cloud VM when done.
     # The shell script should be named `run_<timestamp>.sh` and should be saved in the same directory as `commands_file`.
