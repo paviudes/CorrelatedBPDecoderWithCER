@@ -6,6 +6,7 @@ using CorrelatedBPDecoderWithCER
 function train_Nachmani_neuralbp(
     parity_check_matrix_file::String,
     logicals_file::String;
+    # Hyperparameters for the Neural BP model
     connectivity_matrix::Matrix{Int}=zeros(Int,0,0),
     correlation_strengths::AbstractVector{Float32}=[],
     n_hidden_layers::Int=2,
@@ -14,7 +15,10 @@ function train_Nachmani_neuralbp(
     n_samples::Int=1000,
     batch_size::Int=2,
     prefix::String="./../data",
-    retrain::Bool=false
+    # Hyperparameters for training the Neural BP model
+    retrain::Bool=false,
+    learning_rate::Float32=1f-1,
+    max_grad_norm::Float32=2.0f0
 )
     """
     Train a Neural Belief Propagation decoder for the given parity-check matrix.
@@ -87,7 +91,15 @@ function train_Nachmani_neuralbp(
         training_syndromes = convert.(Bool, mod.(H * expected_recoveries, 2))
         
         # Train the Neural BP model
-        train_neuralbp_enzyme!(bpnn, training_syndromes, expected_recoveries; learning_rate=1f-2, n_epochs=n_epochs, batch_size=batch_size)
+        train_neuralbp_enzyme!(
+            bpnn, 
+            training_syndromes, 
+            expected_recoveries; 
+            learning_rate=learning_rate, 
+            n_epochs=n_epochs, 
+            batch_size=batch_size,
+            max_grad_norm=max_grad_norm
+        )
 
         # Save the trained weights to a file
         save_trained_neuralbp_model(weights_filename, bpnn)
@@ -103,16 +115,9 @@ function neuralbp_test_predictions(bpnn::NeuralBP, test_errors_file::String)::Bi
     test_errors = convert.(Bool, readdlm(test_errors_file, Int))
     test_syndromes = convert.(Bool, mod.(bpnn.base.parity_check_matrix * test_errors, 2))
     start = time()
-    predicted_recoveries = predict_neuralbp(bpnn, test_syndromes)
+    is_correct = predict_and_check_neuralbp(bpnn, test_syndromes, test_errors; batch_size=4096)
     runtime = time() - start
-    println("[", runtime, "s] elapsed. Predicted recoveries computed.")
-    # Check if the predicted recoveries match the expected recoveries
-    is_correct = check_bp_solutions(convert.(Int, bpnn.base.parity_check_matrix), test_errors, predicted_recoveries)
-    #TODO: Save a report of the testing to a file. The file name should start with `testing_report_`
-    runtime = time() - start
-    println("[", runtime, "s] elapsed. Recoveries verified.")
-    
-    # println("Out of ", size(test_errors, 2), " test samples, ", sum(is_correct), " were correctly decoded.")
+    println("[", runtime, "s] elapsed. Predicted recoveries computed and verified.")
     return is_correct
 end
 
@@ -305,7 +310,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     if length(ARGS) == 0
         println("No command-line arguments provided. Please provide the necessary arguments to run the experiment.")
         println("Example run command:")
-        println("julia --project=\"./../\" neural_bp_experiments.jl --codename hamming --n_hidden_layers 5 --n_epochs 5 --batch_size 2 --correlation_strengths_file correlation_strengths.txt --train training_errors.txt --test testing_errors.txt --retrain false")
+        println("julia --project=\"./../\" neural_bp_experiments.jl --codename hamming --n_hidden_layers 5 --n_epochs 5 --batch_size 2 --correlation_strengths_file correlation_strengths.txt --train training_errors.txt --test testing_errors.txt --retrain false --learning_rate 0.1 --max_grad_norm 2.0")
         exit(1)
     end
     
@@ -328,13 +333,18 @@ if abspath(PROGRAM_FILE) == @__FILE__
     batch_size = args_dict["batch_size"]
     training_errors_file = "$(prefix)/training_data/$(args_dict["train"])"
     n_samples = args_dict["n_samples"]
+
+    # Hyperparameters for training the Neural BP model
     retrain = args_dict["retrain"]
+    learning_rate = args_dict["learning_rate"]
+    max_grad_norm = args_dict["max_grad_norm"]
 
     # Train the Neural BP model
     start = time()
     bpnn = train_Nachmani_neuralbp(
         parity_check_matrix_file,
         logicals_file;
+        # Hyperparameters for the Neural BP model
         connectivity_matrix=connectivity_matrix,
         correlation_strengths=correlation_strengths,
         n_hidden_layers=n_hidden_layers,
@@ -343,7 +353,10 @@ if abspath(PROGRAM_FILE) == @__FILE__
         training_errors_file=training_errors_file,
         n_samples=n_samples,
         prefix=prefix,
-        retrain=retrain
+        retrain=retrain,
+        # Hyperparameters for training the Neural BP model
+        learning_rate=learning_rate,
+        max_grad_norm=max_grad_norm
     )
     
     # Test the Neural BP model predictions

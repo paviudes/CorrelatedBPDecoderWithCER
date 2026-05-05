@@ -194,14 +194,35 @@ function train_neuralbp_enzyme!(
     
 
     # Annealing schedule parameters for the temperature of the smooth minimum approximation when combining losses from different layers.
-    layer_temp_max::Float32 = 1f-1
-    layer_temp_min::Float32 = 1f-3
+    layer_temp_max::Float32 = 5f-0
+    layer_temp_min::Float32 = 3f-1
     layer_temp_decay::Float32 = 0.9f0 # decay factor for the annealing schedule of the temperature for the smooth minimum approximation.
 
     # Annealing schedule parameters for the importance of the correlation penalty in the Loss function.
-    correlation_importance_max::Float32 = 1f-1
+    correlation_importance_max::Float32 = 1f0
     correlation_importance_min::Float32 = 1f-3
     correlation_importance_decay::Float32 = 0.1f0 # decay factor for the annealing schedule of the correlation importance in the Loss function.
+
+    # --------------------------
+    # Debugging: log the individual losses for samples and epochs.
+    n_samples_to_log = n_epochs * length(training_dataset)
+    hyperparameters = DataFrame(
+        epoch = zeros(Int, n_samples_to_log),
+        sample = zeros(Int, n_samples_to_log),
+        loss_layer_temp = zeros(Float32, n_samples_to_log),
+        correlation_importance = zeros(Float32, n_samples_to_log),
+        loss = zeros(Float32, n_samples_to_log),
+        min_weight_c2v_v2c = zeros(Float32, n_samples_to_log),
+        max_weight_c2v_v2c = zeros(Float32, n_samples_to_log),
+        median_weight_c2v_v2c = zeros(Float32, n_samples_to_log),
+        min_weight_llrs = zeros(Float32, n_samples_to_log),
+        max_weight_llrs = zeros(Float32, n_samples_to_log),
+        median_weight_llrs = zeros(Float32, n_samples_to_log),
+        min_weight_c2v_readout = zeros(Float32, n_samples_to_log),
+        max_weight_c2v_readout = zeros(Float32, n_samples_to_log),
+        median_weight_c2v_readout = zeros(Float32, n_samples_to_log)
+    )
+    # --------------------------
 
     # -------------------------
     # Progress bars
@@ -288,10 +309,31 @@ function train_neuralbp_enzyme!(
                 expected_batch
             )
             ProgressMeter.next!(batch_progress; showvalues = [(:loss, current_loss)])
+
+            # --------------------------------------------------
+            # Log the hyperparameters and loss for this batch and epoch for debugging and visualization later.
+            hyperparameters[(epoch - 1) * length(training_dataset) + b, :epoch] = epoch
+            hyperparameters[(epoch - 1) * length(training_dataset) + b, :sample] = b
+            hyperparameters[(epoch - 1) * length(training_dataset) + b, :loss_layer_temp] = bpnn.loss_layer_regularizer[1]
+            hyperparameters[(epoch - 1) * length(training_dataset) + b, :correlation_importance] = bpnn.correlation_importance[1]
+            hyperparameters[(epoch - 1) * length(training_dataset) + b, :loss] = current_loss
+            hyperparameters[(epoch - 1) * length(training_dataset) + b, :min_weight_c2v_v2c] = minimum(bpnn.weights_c2v_v2c)
+            hyperparameters[(epoch - 1) * length(training_dataset) + b, :max_weight_c2v_v2c] = maximum(bpnn.weights_c2v_v2c)
+            hyperparameters[(epoch - 1) * length(training_dataset) + b, :median_weight_c2v_v2c] = median(bpnn.weights_c2v_v2c)
+            hyperparameters[(epoch - 1) * length(training_dataset) + b, :min_weight_llrs] = minimum(bpnn.weights_llrs)
+            hyperparameters[(epoch - 1) * length(training_dataset) + b, :max_weight_llrs] = maximum(bpnn.weights_llrs)
+            hyperparameters[(epoch - 1) * length(training_dataset) + b, :median_weight_llrs] = median(bpnn.weights_llrs)
+            hyperparameters[(epoch - 1) * length(training_dataset) + b, :min_weight_c2v_readout] = minimum(bpnn.weights_c2v_readout)
+            hyperparameters[(epoch - 1) * length(training_dataset) + b, :max_weight_c2v_readout] = maximum(bpnn.weights_c2v_readout)
+            hyperparameters[(epoch - 1) * length(training_dataset) + b, :median_weight_c2v_readout] = median(bpnn.weights_c2v_readout)
+            # --------------------------------------------------
         end
 
         ProgressMeter.next!(epoch_progress)
     end
+
+    # Debugging: write the hyperparameters and loss values into a file for visualization later.
+    CSV.write("./../data/15q_Hamm_code_data_10000_train/training_log.csv", hyperparameters)
 
     return bpnn
 end

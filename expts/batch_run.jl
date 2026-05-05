@@ -7,10 +7,14 @@ function generate_parallel_commands(
     qvals::AbstractVector{<:Real},
     n_samples::Int;
     codename::String="aps",
+    # Hyperparameters for the Neural BP model
     n_hidden_layers::Int=100,
     n_epochs::Int=10,
     batch_size::Int=2,
     retrain::Bool=false,
+    # Hyperparameters for training the Neural BP model
+    learning_rate::Float32=1f-1,
+    max_grad_norm::Float32=2.0f0,
     julia_project::String="./../",
     commands_file::String="commands.txt",
     output_file::String="simulation_results.log",
@@ -19,7 +23,6 @@ function generate_parallel_commands(
     """
     Generate shell commands for parallel execution of neural BP experiments.
     """
-
     open(commands_file, "w") do io
         for p in pvals, q in qvals, s in 1:n_samples
 
@@ -39,7 +42,9 @@ function generate_parallel_commands(
                 --correlation_strengths_file $(cer_file) \
                 --train $(train_file) \
                 --test $(test_file) \
-                --retrain $(retrain)"""
+                --retrain $(retrain) \
+                --learning_rate $(learning_rate) \
+                --max_grad_norm $(max_grad_norm)"""
 
             cmd = replace(cmd, "\n" => " ")
 
@@ -49,11 +54,78 @@ function generate_parallel_commands(
 
     println("$(length(pvals) * length(qvals) * n_samples) commands written to: $commands_file\n")
 
+    # Calculate the number of simulations and determine how many CPUs to use for parallel execution.
+    n_simulations = length(pvals) * length(qvals) * n_samples
+    n_cpus_to_use = min(ncpus, n_simulations)
+
+    # Write a shell script to run the commands in `commands_file` in parallel, save results to `output_file`, and halt the Google Cloud VM when done.
+    run_on_Google_VM(commands_file, n_cpus_to_use)
+end
+
+function run_on_SLURM(commands_file::String, n_cpus::Int=10)
+    """
+    Run the commands in `commands_file` in parallel on a SLURM cluster.
+    The SLURM job script will be named `run_<timestamp>.slurm` and will be saved in the same directory as `commands_file`.
+    The format of the script will be as follows:
+    #!/bin/bash
+    #SBATCH --job-name=nbp_<timestamp>
+    #SBATCH --output=<directory_of_commands_file>/nbp_<timestamp>.out
+    #SBATCH --error=<directory_of_commands_file>/nbp_<timestamp>.err
+    #SBATCH --ntasks=1
+    #SBATCH --cpus-per-task=<n_cpus>
+    #SBATCH --time=4:00:00
+    #SBATCH --partition=cpu
+    #SBATCH --mem=16G
+    # Email notifications
+    #SBATCH --mail-type=ALL
+    #SBATCH --mail-user=pavithran.sridhar@gmail.com
+    # Load necessary modules (if any)
+    # module load julia parallel
+    # Run the commands in parallel
+    parallel --bar --keep-order --jobs $(n_cpus) --results $(output_file) --arg-file $(commands_file)
+    """
+    timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")
+    commands_dir = dirname(commands_file)
+    slurm_script_file = joinpath(commands_dir, "run_$(timestamp).sh")
+    output_file = joinpath(commands_dir, "nbp_$(timestamp).out")
+    error_file = joinpath(commands_dir, "nbp_$(timestamp).err")
+
+    slurm_script_lines = [
+        "#!/bin/bash",
+        "#SBATCH --account=default",
+        "#SBATCH --job-name=nbp_$(timestamp)",
+        "#SBATCH --output=$(output_file)",
+        "#SBATCH --error=$(error_file)",
+        "#SBATCH --ntasks=1",
+        "#SBATCH --cpus-per-task=$(n_cpus)",
+        "#SBATCH --time=4:00:00",
+        "#SBATCH --partition=cpu",
+        "#SBATCH --mem=16G",
+        "# Email notifications",
+        "#SBATCH --mail-type=ALL",
+        "#SBATCH --mail-user=pavithran.sridhar@gmail.com",
+        "# Load necessary modules (if any)",
+        "# module load julia parallel",
+        "# Run the commands in parallel",
+        "parallel --bar --keep-order --jobs $(n_cpus) --results $(output_file) --arg-file $(commands_file)"
+    ]
+    open(slurm_script_file, "w") do io
+        println(io, join(slurm_script_lines, "\n"))
+    end
+    println("SLURM job script written to: $slurm_script_file\n")
+    println("Run the SLURM job with:")
+    println("sbatch $(slurm_script_file)\n")
+end
+
+function run_on_Google_VM(commands_file::String, n_cpus::Int=10)
+    """
+    Run the commands in `commands_file` in parallel on a Google Cloud VM, save results to `simulation_results.log`, and halt the VM when done.
+    """
     # Write a shell script to run the commands in `commands_file` in parallel, save results to `output_file`, and halt the Google Cloud VM when done.
     # The shell script should be named `run_<timestamp>.sh` and should be saved in the same directory as `commands_file`.
     timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")
     shell_script_file = joinpath(dirname(commands_file), "run_$(timestamp).sh")
-    job_cmd = """parallel --bar --keep-order --jobs $ncpus --results $(output_file) --arg-file $(commands_file)"""
+    job_cmd = """parallel --bar --keep-order --jobs $(n_cpus_to_use) --results $(output_file) --arg-file $(commands_file)"""
     open(shell_script_file, "w") do io
         wrapped_cmd = shut_down_vm(job_cmd)
         println(io, wrapped_cmd)
@@ -61,6 +133,7 @@ function generate_parallel_commands(
     println("Run simulations with:")
     println("bash $(shell_script_file)\n")
 end
+    
 
 function shut_down_vm(job_cmd::String)
     r"""
@@ -88,9 +161,9 @@ function main()
     p: 0.001:0.001:0.005
     q: 0.3:0.04:0.66
     """
-    dirname = "7q_Hamm_code_data_10000_train"
+    dirname = "72q_BB_p_0.006_q_0.1_std_0.1"
     generate_parallel_commands(
-        [0.006, 0.008],
+        [0.006],
         [0.1],
         56;
         codename = dirname,
@@ -98,6 +171,8 @@ function main()
         n_epochs = 20,
         batch_size = 8,
         retrain = false,
+        learning_rate = 1f-1,
+        max_grad_norm = 2.0f0,
         julia_project = "./../",
         commands_file = "./../data/$(dirname)/commands.txt",
         output_file = "./../data/$(dirname)/simulation_results.log",

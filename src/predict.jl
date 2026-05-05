@@ -1,25 +1,32 @@
-function predict_neuralbp(bpnn::NeuralBP, syndromes::BitMatrix)::Array{Bool, 3}
+function predict_neuralbp(bpnn::NeuralBP, syndromes::BitMatrix; batch_size::Int = 1024)::Array{Bool, 3}
     """
     Predict the recoveries for the given syndromes using the trained NeuralBP model.
+    The samples are processed in batches of `batch_size` to keep GPU memory
+    manageable; per-batch posterior tensors are hard-thresholded to Bool
+    immediately and written into the output, so only one batch's worth of
+    Float32 LLRs lives on the GPU at a time.
     Arguments:
     - `bpnn::NeuralBP`: The trained NeuralBP model.
     - `syndromes::BitMatrix`: A matrix where each column represents a syndrome corresponding to an error pattern.
-    
+    - `batch_size::Int=1024`: How many samples to push through `forward_pass_gpu` at once. Smaller = less peak memory, more launch overhead.
+
     Returns:
-    - `predicted_recoveries::BitMatrix`: A matrix where each column represents the predicted recovery (error pattern) corresponding to the syndrome.
+    - `predicted_recoveries::Array{Bool, 3}`: shape (n_bits × n_samples × n_layers).
     """
-    batch_size = size(syndromes, 2)
-    initial_llrs_batch = repeat(bpnn.base.initial_llrs, 1, batch_size)
-    predicted_recoveries_LLRs = forward_pass_with_weights(
-        bpnn.weights_c2v_v2c,
-        bpnn.weights_llrs,
-        bpnn.weights_c2v_readout,
-        bpnn.base,
-        initial_llrs_batch,
-        syndromes
-    )
-    # print_neuralbp_summary(bpnn; final_llrs=predicted_recoveries_LLRs)
-    predicted_recoveries = convert.(Bool, (predicted_recoveries_LLRs .< 0))
+    n_total  = size(syndromes, 2)
+    n_bits   = bpnn.base.code_n_bits
+    n_layers = bpnn.base.n_layers
+
+    predicted_recoveries = falses(n_bits, n_total, n_layers)
+
+    for start in 1:batch_size:n_total
+        stop = min(start + batch_size - 1, n_total)
+        chunk_synd = syndromes[:, start:stop]
+        chunk_llrs = repeat(bpnn.base.initial_llrs, 1, stop - start + 1)
+        chunk_post = forward_pass_gpu(bpnn, chunk_llrs, chunk_synd)
+        @views predicted_recoveries[:, start:stop, :] .= (chunk_post .< 0)
+    end
+
     return predicted_recoveries
 end
 
@@ -45,17 +52,6 @@ function check_bp_solutions(parity_check_matrix_dual::Matrix{Int}, errors::BitMa
     for i in 1:n_samples
         error_pattern = errors[:, i]
         # Check if any of the proposed recoveries from the layers correctly fixes the error
-        #=
-        for layer in 1:size(proposed_recoveries, 3)
-            proposed_recovery = proposed_recoveries[:, i, layer]
-            # Check if the proposed recovery correctly fixes the error
-            if mod.(parity_check_matrix_dual * (error_pattern .⊻ proposed_recovery), 2) == zeros(Bool, size(parity_check_matrix_dual, 1))
-                is_correct[i] = true
-                break
-            end
-        end
-        =#
-        # Do: H * (error ⊻ recovery) mod 2 == 0, and check if any column has all zeros, i.e. sums to zero.
         if any(sum(mod.(parity_check_matrix_dual * (error_pattern .⊻ proposed_recoveries[:, i, :]), 2), dims=1) .== 0)
             is_correct[i] = true
         else
@@ -63,5 +59,50 @@ function check_bp_solutions(parity_check_matrix_dual::Matrix{Int}, errors::BitMa
         end
         # next!(progress, showvalues = [(:Fails, total_fails)])
     end
+    return is_correct
+end
+
+function predict_and_check_neuralbp(
+    bpnn::NeuralBP,
+    syndromes::BitMatrix,
+    errors::BitMatrix;
+    batch_size::Int = 1024,
+)::BitVector
+    """
+    Predict the recoveries for the given syndromes using the trained NeuralBP model.
+    Then check if the predicted recoveries correctly fix the errors according to the parity-check matrix.
+    Arguments:
+    - `bpnn::NeuralBP`: The trained NeuralBP model.
+    - `syndromes::BitMatrix`: A matrix where each column represents a syndrome corresponding to an error pattern.
+    - `errors::BitMatrix`: A matrix where each row represents an error pattern.
+    - `batch_size::Int=1024`: How many samples to push through `forward_pass_gpu` at once. Smaller = less peak memory, more launch overhead.
+    Returns:
+    - `is_correct::BitVector`: A vector indicating whether each recovery correctly fixes the corresponding error.
+    
+    We check if the recovery at any of the intermediate layers correctly fixes the error, since the final layer's LLRs might not always be the best predictor.
+    """
+    n_samples = size(syndromes, 2)
+    is_correct = falses(n_samples)
+
+    H_dual = convert.(Int, bpnn.base.parity_check_matrix)
+
+    for start in 1:batch_size:n_samples
+        stop = min(start + batch_size - 1, n_samples)
+
+        # Determine the syndromes, errors, and initial LLRs for the current batch.
+        chunk_syndromes  = syndromes[:, start:stop]
+        chunk_errors  = errors[:, start:stop]
+        chunk_llrs  = repeat(bpnn.base.initial_llrs, 1, stop - start + 1)
+
+        # Predict the recoveries for the chunk of syndromes using the trained NeuralBP model.
+        chunk_posterior_llrs  = forward_pass_gpu(bpnn, chunk_llrs, chunk_syndromes)
+
+        # Hard threshold the posterior LLRs to get proposed recoveries, and check if they correctly fix the errors.
+        chunk_recoveries  = Array(chunk_posterior_llrs .< 0) # shape (n_bits, batch_size, n_layers)
+
+        # Check if the proposed recoveries from any of the layers correctly fix the error
+        @views is_correct[start:stop] .= check_bp_solutions(H_dual, chunk_errors, chunk_recoveries)
+    end
+
     return is_correct
 end

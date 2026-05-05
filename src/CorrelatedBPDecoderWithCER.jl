@@ -15,6 +15,10 @@ using DelimitedFiles    # File I/O for CSV-like data formats
 using CSV               # CSV file reading and writing
 using ProgressMeter     # Progress bars for training and other long operations
 
+# GPU acceleration
+using Metal             # GPU acceleration on Apple Silicon (M-series)
+# using CUDA             # GPU acceleration on NVIDIA GPUs (uncomment if using CUDA)
+
 # Data manipulation and analysis
 using DataFrames        # Tabular data structures for decoder statistics
 using Statistics        # Statistical functions for analyzing decoder performance
@@ -88,8 +92,14 @@ export NeuralBPBase, NeuralBP, add_soft_constraints_to_neuralbpbase, parse_corre
 
 # Nachmani Neural BP model
 include("nachmani.jl")
-export NachmaniNeuralBP, forward_pass, forward_pass_with_weights
-       c2v_to_v2c, c2v_to_v2c!, v2c_to_c2v, v2c_to_c2v!, readout, readout! # these are solely for debugging and testing, not intended for external use.
+export NachmaniNeuralBP, forward_pass, forward_pass_with_weights, c2v_to_v2c_with_weights!, v2c_to_c2v!, readout_with_weights!
+
+# GPU-accelerated forward pass
+include("forward_gpu.jl")
+export forward_pass_gpu
+
+include("legacy.jl") # these are solely for debugging and testing, not intended for external use.
+export c2v_to_v2c, v2c_to_c2v, readout
 
 # Print functions for Neural BP models
 include("printfuns.jl")
@@ -115,7 +125,7 @@ export train_neuralbp!, train_neuralbp_enzyme!, generate_training_data
 
 # Predictions with trained models
 include("predict.jl")
-export predict_neuralbp, check_bp_solutions
+export predict_neuralbp, check_bp_solutions, predict_and_check_neuralbp
 
 # Utility functions
 include("utils.jl")
