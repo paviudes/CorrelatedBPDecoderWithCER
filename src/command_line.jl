@@ -176,6 +176,7 @@ function parse_command_line_args_NN(;prefix::String="./../data")::Dict{String, A
 	julia --project="./../" neural_bp_experiments.jl --codename hamming --n_hidden_layers 5 --n_epochs 5 --batch_size 100 --retrain false
 	```
 	Where `codename` is a folder inside `./../data/` containing the required files.
+
 	"""
 	settings = ArgParseSettings()
 	
@@ -200,14 +201,22 @@ function parse_command_line_args_NN(;prefix::String="./../data")::Dict{String, A
 			help = "Number of samples to use for training. Use all available samples if set to -1."
 			arg_type = Int
 			default = -1
-		"--correlation_strength"
-			help = "Strength of correlation in the error model."
-			arg_type = Float64
-			default = 0.0
+		"--correlation_strengths_file"
+			help = "File containing the correlation strengths for the additional loss term for correlations. The file should contain a vector of correlation strengths corresponding to the rows of the connectivity matrix."
+			arg_type = String
+			default = "correlation_strengths.txt"
 		"--retrain"
 			help = "Retrain the model even if trained weights are available."
 			arg_type = Bool
 			default = false
+		"--learning_rate"
+			help = "Learning rate for training the Neural BP model."
+			arg_type = Float32
+			default = 1f-1
+		"--max_grad_norm"
+			help = "Maximum gradient norm for gradient clipping during training."
+			arg_type = Float32
+			default = 2.0f0
 		"--train"
 			help = "Name of the file used for training the Neural BP model."
 			arg_type = String
@@ -217,22 +226,6 @@ function parse_command_line_args_NN(;prefix::String="./../data")::Dict{String, A
 			arg_type = String
 			default = ""
 	end
-	args_dict = parse_args(settings)
-
-	# Ensure that the `./../data/codename` has all the required files.
-	if isdir("$(prefix)/$(args_dict["codename"])")
-        # Check for required files
-		required_files = ["HX.txt", "LX.txt", "connectivity_matrix.txt", args_dict["train"], args_dict["test"]]
-		for file in required_files
-			if !isfile("$(prefix)/$(args_dict["codename"])/$(file)")
-				throw(error("The required file '$(file)' is missing in the directory '$(prefix)/$(args_dict["codename"])'. Please add the file and try again."))
-			end
-		end
-		# All required files are present.
-    else
-		throw(error("The specified data directory does not exist: $(prefix). Please create the directory and add the required data files."))
-	end
-
 	args_dict = parse_args(settings)
 	return args_dict
 end
