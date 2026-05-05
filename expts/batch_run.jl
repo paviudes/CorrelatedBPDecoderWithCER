@@ -125,7 +125,7 @@ function run_on_Google_VM(commands_file::String, n_cpus::Int=10)
     # The shell script should be named `run_<timestamp>.sh` and should be saved in the same directory as `commands_file`.
     timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")
     shell_script_file = joinpath(dirname(commands_file), "run_$(timestamp).sh")
-    job_cmd = """parallel --bar --keep-order --jobs $(n_cpus_to_use) --results $(output_file) --arg-file $(commands_file)"""
+    job_cmd = """parallel --bar --keep-order --jobs $(n_cpus) --results $(output_file) --arg-file $(commands_file)"""
     open(shell_script_file, "w") do io
         wrapped_cmd = shut_down_vm(job_cmd)
         println(io, wrapped_cmd)
