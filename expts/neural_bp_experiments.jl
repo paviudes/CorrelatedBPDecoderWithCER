@@ -358,8 +358,15 @@ if abspath(PROGRAM_FILE) == @__FILE__
         learning_rate=learning_rate,
         max_grad_norm=max_grad_norm
     )
-    
+
     # Test the Neural BP model predictions
+    
+    # If no test file is provided, skip testing of the Neural BP model and exit.
+    if args_dict["test"] == ""
+        println("No test file provided. Skipping testing of the Neural BP model.")
+        exit(0)
+    end
+    
     test_errors_file = "$(prefix)/testing_data/$(args_dict["test"])"
     is_correct = neuralbp_test_predictions(bpnn, test_errors_file)
     failures = collect(.!is_correct)
