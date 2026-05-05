@@ -1,81 +1,158 @@
-# CorrelatedBPDecoderWithCER.jl
+# CorrelatedBPDecoderWithCER
 
-This repository contains the `CorrelatedBPDecoderWithCER.jl` Julia package for running belief propagation (BP) decoders with correlated errors.
+## Introduction and Background
 
----
+This repository contains the implementation of a generalized Belief Propagation (BP) decoder by training a Neural Network. It includes new ideas that will eventually be part of a paper, aimed at enhancing decoder performance under spatially correlated errors using [Cycle Error Reconstruction](https://www.nature.com/articles/s41467-019-13068-7). The transformation from standard belief propagation to a Neural Network is based on ideas discussed in:
 
-## 1. Install Julia
+- [Learning to Decode Linear Codes Using Deep Learning (arXiv:1607.04793)](https://arxiv.org/abs/1607.04793)
+- [Neural Belief-Propagation Decoders for Quantum Error-Correcting Codes (PRL 122, 200501)](https://journals.aps.org/prl/abstract/10.1103/PhysRevLett.122.200501)
 
-Download and install Julia from the official website:
-
-[https://julialang.org/downloads/](https://julialang.org/downloads/)
-
-Make sure Julia is added to your system PATH.
+We use a correlated error model based on the Ballistic noise model discussed in [Quantum 3, 131 (2019)](https://quantum-journal.org/papers/q-2019-04-08-131/).
 
 ---
 
-## 2. Install Dependencies
+## Installation
 
-Start the Julia REPL and run:
+The package is built in Julia. [Install Julia](https://julialang.org/downloads/) before proceeding.
+
+When using the package for the first time:
+
+```sh
+git clone git@github.com:paviudes/CorrelatedBPDecoderWithCER.git
+cd CorrelatedBPDecoderWithCER
+julia
+```
+
+Then, inside the Julia REPL:
+
+```
+]                    # enter package mode
+activate .           # activate the environment
+instantiate          # install all dependencies
+resolve              # clean up
+<backspace>          # exit package manager
+exit(0)              # exit the REPL
+```
+
+---
+
+## Running
+
+### Single Execution
+
+Navigate to the `expts` directory and run:
+
+```sh
+julia --project="./../" neural_bp_experiments.jl \
+  --codename <codename> \
+  --n_hidden_layers <n_hidden_layers> \
+  --n_epochs <n_epochs> \
+  --batch_size <batch_size> \
+  --correlation_strengths_file <correlation_strengths_file> \
+  --train <training_errors_file> \
+  --test <testing_errors_file> \
+  --retrain <retrain> \
+  --learning_rate <learning_rate> \
+  --max_grad_norm <max_grad_norm>
+```
+
+| Argument | Type | Description |
+|---|---|---|
+| `codename` | String | Codename for the experiment, used to locate input data and save outputs. |
+| `n_hidden_layers` | Int | Number of hidden layers in the Neural BP model. |
+| `n_epochs` | Int | Number of training epochs. |
+| `batch_size` | Int | Batch size for training. |
+| `correlation_strengths_file` | String | File containing correlation strengths (located in `correlated_weights/`). |
+| `training_errors_file` | String | File containing training errors (located in `training_data/`). |
+| `testing_errors_file` | String | File containing testing errors (located in `testing_data/`). |
+| `retrain` | Bool | Whether to retrain the model (`true`/`false`). |
+| `learning_rate` | Float | Learning rate for training. |
+| `max_grad_norm` | Float | Maximum gradient norm for clipping during training. |
+
+#### Required Directory Structure
+
+Before running, ensure that `./../data/<codename>/` exists and contains the following subdirectories:
+
+```
+<codename>/
+├── code/                    # HX.txt, HZ.txt, LX.txt, LZ.txt
+├── correlated_weights/      # correlation strengths file
+├── training_data/           # training errors file
+└── testing_data/            # testing errors file
+```
+
+For example:
+
+```
+pavi@Pavithrans-MacBook-Air 72q_BB_p_0.006_q_0.1_std_0.1 % tree -L 1
+.
+├── assigned_probabilities
+├── code
+├── commands.txt
+├── correlated_weights
+├── models
+├── results
+├── run_2026-05-05_20-58-59.sh
+├── testing_data
+└── training_data
+```
+
+Outputs are written to:
+- `./../data/<codename>/models/` — trained Neural BP model
+- `./../data/<codename>/results/` — experiment results
+
+---
+
+### Batch Execution
+
+For running simulations locally or on a cluster over a range of Ballistic error model parameters, edit `main()` in `expts/batch_run.jl`, then `cd` into `expts` and run:
+
+```
+julia
+```
+
+Inside the Julia REPL:
+
+```
+]activate ./../      # activate the environment
+<backspace>          # exit package manager
+using CorrelatedBPDecoderWithCER
+include("batch_run.jl")
+main()
+```
+
+This generates a `commands.txt` file and a run script under `./../data/<codename>/`, and prints a command to run them:
+
+```
+Run simulations with:
+bash ./../data/<codename>/<name of the script>
+```
+
+For example:
 
 ```julia
-using Pkg
+julia> include("batch_run.jl")
+main (generic function with 1 method)
 
-Pkg.add("ArgParse")
-Pkg.add("DelimitedFiles")
-Pkg.add("JSON")
-Pkg.add("LinearAlgebra")
-Pkg.add("Random")
-Pkg.add("Revise")
+julia> main()
+56 commands written to: ./../data/72q_BB_p_0.006_q_0.1_std_0.1/commands.txt
+
+Run simulations with:
+bash ./../data/72q_BB_p_0.006_q_0.1_std_0.1/run_2026-05-05_20-46-54.sh
 ```
 
-## 3. Running the Script
-1. Navigate to the `expts` directory:
+Exit the REPL and run the printed command on the shell:
+
+```sh
+bash ./../data/72q_BB_p_0.006_q_0.1_std_0.1/run_2026-05-05_20-46-54.sh
 ```
-cd /path/to/CorrelatedBPDecoderWithCER.jl/expts
-```
-2. Run the script depending on your input mode.
-    - Using a file with explicit list of errors
 
-    ```
-    julia --project="./../" quantum_BP_test.jl \
-    --errors_filename <error_file_name> \
-    --n_iterations_of_BP <number_of_BP_iterations> \
-    --rounds_per_BP <number_of_BP_rounds_per_iteration> \
-    --llr_convergence_threshold <threshold> \
-    --llr_confidence_threshold <threshold> \
-    --weight_soft_constraint <factor>
-    ```
+#### Cluster Backends
 
-    - Using the Ballistic error model.
-    ```
-    julia --project="./../" quantum_BP_test.jl \
-    --ballistic_per_qubit_error_prob <error_probability> \
-    --ballistic_neighbour_error_prob <neighbour_error_probability> \
-    --n_iterations_of_BP <number_of_BP_iterations> \
-    --rounds_per_BP <number_of_BP_rounds_per_iteration> \
-    --llr_convergence_threshold <threshold> \
-    --llr_confidence_threshold <threshold> \
-    --weight_soft_constraint <factor>
-    ```
+The `cluster_backend` option in `main()` of `batch_run.jl` controls how jobs are submitted:
 
-Here is a description of the parameters.
-
-| Argument Name                     | Mandatory / Default Value       | Description                                                                                   |
-|----------------------------------|-------------------------------|-----------------------------------------------------------------------------------------------|
-| `errors_filename`                 | Optional                       | Name of the file containing precomputed error. Do not include the `.txt` extension and ensure that the file is placed in `./../data/<errors_filename>.txt`.|
-| `ballistic_per_qubit_error_prob`  | Optional                       | Probability of an error on each qubit in the Ballistic error model.                           |
-| `ballistic_neighbour_error_prob`  | Optional                       | Probability of flipping neighboring qubits given a qubit error.                               |
-| `num_error_samples`               | Optional                       | Number of error samples to generate.                                                          |
-| `n_iterations_of_BP`              | Mandatory                      | Number of iterations of the belief propagation algorithm.                                     |
-| `rounds_per_BP`                   | Mandatory                      | Number of BP rounds per iteration.                                                            |
-| `llr_convergence_threshold`     | Optional, default = 1e-6      | Threshold for change in LLR to assume convergence.                                            |
-| `llr_confidence_threshold`      | Optional, default = 4.0       | Threshold to be confident of a bit probability based on its LLR.                              |
-| `weight_soft_constraint`        | Optional, default = 0.8       | Multiplicative factor for messages from soft constraint checks to vertices.                  |
-| `debug`                         | Optional, default = false     | Enable debug mode with extra diagnostics.                                                    |
-| `verbose`                       | Optional, default = false     | Enable verbose logging of BP progress.                                                       |
-
-### Example
-```
-julia --project="./../" quantum_BP_test.jl --errors_filename 10000_sample_errors_th2_p95 --n_iterations_of_BP 1 --rounds_per_BP 1 --weight_soft_constraint 0.9
-```
+| Backend | Description |
+|---|---|
+| `local` | Runs jobs sequentially on your local machine. |
+| `Google_VM` | Same as `local` — run the `bash` command inside a `screen` session to keep it running after logout. |
+| `SLURM` | For Slurm-based clusters (e.g., Compute Canada). Prints an `sbatch` command to submit the job array, e.g. `sbatch ./../data/72q_BB_p_0.006_q_0.1_std_0.1/run_2026-05-05_20-46-54.sh`. |

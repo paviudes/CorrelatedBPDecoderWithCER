@@ -18,7 +18,10 @@ function generate_parallel_commands(
     julia_project::String="./../",
     commands_file::String="commands.txt",
     output_file::String="simulation_results.log",
-    ncpus::Int=10
+    ncpus::Int=10,
+    max_nodes::Int=10,
+    wall_time::String="4:00:00",
+    cluster_backend::String="Google_VM" # "SLURM" or "Google_VM"
 )
     """
     Generate shell commands for parallel execution of neural BP experiments.
@@ -59,36 +62,40 @@ function generate_parallel_commands(
     n_cpus_to_use = min(ncpus, n_simulations)
 
     # Write a shell script to run the commands in `commands_file` in parallel, save results to `output_file`, and halt the Google Cloud VM when done.
-    run_on_Google_VM(commands_file, output_file, n_cpus_to_use)
+    if lowercase(cluster_backend) == "google_vm"
+        run_on_Google_VM(commands_file, output_file, n_cpus_to_use)
+    elseif lowercase(cluster_backend) == "slurm"
+        run_on_SLURM(commands_file, n_simulations; n_cpus=n_cpus_to_use, max_nodes=max_nodes, wall_time=wall_time)
+    else
+        # Meant for local execution.
+        println("Run simulations with:")
+        println("parallel --bar --keep-order --jobs $(n_cpus_to_use) --results $(output_file) :::: $(commands_file)\n")
+    end
 end
 
-function run_on_SLURM(commands_file::String, n_cpus::Int=10)
+function run_on_SLURM(commands_file::String, n_commands::Int; n_cpus::Int=10, max_nodes::Int=10, wall_time::String="4:00:00")
     """
     Run the commands in `commands_file` in parallel on a SLURM cluster.
     The SLURM job script will be named `run_<timestamp>.slurm` and will be saved in the same directory as `commands_file`.
-    The format of the script will be as follows:
-    #!/bin/bash
-    #SBATCH --job-name=nbp_<timestamp>
-    #SBATCH --output=<directory_of_commands_file>/nbp_<timestamp>.out
-    #SBATCH --error=<directory_of_commands_file>/nbp_<timestamp>.err
-    #SBATCH --ntasks=1
-    #SBATCH --cpus-per-task=<n_cpus>
-    #SBATCH --time=4:00:00
-    #SBATCH --partition=cpu
-    #SBATCH --mem=16G
-    # Email notifications
-    #SBATCH --mail-type=ALL
-    #SBATCH --mail-user=pavithran.sridhar@gmail.com
-    # Load necessary modules (if any)
-    # module load julia parallel
-    # Run the commands in parallel
-    parallel --bar --keep-order --jobs $(n_cpus) --results $(output_file) --arg-file $(commands_file)
+    If there are more commands than CPUs, we want to use multiple nodes in a job array to run the commands in parallel.
+    However, we don't want to use more than max_nodes nodes, so we will calculate the number of nodes to use based on the number of commands and the number of CPUs per node.
     """
     timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")
     commands_dir = dirname(commands_file)
+    
     slurm_script_file = joinpath(commands_dir, "run_$(timestamp).sh")
     output_file = joinpath(commands_dir, "nbp_$(timestamp).out")
     error_file = joinpath(commands_dir, "nbp_$(timestamp).err")
+
+    # --- Compute node usage ---
+    n_nodes_needed = ceil(Int, n_commands / n_cpus)
+    n_nodes = min(n_nodes_needed, max_nodes)
+    commands_per_node = ceil(Int, n_commands / n_nodes)
+
+    println("Total commands: $n_commands")
+    println("CPUs per node: $n_cpus")
+    println("Using nodes: $n_nodes")
+    println("Commands per node: $commands_per_node")
 
     slurm_script_lines = [
         "#!/bin/bash",
@@ -96,25 +103,35 @@ function run_on_SLURM(commands_file::String, n_cpus::Int=10)
         "#SBATCH --job-name=nbp_$(timestamp)",
         "#SBATCH --output=$(output_file)",
         "#SBATCH --error=$(error_file)",
+        "#SBATCH --array=0-$(n_nodes-1)",
         "#SBATCH --ntasks=1",
         "#SBATCH --cpus-per-task=$(n_cpus)",
-        "#SBATCH --time=4:00:00",
+        "#SBATCH --time=$(wall_time)",
         "#SBATCH --partition=cpu",
-        "#SBATCH --mem=16G",
-        "# Email notifications",
+        "",
         "#SBATCH --mail-type=ALL",
         "#SBATCH --mail-user=pavithran.sridhar@gmail.com",
-        "# Load necessary modules (if any)",
-        "# module load julia parallel",
-        "# Run the commands in parallel",
-        "parallel --bar --keep-order --jobs $(n_cpus) --results $(output_file) --arg-file $(commands_file)"
+        "",
+        "echo \"Running SLURM_ARRAY_TASK_ID=\${SLURM_ARRAY_TASK_ID}\"",
+        "",
+        "# Determine line range for this task",
+        "START=\$((SLURM_ARRAY_TASK_ID * $(commands_per_node) + 1))",
+        "END=\$((START + $(commands_per_node) - 1))",
+        "",
+        "# Extract commands for this node",
+        "sed -n \"\${START},\${END}p\" $(commands_file) > $(commands_dir)/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt",
+        "",
+        "# Run commands in parallel",
+        "parallel --bar --keep-order --jobs $(n_cpus) --results $(commands_dir)/results_\${SLURM_ARRAY_TASK_ID} :::: $(commands_dir)/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt"
     ]
+
+    # Write the SLURM job script
     open(slurm_script_file, "w") do io
         println(io, join(slurm_script_lines, "\n"))
     end
     println("SLURM job script written to: $slurm_script_file\n")
-    println("Run the SLURM job with:")
-    println("sbatch $(slurm_script_file)\n")
+    println("Run with:")
+    println("sbatch $slurm_script_file\n")
 end
 
 function run_on_Google_VM(commands_file::String, output_file::String, n_cpus::Int=10)
@@ -157,15 +174,17 @@ end
 
 function main()
     """
+    This function generates commands for running simulations over a range of error parameters.
+    
     Data set for plots in APS: aps_7q_Hamm_code_data
     p: 0.001:0.001:0.005
     q: 0.3:0.04:0.66
     """
     dirname = "72q_BB_p_0.006_q_0.1_std_0.1"
     generate_parallel_commands(
-        [0.006],
-        [0.1],
-        56;
+        [0.006, 0.008], # set of p values
+        [0.1], # set of q values
+        56; # number of samples per (p, q) pair. For optimal usage of the machine, please set this to be a multiple of the number of CPUs available.
         codename = dirname,
         n_hidden_layers = 100,
         n_epochs = 20,
@@ -176,6 +195,10 @@ function main()
         julia_project = "./../",
         commands_file = "./../data/$(dirname)/commands.txt",
         output_file = "./../data/$(dirname)/simulation_results.log",
-        ncpus = 56
+        # Cluster settings.
+        ncpus = 56,
+        max_nodes = 10,
+        wall_time = "4:00:00",
+        cluster_backend = "SLURM" # "SLURM" or "Google_VM" or "local"
     )
 end
