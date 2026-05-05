@@ -310,7 +310,7 @@ function train_neuralbp_enzyme!(
                 syndromes_batch,
                 expected_batch
             )
-            ProgressMeter.next!(batch_progress; showvalues = [(:loss, current_loss)])
+            # ProgressMeter.next!(batch_progress; showvalues = [(:loss, current_loss)])
 
             #=
             # --------------------------------------------------

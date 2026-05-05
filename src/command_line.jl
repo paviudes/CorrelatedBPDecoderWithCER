@@ -209,6 +209,14 @@ function parse_command_line_args_NN(;prefix::String="./../data")::Dict{String, A
 			help = "Retrain the model even if trained weights are available."
 			arg_type = Bool
 			default = false
+		"--learning_rate"
+			help = "Learning rate for training the Neural BP model."
+			arg_type = Float32
+			default = 1f-1
+		"--max_grad_norm"
+			help = "Maximum gradient norm for gradient clipping during training."
+			arg_type = Float32
+			default = 2.0f0
 		"--train"
 			help = "Name of the file used for training the Neural BP model."
 			arg_type = String

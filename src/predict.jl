@@ -90,7 +90,7 @@ function predict_and_check_neuralbp(
     # In this case, we will use `forward_pass_with_weights` instead of `forward_pass_gpu`.
     if USE_GPU == false
         posterior_llrs = forward_pass_with_weights(bpnn, repeat(bpnn.base.initial_llrs, 1, n_samples), syndromes)
-        proposed_recoveries = posterior_llrs .< 0
+        proposed_recoveries = Array(posterior_llrs .< 0) # shape (n_bits, n_samples, n_layers)
         is_correct = check_bp_solutions(H_dual, errors, proposed_recoveries)
         return is_correct
     end
