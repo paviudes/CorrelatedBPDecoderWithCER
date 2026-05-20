@@ -1,3 +1,46 @@
+function load_base_BP_model(parity_check_matrix_file::String, logicals_file::String, n_hidden_layers::Int; correlation_strengths_file::String="")
+    """
+    Load the base BP model from the parity check matrix and logical operators files.
+    The parity check matrix file is a text file where each line corresponds to a row of the parity check matrix, and the entries are separated by spaces.
+    The logical operators file is a text file where each line corresponds to a logical operator, and the entries are separated by spaces.
+    The function will read these files, construct the parity check matrix and logical operators, and return a NeuralBPBase model.
+    """
+    # Load the parity check matrix
+    parity_check_matrix = readdlm(parity_check_matrix_file, Int)
+    n_bits = size(parity_check_matrix, 2)
+    # Load the logical operators
+    logicals = readdlm(logicals_file, Int)
+    # Construct the dual parity check matrix
+    dual_parity_check_matrix = vcat(parity_check_matrix, logicals)
+    # If the `correlation_strengths_file` is provided, parse the correlation strengths and connectivity matrix from the file. Otherwise, use empty values.
+    if isfile(correlation_strengths_file)
+        (connectivity_matrix, correlation_strengths, single_qubit_error_rates) = parse_cer_data(correlation_strengths_file)
+        initial_llrs = zeros(Float32, n_bits)
+        for qubit in 1:n_bits
+            if haskey(single_qubit_error_rates, qubit)
+                p = single_qubit_error_rates[qubit]
+                initial_llrs[qubit] = log((1-p)/p)
+            else
+                initial_llrs[qubit] = log(9) # Default to p=0.1 for qubits not specified in the file
+            end
+        end
+    else
+        connectivity_matrix = zeros(Int, 0, 0)
+        correlation_strengths = Float32[]
+        initial_llrs = convert.(Float32, log(9)) .* ones(Float32, n_bits) # Initial LLRs corresponding to p=0.1
+    end
+    # Construct the NeuralBPBase model
+    base = NeuralBPBase(
+        parity_check_matrix,
+        dual_parity_check_matrix,
+        initial_llrs,
+        n_hidden_layers;
+        connectivity=connectivity_matrix,
+        correlation_strengths=correlation_strengths,
+    )
+    return base
+end
+
 function load_trained_neuralbp_model(weights_filename::String, bpnn::NachmaniNeuralBP)::NachmaniNeuralBP
     """
     Load a trained version of the NeuralBP model from a file.

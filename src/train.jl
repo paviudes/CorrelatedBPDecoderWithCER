@@ -4,6 +4,9 @@ function get_loss_value(
     weights_c2v_readout, # learnable weights for computing the readout (posterior LLRs) from m^t_(c→v).
     correlation_importance, # importance of the correlation penalty in the Loss function, to be annealed during training.
     loss_layer_regularizer, # temperature for the smooth minimum approximation when combining losses from different layers, to be annealed during training.
+    llr_certainty_importance, # term for ensuring that the LLRs have converged.
+    sparsity_regularizer, # term for encouraging sparsity in the LLRs, to be annealed during training.
+    warmup_loss_layers, # First number of layers to leave unconstrained in the Loss function.
     base, # constant parameters of the model, including the parity-check matrix, connectivity, correlation strengths, etc.
     llrs_batch, # batch of initial LLRs for the bits, to be used as input to the network
     syndromes_batch, # batch of syndromes, to be used as input to the network
@@ -13,7 +16,10 @@ function get_loss_value(
     Compute the value of the Loss function for a given batch of data and given values for the weights.
     This version is friendly to Enzyme.jl, which requires a functional approach where the model parameters are passed explicitly to the function computing the loss, rather than being accessed as fields of a struct.
     """
-    # Forward pass through the network to get the posterior LLRs
+    # Forward pass through the network to get the posterior LLRs.
+    # Always use the CPU path here: Enzyme cannot differentiate through Metal GPU
+    # array allocation (MtlArray constructors call task_local_storage via device(),
+    # which is non-differentiable). The GPU path is only valid for inference, not AD.
     posterior_llrs = forward_pass_with_weights(
         weights_c2v_v2c,
         weights_llrs,
@@ -31,107 +37,97 @@ function get_loss_value(
         base.correlation_strengths,
         base.is_correlated, # Change back to base.is_correlated for the actual implementation, set to `false` for testing without correlations for now.
         correlation_importance, # correlation_importance is passed as a 1-element array to be compatible with Enzyme's autodiff, so we take the first element here.
-        loss_layer_regularizer # temperature for the smooth minimum approximation when combining losses from different layers, to be annealed during training.
+        loss_layer_regularizer, # temperature for the smooth minimum approximation when combining losses from different layers, to be annealed during training.
+        llr_certainty_importance, # weight for ensuring that the LLRs are converged.
+        sparsity_regularizer, # term for encouraging sparsity in the LLRs, to be annealed during training.
+        warmup_loss_layers # first number of layers that should be unconstrained since the optimizer doesn't know what the right beliefs are.
     )
     return total_loss
 end
 
-#=
-TODO: This function should be removed eventually since we are no more using Flux.jl.
-TODO: We have this commented code to be able to port this optimizer over to the Enzyme.jl version of the training loop.
-function train_neuralbp!(
-    bpnn::NeuralBP,
-    syndromes::BitMatrix,
-    expected_recoveries::BitMatrix;
-    optimizer = OptimiserChain(
-        ClipGrad(5.0),    # clip gradient norm at 5.0
-        WeightDecay(1e-6), # optional small L2 regularizer
-        ADAM(1e-4)        # smaller lr + larger eps for numerical stability
-    ),
-    n_epochs::Int=10,
-    batch_size::Int=32
+function get_individual_loss_values(
+    weights_c2v_v2c::Vector{Float32}, # learanble weights for computing m^t_(v→c) from m^(t-1)_(c→v).
+    weights_llrs::Vector{Float32}, # learnable weights for m^t_(v→c) from the initial LLRs, and also for computing the posterior LLRs from m^t_(c→v).
+    weights_c2v_readout::Vector{Float32}, # learnable weights for computing the readout (posterior LLRs) from m^t_(c→v).
+    correlation_importance::Float32, # importance of the correlation penalty in the Loss function, to be annealed during training.
+    loss_layer_regularizer::Float32, # temperature for the smooth minimum approximation when combining losses from different layers, to be annealed during training.
+    llr_certainty_importance::Float32, # term for ensuring that the LLRs have converged.
+    sparsity_importance::Float32, # term for encouraging sparsity in the LLRs, to be annealed during training.
+    warmup_loss_layers::Int, # first number of layers that should be excluded from the loss function.
+    base::NeuralBPBase, # constant parameters of the model, including the parity-check matrix, connectivity, correlation strengths, etc.
+    llrs_batch::Matrix{Float32}, # batch of initial LLRs for the bits, to be used as input to the network
+    syndromes_batch::BitMatrix, # batch of syndromes, to be used as input to the network
+    expected_recoveries::BitMatrix # batch of expected recoveries (error patterns), to be used for computing the Loss function
 )
     """
-    Train the NeuralBP model using the provided syndromes and expected recoveries.
-    The provided syndromes should be computed from the errors, which are provided as expected recoveries.
-    Arguments:
-    - `bpnn::NeuralBP`: The NeuralBP model to be trained.
-    - `syndromes::BitMatrix`: A matrix where each column represents a syndrome corresponding to an error pattern.
-    - `expected_recoveries::BitMatrix`: A matrix where each column represents the expected recovery (error pattern) corresponding to the syndrome.
-    - `initial_llrs::Matrix{Float32}`: Initial LLRs for the bits, to be used as input to the network (default: 1.0 since it is the LLR corresponding to the probability of the bit being 0 equal to 0.9).
-    - `optimizer`: The optimizer to use for training (default: ADAM).
-    - `n_epochs::Int`: The number of epochs. Each epoch goes through the entire dataset once (default: 10).
-    - `batch_size::Int`: The size of each batch for training (default: 32).
+    Compute the value of the Loss function for a given batch of data and given values for the weights.
+    This function is solely for debugging purposes. It provides the loss as a pair of numbers: (loss_syndrome, loss_correlations), where
+    loss_syndrome: is the part of the loss function that is responsible for enforcing syndrome contraints.
+    loss_correlations: is the part of the loss function that is responsible for encoding correlations.
     """
-    # Batch the training data: syndromes and expected recoveries, into batches.
-    # Each batch will be passed through the network as a Matrix.
-    # Each batch will be a tuple of (syndromes_batch, expected_recoveries_batch)
-    
-    # Split an array of 1:n_samples into batches of size batch_size
-    n_samples = size(syndromes, 2)
-    samples_grouped_by_batch = [
-        (i-1) * batch_size + 1 : min(i * batch_size, n_samples)
-        for i in 1:ceil(Int, n_samples / batch_size)
-    ]
-    # println("Samples grouped by batch: ", samples_grouped_by_batch)
-    # Create the training dataset as a vector of tuples
-    training_dataset = [
-        (
-            syndromes[1:end, batch_sample_indices],
-            expected_recoveries[1:end, batch_sample_indices],
-            repeat(bpnn.base.initial_llrs, 1, length(batch_sample_indices))
-        )
-        for batch_sample_indices in samples_grouped_by_batch
-    ]
+    # Forward pass through the network to get the posterior LLRs.
+    # Always use the CPU path: same reason as in get_loss_value — Metal GPU array
+    # allocation is non-differentiable and this function is also used in AD contexts.
+    posterior_llrs = forward_pass_with_weights(
+        weights_c2v_v2c,
+        weights_llrs,
+        weights_c2v_readout,
+        base,
+        llrs_batch,
+        syndromes_batch
+    )
 
-    # println("Starting training for $n_epochs epochs with batch size $batch_size... with training dataset of shape ", training_dataset)
+    parity_check_matrix_dual = base.parity_check_matrix_dual
+    connectivity = base.connectivity
+    correlation_strengths = base.correlation_strengths
+    is_correlated = base.is_correlated
 
-    # Set the trainable parameters
-    opt_state = Flux.setup(optimizer, bpnn)  # create optimiser state (tune lr as needed)
+    # Compute the loss from the syndrome and correlation parts individually.
+    n_layers::Int = size(posterior_llrs, 3) - warmup_loss_layers
+    # Record the syndrome loss, syndrome regularizer, the correlation loss, and the total loss separately per layer.
+    losses_per_layer = zeros(Float32, (n_layers, 4))
+    for layer in warmup_loss_layers:n_layers
+        post = posterior_llrs[:, :, layer]
+        # base_loss   = compute_quadratic_residue_loss_from_llrs(post, expected_recoveries, parity_check_matrix_dual)
+        base_loss   = compute_sine_residue_loss_from_llrs(post, expected_recoveries, parity_check_matrix_dual)
+        llr_reg     = syndrome_loss_regularizer(post) * tanh(layer / n_layers)
+        sparse_pen  = sparsity_penalty(post)
+        corr_pen    = is_correlated ? compute_additional_loss_from_ising_correlations(post, connectivity, correlation_strengths) : 0f0
 
-    # Create progress bar for epochs
-    epoch_progress = Progress(n_epochs, desc="Training Epochs: ")
-    
-    for epoch in 1:n_epochs
-        # Create progress bar for batches within each epoch
-        batch_progress = Progress(length(training_dataset), desc="Epoch $epoch Batches: ")
-
-        for b in 1:length(training_dataset)
-            # Create a random shuffle ordering of the syndromes and recoveries for each batch.
-            shuffled_indices = randperm(size(training_dataset[b][1], 2))
-
-            syndromes_train_batch = training_dataset[b][1][:, shuffled_indices]
-            expected_recoveries_batch = training_dataset[b][2][:, shuffled_indices]
-            llrs_batch = training_dataset[b][3][:, shuffled_indices]
-                
-            # compute loss and gradients in one shot
-            loss, grads = Flux.withgradient(bpnn) do model
-                posterior_llrs = forward_pass(bpnn, llrs_batch, syndromes_train_batch)
-                # compute_loss_error_from_llrs(posterior_llrs, expected_recoveries_batch, bpnn.parity_check_matrix_dual) #TODO: turn on the additional loss for correlations later.
-                compute_loss_including_correlations(
-                    posterior_llrs,
-                    expected_recoveries_batch,
-                    bpnn.base.parity_check_matrix_dual,
-                    bpnn.base.connectivity,
-                    bpnn.base.correlation_strengths,
-                    bpnn.base.is_correlated, #TODO: set explicitly to `false` for excluding correlations
-                    bpnn.weights_loss_layers,
-                    bpnn.correlation_importance,
-                    smooth_temp
-                )
-            end
-            # apply update. grads[1] contains gradients for the model
-            Flux.update!(opt_state, bpnn, grads[1])
-            
-            # Update batch progress bar with current loss
-            ProgressMeter.next!(batch_progress; showvalues = [(:loss, loss)])
-        end
+        # Record the individual losses
+        losses_per_layer[layer - warmup_loss_layers + 1, 1] = base_loss
+        losses_per_layer[layer - warmup_loss_layers + 1, 2] = llr_reg
+        losses_per_layer[layer - warmup_loss_layers + 1, 3] = corr_pen
+        losses_per_layer[layer - warmup_loss_layers + 1, 4] = sparse_pen
         
-        # Update epoch progress bar
-        ProgressMeter.next!(epoch_progress)
+        # Compute the total loss for the layer
+        loss_per_layer = base_loss + 
+                         llr_certainty_importance * llr_reg +
+                         correlation_importance * corr_pen +
+                         sparsity_importance * sparse_pen
+        
+        losses_per_layer[layer - warmup_loss_layers + 1, 4] = loss_per_layer
     end
+    # total_loss = softmin_loss(losses_per_layer[:, 4], loss_layer_regularizer)
+    total_loss = linear_ramp_loss(losses_per_layer[:, 4])
+    # total_loss = last_layer_only_loss(losses_per_layer[:, 4])
+    return (total_loss, losses_per_layer)
 end
-=#
+
+function compute_hyperparameters(epoch::Int, annealing_schedule::Dict)::Dict{Symbol, Float32}
+    """
+    Compute the hyperparameters for a given epoch based on the defined annealing schedules in `HP_SCHEDULES`.
+    """
+    loss_hyperparameters = Dict{Symbol, Float32}()
+    for (name, spec) in annealing_schedule
+        if spec["direction"] == "down"
+            loss_hyperparameters[Symbol(name)] = max(spec["min"], spec["max"] * spec["decay"]^(epoch - 1))
+        else  # :up — anneal from min toward max
+            loss_hyperparameters[Symbol(name)] = spec["max"] - (spec["max"] - spec["min"]) * spec["decay"]^(epoch - 1)
+        end
+    end
+    return loss_hyperparameters
+end
 
 function clip_grad!(grad_vector::AbstractArray{Float32}; max_grad_norm::Float32=5f0)
     """
@@ -147,32 +143,59 @@ end
 function train_neuralbp_enzyme!(
     bpnn::NachmaniNeuralBP,
     syndromes::BitMatrix,
-    expected_recoveries::BitMatrix;
-    learning_rate::Float32 = 1f-4, # learning rate for simple SGD
-    n_epochs::Int = 10,
-    batch_size::Int = 32,
-    max_grad_norm::Float32 = 5f0 # maximum gradient norm for clipping
+    expected_recoveries::BitMatrix,
+    hyperparameters::Dict;
+    debugging_logfile::String=""
 )
     """
     Train the NeuralBP model using the provided syndromes and expected recoveries.
-    We will use Enzyme.jl for automatic differentiation of the loss function with respect to the model parameters.
-    
-    The Loss function per layer for training can be expressed in two parts: L_layer = L_syn + α L_corr,
-    where
-    - L_syn is the part of the Loss that penalizes the model for not producing the correct syndrome, and logical errors.
-    - L_corr is the part of the Loss that penalizes the model for not capturing the correlations between qubits.
-    - α is a hyperparameter that controls the importance of the correlation penalty (given by `correlation_importance`)
+    We use Enzyme.jl for AD of the loss w.r.t. the model parameters, and an
+    `Optimisers.jl` optimizer chain (gradient-clip → Adam/AdamW) for updates.
 
-    At the beginning of the training, the model chooses errors that largely violate the syndrome constraints, and here the training is largerly clueless about the error patterns,
-    so we want to use the noise dynamics to guide the training by focusing on minimizing L_corr. In other words, we want to start with a large value of α.
+    Annealing intent (see also `compute_hyperparameters`):
+    - Early on, the network is clueless and the syndrome objective is uninformative;
+      use the channel's correlation prior heavily (large `correlation_importance`).
+    - As training progresses, the syndrome term becomes informative; anneal the
+      correlation weight down so it becomes a tie-breaker rather than a forcing
+      constraint.
+    - The per-layer combiner currently uses `linear_ramp_loss` (late layers
+      weighted more); the `loss_layer_temperature` hyperparameter is retained
+      for compatibility with the soft-min combiner and is annealed even though
+      the linear ramp doesn't consume it.
 
-    As the training progresses, the model starts to learn to satisfy the syndrome constraints, and here we want to focus more on minimizing L_syn to further improve the performance, so we want to anneal α down to a smaller value.
-
-    Ideally we want BP to stop at any layer that results in the minimum Loss. To achieve this, we use a smooth minimum approximation to combine the Loss values from different layers, which allows the gradients to flow to all layers while still encouraging the model to focus on the layer with the lowest Loss.
-    The temperature for the smooth minimum approximation is annealed during training to encourage sharper minima as training progresses.
+    Robustness against numerical instability:
+    - Each batch's gradients are checked for NaN/Inf BEFORE the optimizer step.
+      If non-finite, the batch is skipped — no update to weights, no update to
+      Adam state. This is the cheapest defense against the optimizer state being
+      poisoned by a bad gradient (which would NaN every subsequent batch too).
+    - At the start of each epoch, `bpnn` weights and `opt_state` are deep-copied
+      into a checkpoint. If `nan_skip_count > max_nan_skips_per_epoch` by the
+      end of the epoch, the checkpoint is restored — the epoch is "rolled back"
+      and training continues from where it was at the start of the epoch.
+    - `adam_eps` is set to 1e-4 by default (vs the typical 1e-8) which removes
+      a dominant source of NaN updates in BP-style decoders where some weights'
+      gradients can be near-zero for a long time.
     """
     base = bpnn.base
-
+    # Hyperparameters for training
+    n_epochs = hyperparameters["n_epochs"]
+    batch_size = hyperparameters["batch_size"]
+    learning_rate = hyperparameters["learning_rate"]
+    weight_decay = hyperparameters["weight_decay"]
+    max_grad_norm = hyperparameters["max_grad_norm"]
+    adam_eps = hyperparameters["adam_eps"]
+    max_nan_skips_per_epoch = hyperparameters["nanskip"]
+    warmup_loss_layers = hyperparameters["warmup_layers"]
+    annealing_schedule = Dict(
+        key => hyperparameters[key]
+        for key in [
+            "loss_layer_temperature",
+            "correlation_importance",
+            "llr_certainty_importance",
+            "sparsity_importance"
+        ]
+    )
+    
     # ---------------------------------
     # Create batches
     # ---------------------------------
@@ -191,19 +214,7 @@ function train_neuralbp_enzyme!(
         )
         for idx in samples_grouped_by_batch
     ]
-    
 
-    # Annealing schedule parameters for the temperature of the smooth minimum approximation when combining losses from different layers.
-    layer_temp_max::Float32 = 5f-0
-    layer_temp_min::Float32 = 3f-1
-    layer_temp_decay::Float32 = 0.9f0 # decay factor for the annealing schedule of the temperature for the smooth minimum approximation.
-
-    # Annealing schedule parameters for the importance of the correlation penalty in the Loss function.
-    correlation_importance_max::Float32 = 1f0
-    correlation_importance_min::Float32 = 1f-3
-    correlation_importance_decay::Float32 = 0.1f0 # decay factor for the annealing schedule of the correlation importance in the Loss function.
-
-    #=
     # --------------------------
     # Debugging: log the individual losses for samples and epochs.
     n_samples_to_log = n_epochs * length(training_dataset)
@@ -212,7 +223,10 @@ function train_neuralbp_enzyme!(
         sample = zeros(Int, n_samples_to_log),
         loss_layer_temp = zeros(Float32, n_samples_to_log),
         correlation_importance = zeros(Float32, n_samples_to_log),
+        llr_certainty_importance = zeros(Float32, n_samples_to_log),
+        sparsity_importance = zeros(Float32, n_samples_to_log),
         loss = zeros(Float32, n_samples_to_log),
+        nan_skip_count = zeros(Int, n_samples_to_log),
         min_weight_c2v_v2c = zeros(Float32, n_samples_to_log),
         max_weight_c2v_v2c = zeros(Float32, n_samples_to_log),
         median_weight_c2v_v2c = zeros(Float32, n_samples_to_log),
@@ -223,19 +237,50 @@ function train_neuralbp_enzyme!(
         max_weight_c2v_readout = zeros(Float32, n_samples_to_log),
         median_weight_c2v_readout = zeros(Float32, n_samples_to_log)
     )
-    # --------------------------
-    =#
+    n_layers = bpnn.base.n_layers - warmup_loss_layers
+    individual_losses_log = DataFrame(
+        :epoch => zeros(Int, n_samples_to_log),
+        :batch => zeros(Int, n_samples_to_log),
+        :layers => zeros(Int, n_samples_to_log),
+        :base_loss => ["" for _ in 1:n_samples_to_log],
+        :syndrome_regularizer => ["" for _ in 1:n_samples_to_log],
+        :correlation_penalty => ["" for _ in 1:n_samples_to_log],
+        :loss_at_layer => ["" for _ in 1:n_samples_to_log],
+        :total_loss => zeros(Float32, n_samples_to_log)
+    )
+    # -------------------------
+
+    # -------------------------
+    # Optimizer setup
+    # -------------------------
+    # Pick Adam vs AdamW based on whether the user specified a non-zero
+    # weight_decay. Both wrap inside an OptimiserChain that does gradient-norm
+    # clipping first, then the adaptive update.
+    inner_opt = if weight_decay > 0f0
+        AdamW(learning_rate, (0.9f0, 0.999f0), weight_decay)
+    else
+        Adam(learning_rate, (0.9f0, 0.999f0), adam_eps)
+    end
+    opt_rule  = OptimiserChain(ClipGrad(max_grad_norm), inner_opt)
+    opt_state = Optimisers.setup(opt_rule, bpnn)
 
     # -------------------------
     # Progress bars
     # -------------------------
-    # epoch_progress = Progress(n_epochs, desc="Training Epochs: ")
+    epoch_progress = Progress(n_epochs, desc="Training Epochs: ")
 
     for epoch in 1:n_epochs
-        # batch_progress = Progress(length(training_dataset), desc="Epoch $epoch Batches: ")
-        
-        bpnn.loss_layer_regularizer[1] = max(layer_temp_min, layer_temp_max * layer_temp_decay^(epoch - 1))
-        bpnn.correlation_importance[1] = max(correlation_importance_min, correlation_importance_max * correlation_importance_decay^(epoch - 1))
+        batch_progress = Progress(length(training_dataset), desc="Epoch $epoch Batches: ")
+
+        hp = compute_hyperparameters(epoch, annealing_schedule)
+
+        # -------------------------
+        # Per-epoch checkpoint — restored at end-of-epoch if too many batches
+        # are skipped due to NaN/Inf gradients.
+        # -------------------------
+        bpnn_checkpoint      = deepcopy(bpnn)
+        opt_state_checkpoint = deepcopy(opt_state)
+        nan_skip_count       = 0
 
         for b in 1:length(training_dataset)
 
@@ -254,91 +299,216 @@ function train_neuralbp_enzyme!(
             grad_w_c2v_v2c = zeros(Float32, length(bpnn.weights_c2v_v2c))
             grad_w_llrs    = zeros(Float32, length(bpnn.weights_llrs))
             grad_w_readout = zeros(Float32, length(bpnn.weights_c2v_readout))
-            
+
             # -------------------------
             # Enzyme autodiff
             # -------------------------
-            loss = Enzyme.autodiff(
-                Enzyme.Reverse,
+            (_, loss_value) = Enzyme.autodiff(
+                Enzyme.ReverseWithPrimal,
                 get_loss_value,
-                # arguments for which we want gradients:
+                # Arguments for which we want gradients:
                 Enzyme.Duplicated(bpnn.weights_c2v_v2c, grad_w_c2v_v2c),
                 Enzyme.Duplicated(bpnn.weights_llrs, grad_w_llrs),
                 Enzyme.Duplicated(bpnn.weights_c2v_readout, grad_w_readout),
-                # constant arguments:
-                Enzyme.Const(bpnn.correlation_importance),
-                Enzyme.Const(bpnn.loss_layer_regularizer),
+                # Constant arguments:
+                Enzyme.Const(hp[:correlation_importance]),
+                Enzyme.Const(hp[:loss_layer_temperature]),
+                Enzyme.Const(hp[:llr_certainty_importance]),
+                Enzyme.Const(hp[:sparsity_importance]),
+                Enzyme.Const(warmup_loss_layers),
                 Enzyme.Const(base),
                 Enzyme.Const(llrs_batch),
                 Enzyme.Const(syndromes_batch),
                 Enzyme.Const(expected_batch)
             )
 
-            #=
-            println("Gradients computed for batch $b in epoch $epoch:")
-            println("  grad_w_c2v_v2c norm = ", norm(grad_w_c2v_v2c))
-            println("  grad_w_llrs norm = ", norm(grad_w_llrs))
-            println("  grad_w_readout norm = ", norm(grad_w_readout))
-            # println("  grad_w_loss norm = ", norm(grad_w_loss))
-            =#
+            # -------------------------
+            # NaN / Inf guard — skip the optimizer step entirely if any
+            # gradient component is non-finite. This preserves the last
+            # known-good Adam state and the last known-good weights.
+            # -------------------------
+            grads_finite = all(isfinite, grad_w_c2v_v2c) &&
+                           all(isfinite, grad_w_llrs)    &&
+                           all(isfinite, grad_w_readout)
 
-            # -------------------------
-            # Gradient clipping
-            # -------------------------
-            clip_grad!(grad_w_c2v_v2c; max_grad_norm=max_grad_norm)
-            clip_grad!(grad_w_llrs; max_grad_norm=max_grad_norm)
-            clip_grad!(grad_w_readout; max_grad_norm=max_grad_norm)
-            
-            # -------------------------
-            # Gradient step (simple SGD for now)
-            # -------------------------
-            @. bpnn.weights_c2v_v2c -= learning_rate * grad_w_c2v_v2c
-            @. bpnn.weights_llrs    -= learning_rate * grad_w_llrs
-            @. bpnn.weights_c2v_readout -= learning_rate * grad_w_readout
-            
+            if !grads_finite
+                nan_skip_count += 1
+                @warn "Non-finite gradient at epoch=$epoch batch=$b — skipping update." nan_skip_count
+                ProgressMeter.next!(batch_progress; showvalues = [(:loss, NaN32), (:nan_skips, nan_skip_count)])
+
+                # If too many batches have been skipped in this epoch due to NaN/Inf gradients, we break out of the batch loop early to trigger the epoch rollback at the end of the epoch.
+                if nan_skip_count > max_nan_skips_per_epoch
+                    @warn """
+                    Epoch $epoch: $nan_skip_count batches skipped due to non-finite gradients.
+                    If this persists, consider:
+                    - Lowering `learning_rate`
+                    - Raising `adam_eps`
+                    - Tightening `max_grad_norm`
+                    """
+                    break
+                end
+
+                continue
+            end
+
             # -------------------------
             # Progress update
             # -------------------------
-            current_loss = get_loss_value(
+            (aggregate_loss, individual_losses) = get_individual_loss_values(
                 bpnn.weights_c2v_v2c,
                 bpnn.weights_llrs,
                 bpnn.weights_c2v_readout,
-                bpnn.correlation_importance,
-                bpnn.loss_layer_regularizer,
+                hp[:correlation_importance],
+                hp[:loss_layer_temperature],
+                hp[:llr_certainty_importance],
+                hp[:sparsity_importance],
+                warmup_loss_layers,
                 base,
                 llrs_batch,
                 syndromes_batch,
                 expected_batch
             )
-            # ProgressMeter.next!(batch_progress; showvalues = [(:loss, current_loss)])
+            
+            # -------------------------
+            # Adaptive Gradient Step (Adam / AdamW + ClipGrad)
+            # -------------------------
+            grads = (
+                weights_c2v_v2c     = grad_w_c2v_v2c,
+                weights_llrs        = grad_w_llrs,
+                weights_c2v_readout = grad_w_readout
+            )
+            (opt_state, bpnn) = Optimisers.update!(opt_state, bpnn, grads)
+            # -------------------------
 
-            #=
+            ProgressMeter.next!(batch_progress; showvalues = [(:loss, aggregate_loss), (:nan_skips, nan_skip_count)])
+
             # --------------------------------------------------
             # Log the hyperparameters and loss for this batch and epoch for debugging and visualization later.
-            hyperparameters[(epoch - 1) * length(training_dataset) + b, :epoch] = epoch
-            hyperparameters[(epoch - 1) * length(training_dataset) + b, :sample] = b
-            hyperparameters[(epoch - 1) * length(training_dataset) + b, :loss_layer_temp] = bpnn.loss_layer_regularizer[1]
-            hyperparameters[(epoch - 1) * length(training_dataset) + b, :correlation_importance] = bpnn.correlation_importance[1]
-            hyperparameters[(epoch - 1) * length(training_dataset) + b, :loss] = current_loss
-            hyperparameters[(epoch - 1) * length(training_dataset) + b, :min_weight_c2v_v2c] = minimum(bpnn.weights_c2v_v2c)
-            hyperparameters[(epoch - 1) * length(training_dataset) + b, :max_weight_c2v_v2c] = maximum(bpnn.weights_c2v_v2c)
-            hyperparameters[(epoch - 1) * length(training_dataset) + b, :median_weight_c2v_v2c] = median(bpnn.weights_c2v_v2c)
-            hyperparameters[(epoch - 1) * length(training_dataset) + b, :min_weight_llrs] = minimum(bpnn.weights_llrs)
-            hyperparameters[(epoch - 1) * length(training_dataset) + b, :max_weight_llrs] = maximum(bpnn.weights_llrs)
-            hyperparameters[(epoch - 1) * length(training_dataset) + b, :median_weight_llrs] = median(bpnn.weights_llrs)
-            hyperparameters[(epoch - 1) * length(training_dataset) + b, :min_weight_c2v_readout] = minimum(bpnn.weights_c2v_readout)
-            hyperparameters[(epoch - 1) * length(training_dataset) + b, :max_weight_c2v_readout] = maximum(bpnn.weights_c2v_readout)
-            hyperparameters[(epoch - 1) * length(training_dataset) + b, :median_weight_c2v_readout] = median(bpnn.weights_c2v_readout)
+            index = (epoch - 1) * length(training_dataset) + b
+            hyperparameters[index, :epoch] = epoch
+            hyperparameters[index, :sample] = b
+            hyperparameters[index, :loss_layer_temp] = hp[:loss_layer_temperature]
+            hyperparameters[index, :correlation_importance] = hp[:correlation_importance]
+            hyperparameters[index, :llr_certainty_importance] = hp[:llr_certainty_importance]
+            hyperparameters[index, :sparsity_importance] = hp[:sparsity_importance]
+            hyperparameters[index, :loss] = aggregate_loss
+            hyperparameters[index, :nan_skip_count] = nan_skip_count
+            hyperparameters[index, :min_weight_c2v_v2c] = minimum(bpnn.weights_c2v_v2c)
+            hyperparameters[index, :max_weight_c2v_v2c] = maximum(bpnn.weights_c2v_v2c)
+            hyperparameters[index, :median_weight_c2v_v2c] = median(bpnn.weights_c2v_v2c)
+            hyperparameters[index, :min_weight_llrs] = minimum(bpnn.weights_llrs)
+            hyperparameters[index, :max_weight_llrs] = maximum(bpnn.weights_llrs)
+            hyperparameters[index, :median_weight_llrs] = median(bpnn.weights_llrs)
+            hyperparameters[index, :min_weight_c2v_readout] = minimum(bpnn.weights_c2v_readout)
+            hyperparameters[index, :max_weight_c2v_readout] = maximum(bpnn.weights_c2v_readout)
+            hyperparameters[index, :median_weight_c2v_readout] = median(bpnn.weights_c2v_readout)
+
+            # Log the individual Losses
+            individual_losses_log[index, :epoch] = epoch
+            individual_losses_log[index, :batch] = b
+            individual_losses_log[index, :layers] = n_layers
+
+            base_losses = join(["$(individual_losses[layer, 1])" for layer in 1:n_layers], ",")
+            individual_losses_log[index, :base_loss] = base_losses
+
+            syndrome_regularizers = join(["$(individual_losses[layer, 2])" for layer in 1:n_layers], ",")
+            individual_losses_log[index, :syndrome_regularizer] = syndrome_regularizers
+
+            correlation_penalties = join(["$(individual_losses[layer, 3])" for layer in 1:n_layers], ",")
+            individual_losses_log[index, :correlation_penalty] = correlation_penalties
+
+            loss_at_layer = join(["$(individual_losses[layer, 4])" for layer in 1:n_layers], ",")
+            individual_losses_log[index, :loss_at_layer] = loss_at_layer
+
+            individual_losses_log[index, :total_loss] = aggregate_loss
             # --------------------------------------------------
-            =#
         end
 
-        # ProgressMeter.next!(epoch_progress)
+        # -------------------------
+        # End-of-epoch rollback if the epoch was unstable.
+        # We restore weights in-place (so the caller's `bpnn` reference still
+        # points at the rolled-back model) and deep-copy the opt_state back.
+        # -------------------------
+        if nan_skip_count > max_nan_skips_per_epoch
+            bpnn.weights_c2v_v2c     .= bpnn_checkpoint.weights_c2v_v2c
+            bpnn.weights_llrs        .= bpnn_checkpoint.weights_llrs
+            bpnn.weights_c2v_readout .= bpnn_checkpoint.weights_c2v_readout
+            opt_state = deepcopy(opt_state_checkpoint)
+        end
+
+        ProgressMeter.next!(epoch_progress; showvalues = [(:nan_skips_this_epoch, nan_skip_count)])
     end
 
     # Debugging: write the hyperparameters and loss values into a file for visualization later.
-    # CSV.write("./../data/15q_Hamm_code_data_10000_train/training_log.csv", hyperparameters)
+    CSV.write("$(debugging_logfile).csv", hyperparameters)
+    CSV.write("$(debugging_logfile)_individual_losses.csv", individual_losses_log)
 
+    return bpnn
+end
+
+function train_Nachmani_neuralbp(
+    base::NeuralBPBase,
+    training_errors_file::String,
+    hyperparameters::Dict=Dict(); # Hyperparameters for training the Neural BP model
+    initial_conditions::Dict=Dict(),
+    prefix::String="./../data"
+)
+    """
+    Train a Neural Belief Propagation decoder for the given parity-check matrix.
+    The trained model consists of weights (coefficients) for each pair of connected neurons in the neural BP network.
+    We will save the weights into a file for later use.
+    If this weights file already exists, we will load the weights from the file instead of training a new model.
+    """
+    
+    # Create the models and results directories if they don't exist
+    models_dir = "$(prefix)/models"
+    if !isdir(models_dir)
+        mkdir(models_dir)
+    end
+    
+    # Load the base BP model and the neural BP model with randomly initialized weights.
+    if length(initial_conditions) == 0
+        initial_conditions = Dict(String, Vector{Float32})(
+            "weights_c2v_v2c" => random_values_around_one([base.nb_weights_c2v_v2c * base.n_layers]; scale=0.1f0),
+            "weights_llrs" => random_values_around_one([base.code_n_bits * base.n_layers]; scale=0.1f0),
+            "weights_c2v_readout" => random_values_around_one([base.nb_weights_c2v_readout]; scale=0.1f0)
+        )
+    end
+    bpnn = NachmaniNeuralBP(
+        base,
+        weights_c2v_v2c=initial_conditions["weights_c2v_v2c"],
+        weights_llrs=initial_conditions["weights_llrs"],
+        weights_c2v_readout=initial_conditions["weights_c2v_readout"]
+    )
+    
+    # Extract the name of the training file name to include in the weights file name for clarity on what data the model was trained on.
+    # We only want the filename without the path and extension.
+    # For example, if the training file is `data/hamming/training_data.txt`, we want to extract `training_data`.
+    training_source = splitext(basename(training_errors_file))[1]
+    # Check if the weights file already exists
+    n_epochs = hyperparameters["n_epochs"]
+    weights_filename = "$(models_dir)/neuralbp_weights_nlayers_$(base.n_layers)_epochs_$(n_epochs)_trained_using_$(training_source).json"
+    if isfile(weights_filename) && !hyperparameters["retrain"]
+        # println("Loading existing weights from file: $weights_filename")
+        bpnn = load_trained_neuralbp_model(weights_filename, bpnn)
+    else
+        # Read errors from the training errors file
+        expected_recoveries = convert.(Bool, readdlm(training_errors_file, Int))
+        # Compute the syndromes for the training errors
+        training_syndromes = convert.(Bool, mod.(base.parity_check_matrix * expected_recoveries, 2))
+        
+        # Train the Neural BP model
+        train_neuralbp_enzyme!(
+            bpnn, 
+            training_syndromes, 
+            expected_recoveries, 
+            hyperparameters;
+            debugging_logfile="$(prefix)/models/debugging_$(training_source)"
+        )
+
+        # Save the trained weights to a file
+        save_trained_neuralbp_model(weights_filename, bpnn)
+    end
     return bpnn
 end
 

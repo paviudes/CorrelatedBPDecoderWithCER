@@ -6,14 +6,16 @@ module CorrelatedBPDecoderWithCER
 
 # Core Julia packages
 using LinearAlgebra     # Matrix operations, decompositions, linear algebra functions
-using SparseArrays     # Sparse matrix representations for efficiency
-using Base.Threads           # Multi-threading for parallel computations
+using SparseArrays      # Sparse matrix representations for efficiency
+using Base.Threads      # Multi-threading for parallel computations
 BLAS.set_num_threads(Threads.nthreads()) # Set BLAS to use the same number of threads as Julia
 using Random            # Random number generation for error sampling and initialization
 using JSON              # Reading/writing JSON configuration and data files
+using TOML              # TOML file parsing for configuration management
 using DelimitedFiles    # File I/O for CSV-like data formats
 using CSV               # CSV file reading and writing
 using ProgressMeter     # Progress bars for training and other long operations
+using ArgParse          # Command-line argument parsing for flexible execution
 
 
 # GPU acceleration (conditionally loaded based on environment variable)
@@ -95,11 +97,11 @@ export BPSettings, print_bp_settings, belief_propagation_decoder,
 
 # Command line interface
 include("command_line.jl")
-export parse_command_line_args_BP, parse_command_line_args_NN, print_arguments, generate_runs
+export parse_command_line_args_BP, parse_command_line_args_NN, print_arguments, generate_runs, parse_hyper_parameters
 
 # Neural belief propagation
 include("neuralbase.jl")
-export NeuralBPBase, NeuralBP, add_soft_constraints_to_neuralbpbase, parse_correlation_strengths_connectivity
+export NeuralBPBase, NeuralBP, add_soft_constraints_to_neuralbpbase, parse_cer_data
 
 # Nachmani Neural BP model
 include("nachmani.jl")
@@ -118,7 +120,7 @@ export print_neuralbp_info, print_neuralbp_summary
 
 # Load and save Neural BP models
 include("log_model.jl")
-export load_trained_neuralbp_model, save_trained_neuralbp_model
+export load_trained_neuralbp_model, save_trained_neuralbp_model, load_base_BP_model
 
 # Extraction and saving/loading of weights for BP
 include("nbp_weights.jl")
@@ -127,16 +129,16 @@ export save_trained_weights, extract_weights_for_BP, save_extracted_weights_for_
 
 # Loss functions
 include("loss.jl")
-export compute_loss_error_from_llrs, compute_additional_loss_from_ising_correlations, 
-       compute_loss_including_correlations
+export compute_additional_loss_from_ising_correlations, compute_loss_including_correlations, linear_ramp_loss,
+       compute_quadratic_residue_loss_from_llrs, syndrome_loss_regularizer, sparsity_penalty, compute_sine_residue_loss_from_llrs
 
 # Training routines
 include("train.jl")
-export train_neuralbp!, train_neuralbp_enzyme!, generate_training_data
+export train_neuralbp!, train_neuralbp_enzyme!, generate_training_data, train_Nachmani_neuralbp
 
 # Predictions with trained models
 include("predict.jl")
-export predict_neuralbp, check_bp_solutions, predict_and_check_neuralbp
+export predict_neuralbp, check_bp_solutions, predict_and_check_neuralbp, neuralbp_test_predictions
 
 # Utility functions
 include("utils.jl")

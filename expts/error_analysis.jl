@@ -49,8 +49,8 @@ function count_error_weights(errors_filenames::Vector{String}; prefix::String=""
             weight_counts_df[i, Symbol("weight_$w")] = error_weight_counts[i][w + 1]
         end
     end
-    println("Weight counts DataFrame:")
-    println(weight_counts_df)
+    # println("Weight counts DataFrame:")
+    # println(weight_counts_df)
     
     # Save the counts in a CSV file
     CSV.write(weight_distribution_filename, weight_counts_df)
@@ -102,10 +102,10 @@ function plot_error_weight_distribution(weight_distribution_filename::String)
     colors = [:blue, :orange, :green, :red, :purple, :brown, :pink, :gray, :cyan, :magenta]
     
     for i in 1:nrow(weight_counts_df)
-        println("Plotting file: ", weight_counts_df[i, :filename])
-        println("Error weights: ", error_weights)
+        # println("Plotting file: ", weight_counts_df[i, :filename])
+        # println("Error weights: ", error_weights)
         counts = [weight_counts_df[i, Symbol("weight_$w")] for w in error_weights]
-        println("Counts: ", counts)
+        # println("Counts: ", counts)
         bar!(
             plt,
             error_weights,
@@ -125,8 +125,8 @@ function main()
     """
     Main function to count error weights and plot the distribution for a given errors file.
     """
-    prefix = "./../data/15q_Hamm_code_data_10000_train"
-    errors_filename = ["test_ballistic_p_0.006_q_0.1_s_$(sample).txt" for sample in 1:10]
+    prefix = "./../data/90q_BB_p_0.008_q_0.2_std_0.2_data"
+    errors_filename = ["test_ballistic_p_0.008_q_0.2_s_$(sample).txt" for sample in 1:10]
     weight_distribution_filename = count_error_weights(errors_filename; prefix=prefix)
     plot_error_weight_distribution(weight_distribution_filename)
 end

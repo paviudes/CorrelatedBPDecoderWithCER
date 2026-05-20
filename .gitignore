@@ -37,4 +37,4 @@ Manifest.toml  # optional: ignore if you want others to resolve deps themselves
 # Backup files
 *.bak
 *.swp
-*.swo
+*.swo.claude/

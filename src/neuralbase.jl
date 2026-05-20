@@ -232,40 +232,93 @@ struct NeuralBPBase <: NeuralBP
     end
 end
 
-function parse_correlation_strengths_connectivity(correlation_strengths_file::String)::Tuple{Matrix{Int}, Vector{Float32}}
+function parse_cer_data(correlation_strengths_file::String)::Tuple{Matrix{Int}, Vector{Float32}, Dict{Int, Float32}}
     """
     Parse the correlation strengths and connectivity from a file.
-    The file should contain one line to describe an edge between two qubits, and a weight for that edge.
+    Each line of the file should be one of the two formats:
+    index : value
+    where index is a qubit index (integer) and value is the corresponding correlation strength (float), or
+    (index1, index2) : value
+    where index1 and index2 are the indices of two qubits (integers) specifying an edge between two qubits, and `value` is the weight for that edge.
     For instance, here are a few lines of the file:
+    1 : 0.1
     (1, 29) : 0.005851149427861176
+    2 : 0.2
     (1, 2) : 0.0063269667097774155
     (1, 30) : 0.006204408265565164
     (2, 3) : 0.006110318845201687
+    4 : 0.05
     (2, 1) : 0.0063269667097774155
     (2, 31) : 0.005576402801319799
     (3, 2) : 0.006110318845201688
+    6 : 0.15
 
-    We need to parse this file to extract the connectivity matrix and the correlation strengths vector.
-    The connectivity matrix is a two-column matrix where each row corresponds to an edge between two qubits.
-    The correlation strengths vector is a vector where each element corresponds to the weight of the edge between the two qubits.
+    We need to parse this file to extract
+    - the connectivity matrix: two-column matrix where each row corresponds to an edge between two qubits
+    - the correlation strengths: vector where each element corresponds to the weight of the edge between the two qubits (same order as the rows of the connectivity matrix)
+    - single qubit error rates: dictionary where each key is a qubit index and the value is the error rate of that qubit
+    
+    Parse the correlation strengths and connectivity from a file.
+    Each line of the file should be one of the two formats:
+    index : value
+    where index is a qubit index (integer) and value is the corresponding correlation strength (float), or
+    (index1, index2) : value
+    where index1 and index2 are the indices of two qubits (integers) specifying an edge between two qubits, and `value` is the weight for that edge.
+    
+    For instance, here are a few lines of the file:
+    1 : 0.1
+    (1, 29) : 0.005851149427861176
+    2 : 0.2
+    (1, 2) : 0.0063269667097774155
+    (1, 30) : 0.006204408265565164
+    (2, 3) : 0.006110318845201687
+    4 : 0.05
+    (2, 1) : 0.0063269667097774155
+    (2, 31) : 0.005576402801319799
+    (3, 2) : 0.006110318845201688
+    6 : 0.15
+
+    We need to parse this file to extract
+    - the connectivity matrix: two-column matrix where each row corresponds to an edge between two qubits
+    - the correlation strengths: vector where each element corresponds to the weight of the edge between the two qubits (same order as the rows of the connectivity matrix)
+    - single qubit error rates: dictionary where each key is a qubit index and the value is the error rate of that qubit
     """
     connectivity = Vector{Tuple{Int, Int}}(undef, 0)
     correlation_strengths = Vector{Float32}(undef, 0)
+    single_qubit_error_rates = Dict{Int, Float32}()
     open(correlation_strengths_file, "r") do io
         for line in eachline(io)
             # Parse the line to extract the qubits and the correlation strength.
-            # The line is of the form "(1, 29) : 0.005851149427861176"
-            # We can use a regular expression to extract the qubits and the correlation strength.
-            m = match(r"\((\d+), (\d+)\) : ([\d\.]+)", line)
-            if m !== nothing
-                qubit1 = parse(Int, m.captures[1])
-                qubit2 = parse(Int, m.captures[2])
-                strength = parse(Float32, m.captures[3])
-                push!(connectivity, (qubit1, qubit2))
-                push!(correlation_strengths, strength)
+            # Either
+            # (a): The line is of the form "1 : 0.1"
+            # or
+            # (b): The line is of the form "(1, 29) : 0.005851149427861176"
+            # We can distinguish between these two cases by checking if the line contains a "(*, *)" regex pattern.
+            case_a = occursin(r"^\d+\s*:\s*[\d\.]+", line)
+            case_b = occursin(r"^\(\d+,\s*\d+\)\s*:\s*[\d\.]+", line)
+            if case_a
+                # Case (a)
+                m = match(r"(\d+) : ([\d\.]+)", line)
+                if m !== nothing
+                    qubit = parse(Int, m.captures[1])
+                    error_rate = parse(Float32, m.captures[2])
+                    single_qubit_error_rates[qubit] = error_rate
+                end
+            elseif case_b
+                # Case (b)
+                m = match(r"\((\d+), (\d+)\) : ([\d\.]+)", line)
+                if m !== nothing
+                    qubit1 = parse(Int, m.captures[1])
+                    qubit2 = parse(Int, m.captures[2])
+                    strength = parse(Float32, m.captures[3])
+                    push!(connectivity, (qubit1, qubit2))
+                    push!(correlation_strengths, strength)
+                end
+            else
+                @warn "Line in correlation strengths file does not match expected format: $line"
             end
         end
     end
     connectivity_matrix = hcat([c[1] for c in connectivity], [c[2] for c in connectivity])
-    return connectivity_matrix, correlation_strengths
+    return (connectivity_matrix, correlation_strengths, single_qubit_error_rates)
 end

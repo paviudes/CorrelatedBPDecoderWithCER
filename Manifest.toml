@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "3f682329833614a86d167030c67cdc4cf9a22dc3"
+project_hash = "2e3ee2966e80a4b20076ff09567d90700152c521"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -116,6 +116,12 @@ git-tree-sha1 = "01b8ccb13d68535d73d2b0c23e39bd23155fb712"
 uuid = "13072b0f-2c55-5437-9ae7-d433b7a33950"
 version = "1.1.0"
 
+[[deps.BFloat16s]]
+deps = ["LinearAlgebra", "Printf", "Random"]
+git-tree-sha1 = "e386db8b4753b42caac75ac81d0a4fe161a68a97"
+uuid = "ab4f0b2a-ad5b-11e8-123f-65d77653426b"
+version = "0.6.1"
+
 [[deps.BangBang]]
 deps = ["Accessors", "ConstructionBase", "InitialValues", "LinearAlgebra"]
 git-tree-sha1 = "a49f9342fc60c2a2aaa4e0934f06755464fcf438"
@@ -202,6 +208,12 @@ deps = ["InteractiveUtils", "UUIDs"]
 git-tree-sha1 = "b7231a755812695b8046e8471ddc34c8268cbad5"
 uuid = "da1fd8a2-8d9e-5ec2-8556-3022fb5608a2"
 version = "3.0.0"
+
+[[deps.CodecBzip2]]
+deps = ["Bzip2_jll", "TranscodingStreams"]
+git-tree-sha1 = "84990fa864b7f2b4901901ca12736e45ee79068c"
+uuid = "523fee87-0ab8-5b00-afb7-3ecf72e48cfd"
+version = "0.8.5"
 
 [[deps.CodecZlib]]
 deps = ["TranscodingStreams", "Zlib_jll"]
@@ -607,6 +619,18 @@ git-tree-sha1 = "b7bfd56fa66616138dfe5237da4dc13bbd83c67f"
 uuid = "0656b61e-2033-5cc2-a64a-77c0f6c09b89"
 version = "3.4.1+0"
 
+[[deps.GPUArrays]]
+deps = ["Adapt", "GPUArraysCore", "KernelAbstractions", "LLVM", "LinearAlgebra", "Printf", "Random", "Reexport", "ScopedValues", "Serialization", "SparseArrays", "Statistics"]
+git-tree-sha1 = "34fd745547978beb471f029f447290ef4dbc7bbd"
+uuid = "0c68f7d7-f131-5f86-a1c3-88cf8149b2d7"
+version = "11.5.3"
+
+    [deps.GPUArrays.extensions]
+    JLD2Ext = "JLD2"
+
+    [deps.GPUArrays.weakdeps]
+    JLD2 = "033835bb-8acc-5ee8-8aae-3f567f8a3819"
+
 [[deps.GPUArraysCore]]
 deps = ["Adapt"]
 git-tree-sha1 = "83cf05ab16a73219e5f6bd1bdfa9848fa24ac627"
@@ -618,6 +642,12 @@ deps = ["ExprTools", "InteractiveUtils", "LLVM", "Libdl", "Logging", "Precompile
 git-tree-sha1 = "fedfe5e7db7035271c3f58359007f971da1dde87"
 uuid = "61eb1bfa-7361-4325-ad38-22787b887f55"
 version = "1.9.1"
+
+[[deps.GPUToolbox]]
+deps = ["LLVM"]
+git-tree-sha1 = "a589b6c1a0eff953571f5d8b0474f5020831114d"
+uuid = "096a3bc2-3ced-46d0-87f4-dd12716f4bfc"
+version = "1.1.1"
 
 [[deps.GR]]
 deps = ["Artifacts", "Base64", "DelimitedFiles", "Downloads", "GR_jll", "HTTP", "JSON", "Libdl", "LinearAlgebra", "Preferences", "Printf", "Qt6Wayland_jll", "Random", "Serialization", "Sockets", "TOML", "Tar", "Test", "p7zip_jll"]
@@ -844,12 +874,16 @@ deps = ["CEnum", "LLVMExtra_jll", "Libdl", "Preferences", "Printf", "Unicode"]
 git-tree-sha1 = "69e4739502b7ab5176117e97e1664ed181c35036"
 uuid = "929cbde3-209d-540e-8aea-75f648917ca0"
 version = "9.4.6"
+weakdeps = ["BFloat16s"]
 
     [deps.LLVM.extensions]
     BFloat16sExt = "BFloat16s"
 
-    [deps.LLVM.weakdeps]
-    BFloat16s = "ab4f0b2a-ad5b-11e8-123f-65d77653426b"
+[[deps.LLVMDowngrader_jll]]
+deps = ["Artifacts", "JLLWrappers", "LazyArtifacts", "Libdl", "TOML", "Zlib_jll"]
+git-tree-sha1 = "6c4eee9991684790dcd49c52508836c02ac36133"
+uuid = "f52de702-fb25-5922-94ba-81dd59b07444"
+version = "0.6.0+1"
 
 [[deps.LLVMExtra_jll]]
 deps = ["Artifacts", "JLLWrappers", "LazyArtifacts", "Libdl", "TOML"]
@@ -1097,6 +1131,16 @@ git-tree-sha1 = "b513cedd20d9c914783d8ad83d08120702bf2c77"
 uuid = "442fdcdd-2543-5da2-b0f3-8c86c306513e"
 version = "0.3.3"
 
+[[deps.Metal]]
+deps = ["Adapt", "BFloat16s", "CEnum", "CodecBzip2", "ExprTools", "GPUArrays", "GPUCompiler", "GPUToolbox", "KernelAbstractions", "LLVM", "LLVMDowngrader_jll", "LinearAlgebra", "ObjectiveC", "PrecompileTools", "Preferences", "Printf", "Random", "Random123", "RandomNumbers", "SHA", "ScopedValues", "StaticArrays", "UUIDs"]
+git-tree-sha1 = "26180d9c83fb2d217c0ed31b2e024d785fd841ed"
+uuid = "dde4c033-4e86-420c-a63e-0dd931031962"
+version = "1.9.3"
+weakdeps = ["SpecialFunctions"]
+
+    [deps.Metal.extensions]
+    SpecialFunctionsExt = "SpecialFunctions"
+
 [[deps.MicroCollections]]
 deps = ["Accessors", "BangBang", "InitialValues"]
 git-tree-sha1 = "44d32db644e84c75dab479f1bc15ee76a1a3618f"
@@ -1181,6 +1225,12 @@ deps = ["Reexport", "StructIO"]
 git-tree-sha1 = "22faba70c22d2f03e60fbc61da99c4ebfc3eb9ba"
 uuid = "d8793406-e978-5875-9003-1fc021f44a92"
 version = "0.5.0"
+
+[[deps.ObjectiveC]]
+deps = ["CEnum", "Libdl", "Preferences"]
+git-tree-sha1 = "a10d01e1a9683ffd64b450cc6c1419ee9a8f7ab4"
+uuid = "e86c9b32-1129-44ac-8ea0-90d5bb39ded9"
+version = "3.4.2"
 
 [[deps.Observables]]
 git-tree-sha1 = "7438a59546cf62428fc9d1bc94729146d37a7225"
@@ -1436,6 +1486,18 @@ version = "1.11.0"
 deps = ["SHA"]
 uuid = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 version = "1.11.0"
+
+[[deps.Random123]]
+deps = ["Random", "RandomNumbers"]
+git-tree-sha1 = "dbe5fd0b334694e905cb9fda73cd8554333c46e2"
+uuid = "74087812-796a-5b5d-8853-05524746bad3"
+version = "1.7.1"
+
+[[deps.RandomNumbers]]
+deps = ["Random"]
+git-tree-sha1 = "c6ec94d2aaba1ab2ff983052cf6a606ca5985902"
+uuid = "e6cf234a-135c-5ec9-84dd-332b85af5143"
+version = "1.6.0"
 
 [[deps.Ratios]]
 deps = ["Requires"]

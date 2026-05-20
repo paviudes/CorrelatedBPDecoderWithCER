@@ -1,5 +1,3 @@
-using ArgParse
-
 function parse_command_line_args_BP(;prefix="./../data")::Dict{String, Any}
 	"""
 	Parse command-line arguments and return them as a dictionary using `ArgParse`.
@@ -189,14 +187,6 @@ function parse_command_line_args_NN(;prefix::String="./../data")::Dict{String, A
 			help = "Number of hidden layers in the Neural BP model."
 			arg_type = Int
 			default = 5
-		"--n_epochs"
-			help = "Number of training epochs."
-			arg_type = Int
-			default = 5
-		"--batch_size"
-			help = "Batch size for training."
-			arg_type = Int
-			default = 100
 		"--n_samples"
 			help = "Number of samples to use for training. Use all available samples if set to -1."
 			arg_type = Int
@@ -205,18 +195,10 @@ function parse_command_line_args_NN(;prefix::String="./../data")::Dict{String, A
 			help = "File containing the correlation strengths for the additional loss term for correlations. The file should contain a vector of correlation strengths corresponding to the rows of the connectivity matrix."
 			arg_type = String
 			default = "correlation_strengths.txt"
-		"--retrain"
-			help = "Retrain the model even if trained weights are available."
-			arg_type = Bool
-			default = false
-		"--learning_rate"
-			help = "Learning rate for training the Neural BP model."
-			arg_type = Float32
-			default = 1f-1
-		"--max_grad_norm"
-			help = "Maximum gradient norm for gradient clipping during training."
-			arg_type = Float32
-			default = 2.0f0
+		"--hyperparams"
+			help = "JSON file containing the hyperparameters for training the Neural BP model. If not provided, default hyperparameters will be used."
+			arg_type = String
+			default = "$(prefix)/models/hyperparams.json"
 		"--train"
 			help = "Name of the file used for training the Neural BP model."
 			arg_type = String
@@ -270,4 +252,86 @@ function generate_runs(parameter_ranges::OrderedDict{String, AbstractVector{<:An
 			println(io, cmd)
 		end
 	end
+end
+
+import TOML
+
+function parse_hyper_parameters(hyperparams_file::String=""; prefix::String="./../data")::Dict{String, Any}
+    """
+    Parse hyperparameters from a TOML file or use default values.
+
+    # Arguments
+    - `hyperparams_file::String`: Name of the TOML file containing hyperparameters.
+    - `prefix::String`: Directory prefix where the hyperparameters file is located.
+
+    # Returns
+    - `Dict{String, Any}`: Dictionary of hyperparameters.
+    """
+    default_hyperparams::Dict{String, Any} = Dict(
+        "retrain" => false, # Whether to retrain the model even if trained weights are available.
+        "learning_rate" => 1f-1, # Learning rate for training the Neural BP model using the ADAM optimizer
+        "max_grad_norm" => 2f0, # Gradient clipping threshold
+        "weight_decay" => 1f-4, # L2 regularization strength for ADAM optimizer
+        "nanskip" => 5, # Number of consecutive NaN occurrences in the loss before skipping the batch during training
+        "adam_eps" => 1f-4, # Epsilon parameter for the ADAM optimizer to improve numerical stability
+        "batch_size" => 100, # Batch size for training
+        "n_epochs" => 5, # Number of training epochs
+		"warmup_layers" => 10, # First number of layers to leave unconstrained in the loss function.
+        # Annealing schedule for the loss hyperparameters
+        "loss_layer_temperature" => "0.1,5.0,0.9,down", # Smooth minimum approximation temperature
+        "correlation_importance" => "0.1,1.0,0.1,down", # Correlation penalty importance
+        "llr_certainty_importance" => "0.001,0.01,0.1,down", # LLR convergence term importance
+        "sparsity_importance" => "0.0,0.01,0.5,up", # Sparsity encouragement term importance
+		# Initial conditions: all weights are initialized to Gaussian random values around 1, with a standard deviation of σ = 0.3.
+		"initial_conditions_scale" => 0.3f0
+    )
+
+    hyperparams_file_path = "$(prefix)/models/$(hyperparams_file)"
+    if hyperparams_file != "" && isfile(hyperparams_file_path)
+        
+        # Use Julia's built-in TOML parser
+        file_hyperparams = TOML.parsefile(hyperparams_file_path)
+        
+        # Merge default hyperparameters with those from the file, giving priority to the file values
+        updated_hyperparams = merge(default_hyperparams, file_hyperparams)
+
+        # --- Convert specific keys to Float32 ---
+        float32_keys = ["learning_rate", "max_grad_norm", "weight_decay", "adam_eps", "initial_conditions_scale"]
+        for key in float32_keys
+            if haskey(updated_hyperparams, key)
+                updated_hyperparams[key] = Float32(updated_hyperparams[key])
+            end
+        end
+		
+		# Parse annealing schedules from strings into structured dictionaries
+        for key in ["loss_layer_temperature", "correlation_importance", "llr_certainty_importance", "sparsity_importance"]
+            # Added `isa String` check for safety, in case the TOML file is ever updated to use inline tables
+            if haskey(updated_hyperparams, key) && isa(updated_hyperparams[key], String)
+                schedule_parts = split(updated_hyperparams[key], ",")
+                updated_hyperparams[key] = Dict(
+                    "min" => parse(Float32, schedule_parts[1]),
+                    "max" => parse(Float32, schedule_parts[2]),
+                    "decay" => parse(Float32, schedule_parts[3]),
+                    "direction" => Symbol(schedule_parts[4])
+                )
+            end
+        end
+
+        return updated_hyperparams
+    else
+        println("Hyperparameters file not provided or does not exist. Using default values.")
+
+        # Convert default annealing schedules from strings to structured dictionaries
+        for key in ["loss_layer_temperature", "correlation_importance", "llr_certainty_importance", "sparsity_importance"]
+            schedule_parts = split(default_hyperparams[key], ",")
+            default_hyperparams[key] = Dict(
+                "min" => parse(Float32, schedule_parts[1]),
+                "max" => parse(Float32, schedule_parts[2]),
+                "decay" => parse(Float32, schedule_parts[3]),
+                "direction" => Symbol(schedule_parts[4])
+            )
+        end
+
+        return default_hyperparams
+    end
 end

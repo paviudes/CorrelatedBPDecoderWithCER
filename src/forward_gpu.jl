@@ -97,19 +97,22 @@ end
 # Convert a sparse matrix to a dense Float32 GPU array: Sparse → dense → Float32 → GPU .
 _to_dense_gpu(M::AbstractMatrix) = ArrayT{Float32}(Float32.(Matrix(M)))
 
+"""
+    _scatter_layer_weights(rows, cols, weights_flat, n_layers, dim_rows, dim_cols) -> Array{Float32, 3}
+
+Arrange flat weight vector into 3D tensor of shape (nb_neurons × nb_neurons × n_layers).
+
+Arguments:
+- `rows`: Row indices for non-zero weights in adjacency matrix
+- `cols`: Column indices for non-zero weights in adjacency matrix
+- `weights_flat`: Flat vector with weights for all layers (length = length(rows) × n_layers)
+- `n_layers`: Number of layers (iterations) in NeuralBP model
+- `dim_rows`: Number of rows in output tensor (nb_neurons)
+- `dim_cols`: Number of columns in output tensor (nb_neurons)
+"""
 function _scatter_layer_weights(rows::Vector{Int}, cols::Vector{Int},
                                 weights_flat::AbstractVector{<:Real},
                                 n_layers::Int, dim_rows::Int, dim_cols::Int)
-    """
-    Given the weights for all layers in a flat vector, arrange them into a 3D tensor of shape (nb_neurons × nb_neurons × n_layers) according to the provided row and column indices, which specify where the non-zero weights should be placed for each layer.
-    Arguments:
-    - `rows::Vector{Int}`: Row indices for the non-zero weights in the adjacency matrix.
-    - `cols::Vector{Int}`: Column indices for the non-zero weights in the adjacency matrix.
-    - `weights_flat::AbstractVector{<:Real}`: A flat vector containing the weights for all layers, concatenated together. The length should be equal to `length(rows) * n_layers`.
-    - `n_layers::Int`: The number of layers (iterations) in the NeuralBP model.
-    - `dim_rows::Int`: The number of rows in the output tensor (should match nb_neurons).
-    - `dim_cols::Int`: The number of columns in the output tensor (should match nb_neurons).
-    """
     n_per_layer = length(rows)
     weights_tensor = zeros(Float32, dim_rows, dim_cols, n_layers)
     @inbounds for l in 1:n_layers
@@ -121,16 +124,27 @@ function _scatter_layer_weights(rows::Vector{Int}, cols::Vector{Int},
     return weights_tensor
 end
 
+"""
+    build_gpu_state(bpnn, syndromes_batch) -> GPUState
+    build_gpu_state(base, weights_c2v_v2c, weights_llrs, weights_c2v_readout, syndromes_batch) -> GPUState
+
+Build GPUState by converting and uploading CPU data to GPU. Includes:
+- Adjacency matrices (densified and converted to Float32)
+- Per-layer message weight tensors, pre-masked by adjacency matrices
+- Readout weight matrix, pre-masked by readout adjacency
+- Per-layer LLR weights, reshaped and converted to Float32
+- Syndromes, routed according to neuron_to_checks and converted to Float32
+
+Overload 1: Extract weights and base from NachmaniNeuralBP struct
+Overload 2: Accept raw weights and base structure directly
+"""
 function build_gpu_state(bpnn, syndromes_batch::BitMatrix)
-    """
-    Build the GPUState struct by converting and uploading all necessary data from the CPU NeuralBP model and the input syndromes batch. This includes:
-    - Adjacency matrices (densified and converted to Float32)
-    - Per-layer message weight tensors, pre-masked by the adjacency matrices
-    - Readout weight matrix, pre-masked by the readout adjacency
-    - Per-layer LLR weights, reshaped and converted to Float32
-    - Syndromes, routed according to neuron_to_checks and converted to Float32
-    """
     base = bpnn.base
+    gpustate = build_gpu_state(base, bpnn.weights_c2v_v2c, bpnn.weights_llrs, bpnn.weights_c2v_readout, syndromes_batch)
+    return gpustate
+end
+
+function build_gpu_state(base, weights_c2v_v2c, weights_llrs, weights_c2v_readout, syndromes_batch::BitMatrix)
     
     # Adjacency
     adj_V2C_C2V = _to_dense_gpu(base.adj_V2C_C2V)
@@ -142,7 +156,7 @@ function build_gpu_state(bpnn, syndromes_batch::BitMatrix)
     W_msg_cpu = _scatter_layer_weights(
         Vector{Int}(base.non_zero_rows_C2V_V2C),
         Vector{Int}(base.non_zero_cols_C2V_V2C),
-        bpnn.weights_c2v_v2c,
+        weights_c2v_v2c,
         base.n_layers,
         base.nb_neurons_per_layer,
         base.nb_neurons_per_layer,
@@ -158,14 +172,14 @@ function build_gpu_state(bpnn, syndromes_batch::BitMatrix)
     rows_r = Vector{Int}(base.non_zero_rows_C2V_readout)
     cols_r = Vector{Int}(base.non_zero_cols_C2V_readout)
     @inbounds for k in eachindex(rows_r)
-        W_readout_cpu[rows_r[k], cols_r[k]] = bpnn.weights_c2v_readout[k]
+        W_readout_cpu[rows_r[k], cols_r[k]] = weights_c2v_readout[k]
     end
     # Multiply the readout weights by the adjacency mask so that the GPU doesn't have to do it every layer.
     W_readout_cpu .*= base.adj_C2V_readout
     W_readout_masked = _to_dense_gpu(W_readout_cpu)
 
     # Per-layer LLR weights as (n_bits × n_layers)
-    weights_llrs_cpu = reshape(Vector{Float32}(bpnn.weights_llrs),
+    weights_llrs_cpu = reshape(Vector{Float32}(weights_llrs),
                                base.code_n_bits, base.n_layers)
     weights_llrs_gpu = _to_dense_gpu(weights_llrs_cpu)
 
@@ -228,24 +242,32 @@ end
 # Top-level entry point.
 # ----------------------------------------------------------------------------
 
+"""
+    Perform forward pass of NeuralBP on GPU, returning posterior LLRs at each layer.
+
+    For large datasets, samples are processed in chunks to avoid exceeding Metal's
+    per-buffer size limit (`Metal.device().maxBufferLength`). Each chunk is transferred
+    to CPU output tensor before the next chunk runs.
+
+    forward_pass_gpu(bpnn, initial_llrs_batch, syndromes_batch; chunk_size=0) -> Array{Float32, 3}
+    Arguments (overload 1):
+    - `bpnn`: Trained NachmaniNeuralBP model with base code structure and weights
+    - `initial_llrs_batch`: Matrix of shape (n_bits × n_samples) with initial LLRs
+    - `syndromes_batch`: BitMatrix of shape (n_checks × n_samples) with syndromes
+    - `chunk_size`: If >0, process samples in slices of this size. If 0 (default),
+    auto-estimate from device's maxBufferLength with headroom for intermediates
+
+    forward_pass_gpu(weights_c2v_v2c, weights_llrs, weights_c2v_readout, base, llrs_batch, syndromes_batch) -> Array{Float32, 3}
+    Arguments (overload 2):
+    - Raw weight vectors and base structure, bypassing NachmaniNeuralBP struct
+    - Useful for testing or scenarios requiring direct weight manipulation
+"""
 function forward_pass_gpu(
     bpnn,
     initial_llrs_batch::AbstractMatrix{Float32},
     syndromes_batch::BitMatrix;
     chunk_size::Int = 0,
 )
-    """
-    Perform a forward pass of the NeuralBP model on GPU, returning the posterior LLRs at each layer.
-    For codes / sample counts whose output tensor exceeds Metal's per-buffer
-    size limit (`Metal.device().maxBufferLength`), the samples are processed
-    in chunks. Each chunk's result is transferred to a CPU output tensor and
-    discarded from GPU before the next chunk runs.
-    Arguments:
-    - `bpnn::NachmaniNeuralBP`: The trained NeuralBP model containing the base code structure and weights.
-    - `initial_llrs_batch::AbstractMatrix{Float32}`: A matrix of shape (n_bits × n_samples) containing the initial LLRs for each bit and sample in the batch.
-    - `syndromes_batch::BitMatrix`: A matrix of shape (n_checks × n_samples) where each column represents a syndrome corresponding to an error pattern.
-    - `chunk_size::Int=0`: If positive, samples are processed in slices of this size. If 0 (default), an automatic estimate is computed from the device's `maxBufferLength`, leaving headroom for the per-layer intermediate allocations.
-    """
     n_samples = size(initial_llrs_batch, 2)
     n_bits    = bpnn.base.code_n_bits
     n_layers  = bpnn.base.n_layers
@@ -286,18 +308,36 @@ function forward_pass_gpu(
     return posterior_3d_cpu
 end
 
+function forward_pass_gpu(weights_c2v_v2c, weights_llrs, weights_c2v_readout, base, llrs_batch, syndromes_batch)
+    gpustate = build_gpu_state(base, weights_c2v_v2c, weights_llrs, weights_c2v_readout, syndromes_batch)
+    posterior_3d_gpu = _forward_pass_gpu_chunk(gpustate, llrs_batch)
+    return posterior_3d_gpu
+end
+
+"""
+    _forward_pass_gpu_chunk(bpnn, initial_llrs_batch, syndromes_batch) -> Array{Float32, 3}
+    _forward_pass_gpu_chunk(gs::GPUState, initial_llrs_batch) -> Array{Float32, 3}
+
+Single-chunk forward pass on GPU. Used either directly when everything fits in
+one Metal buffer, or once per chunk by `forward_pass_gpu` for large sample counts.
+
+Overload 1: Build GPUState from NachmaniNeuralBP struct, then compute
+Overload 2: Accept pre-built GPUState directly (more efficient for repeated calls)
+"""
 function _forward_pass_gpu_chunk(
-    bpnn,
+    bpnn::NeuralBP,
     initial_llrs_batch::AbstractMatrix{Float32},
-    syndromes_batch::BitMatrix,
+    syndromes_batch::BitMatrix
 )
-    """
-    Single-chunk forward pass on GPU. Same logic as the previous (non-chunked)
-    forward_pass_gpu body — used either directly (when everything fits in one
-    Metal buffer) or once per chunk by `forward_pass_gpu` for large sample
-    counts.
-    """
     gs = build_gpu_state(bpnn, syndromes_batch)
+    posterior_llrs = _forward_pass_gpu_chunk(gs, initial_llrs_batch)
+    return posterior_llrs
+end
+
+function _forward_pass_gpu_chunk(
+    gs::GPUState,
+    initial_llrs_batch::AbstractMatrix{Float32}
+)
     n_samples = size(initial_llrs_batch, 2)
 
     initial_llrs_gpu = ArrayT{Float32}(Matrix{Float32}(initial_llrs_batch))
@@ -312,7 +352,8 @@ function _forward_pass_gpu_chunk(
         @views posterior_3d_gpu[:, :, layer] .= post
     end
 
-    return Array(posterior_3d_gpu)   # transfer to CPU
+    posterior_llrs = Array(posterior_3d_gpu)   # transfer to CPU
+    return posterior_llrs
 end
 
 # ----------------------------------------------------------------------------

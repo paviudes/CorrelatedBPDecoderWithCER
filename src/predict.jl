@@ -95,6 +95,8 @@ function predict_and_check_neuralbp(
         return is_correct
     end
 
+    println("Using GPU for predictions with batch size = $batch_size. Total samples = $n_samples.")
+
     is_correct = falses(n_samples)
     for start in 1:batch_size:n_samples
         stop = min(start + batch_size - 1, n_samples)
@@ -105,7 +107,7 @@ function predict_and_check_neuralbp(
         chunk_llrs  = repeat(bpnn.base.initial_llrs, 1, stop - start + 1)
 
         # Predict the recoveries for the chunk of syndromes using the trained NeuralBP model.
-        chunk_posterior_llrs  = forward_pass_gpu(bpnn, chunk_llrs, chunk_syndromes)
+        chunk_posterior_llrs = forward_pass_gpu(bpnn, chunk_llrs, chunk_syndromes)
 
         # Hard threshold the posterior LLRs to get proposed recoveries, and check if they correctly fix the errors.
         chunk_recoveries  = Array(chunk_posterior_llrs .< 0) # shape (n_bits, batch_size, n_layers)
@@ -114,5 +116,19 @@ function predict_and_check_neuralbp(
         @views is_correct[start:stop] .= check_bp_solutions(H_dual, chunk_errors, chunk_recoveries)
     end
 
+    return is_correct
+end
+
+function neuralbp_test_predictions(bpnn::NeuralBP, test_errors_file::String)::BitVector
+    """
+    Predict the recoveries for the given test syndromes using the trained Neural BP model.
+    Test these predictions to see if they match the expected recoveries.
+    """
+    test_errors = convert.(Bool, readdlm(test_errors_file, Int))
+    test_syndromes = convert.(Bool, mod.(bpnn.base.parity_check_matrix * test_errors, 2))
+    # start = time()
+    is_correct = predict_and_check_neuralbp(bpnn, test_syndromes, test_errors; batch_size=4096)
+    # runtime = time() - start
+    # println("[", round(runtime, digits=2), "s] elapsed. Predicted recoveries computed and verified.")
     return is_correct
 end

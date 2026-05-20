@@ -26,7 +26,7 @@
 # (piecewise constant), which matches their mathematical derivative
 # almost everywhere.
 
-function compute_loss_error_from_llrs(
+function compute_sine_residue_loss_from_llrs(
     posterior_llrs::Matrix{Float32},
     expected_recoveries::BitMatrix,
     parity_check_matrix_dual::BitMatrix
@@ -86,26 +86,23 @@ function compute_quadratic_residue_loss_from_llrs(
     return average_loss
 end
 
-function syndrome_loss_regularizer(posterior_llrs::Matrix{Float32}; β::Float32 = 1f-3)::Float32
+function syndrome_loss_regularizer(posterior_llrs::Matrix{Float32})::Float32
     """
     One of the important drawbacks of the Loss function from Eq. 8 of https://arxiv.org/abs/1811.07835 is that it has zero gradient at both even and odd weights of the syndrome.
     For instance, if the posterior LLR is zero for all the bit, then we have σ(μ_k) = 0.5 for all k, but sin(π * H^⟂ * (e + 0.5) / 2) will be zero for all the samples, and hence the Loss will be zero, even though the predicted recoveries are completely wrong.
     To mitigate this issue, we can add a regularizer to the Loss function that penalizes solutions where the posterior probabilities are not close to 0 or 1, i.e. where the LLRs are close to zero.
     This can be achieved by adding a term proportional to the entropy of the predicted probabilities, which encourages the model to make more confident predictions.
     The regularizer can be defined as:
-        L_reg(μ) = - β ∑_v h(σ(μ_v))
+        L_reg(μ) = - ∑_v h(σ(μ_v))
     where
-        - β is a hyperparameter that controls the strength of the regularizer.
         - h(p) = - p log(p) - (1 - p) log(1 - p) is the binary entropy function.
     """
-    regularizer = β * sum(binary_entropy_of_sigmoid.(posterior_llrs))
+    regularizer = sum(binary_entropy_of_sigmoid.(posterior_llrs))
     return regularizer
 end
 
 function compute_additional_loss_from_ising_correlations(
     posterior_llrs::Matrix{Float32},
-    parity_check_matrix_dual::BitMatrix,
-    expected_recoveries::BitMatrix,
     connectivity::Matrix{Int},
     correlation_strengths::Vector{Float32}
 )::Float32
@@ -156,11 +153,6 @@ function compute_additional_loss_from_ising_correlations(
 
             loss_from_sample += correlation_strengths[e] * (σ_i - σ_k)^2
         end
-        # Compute the weight of the residual syndromes: H^⟂ * (e_pred + e_expected).
-        # e_residual = @. sigmoid(posterior_llrs[:, j]) + expected_recoveries[:, j]
-        # residual_syndrome = Float32.(parity_check_matrix_dual) * e_residual
-        # residual_syndrome_weight = sum(sin.(abs.(pi .* residual_syndrome ./ 2)))
-        # loss += exp(-residual_syndrome_weight) * loss_from_sample
         loss += loss_from_sample
     end
 
@@ -177,7 +169,53 @@ function softmin_loss(losses_per_layer::AbstractVector{Float32}, temp::Float32):
     where temp is a temperature parameter that controls the smoothness of the approximation. As temp approaches zero, the softmin approaches the true minimum, but for larger temp, it provides a smoother approximation that allows for gradient flow to all layers.
     """
     min_loss = minimum(losses_per_layer)
-    return min_loss - temp * log(sum(exp.(-(losses_per_layer .- min_loss) ./ temp)))
+    aggregate_loss = min_loss - temp * log(sum(exp.(-(losses_per_layer .- min_loss) ./ temp)))
+    return aggregate_loss
+end
+
+function linear_ramp_loss(losses_per_layer::AbstractVector{Float32})::Float32
+    """
+    Weighted-average loss with linearly increasing emphasis on later layers.
+
+        L = (Σ_t t · L_t) / (Σ_t t)
+          = (2 / (n(n+1))) · Σ_t t · L_t
+
+    Layer t = n_layers contributes the most; layer 1 contributes the least
+    (weight 1/n the smallest layer). Differs from the soft-min by being
+    differentiable everywhere with no temperature parameter to anneal.
+
+    Use this as a drop-in replacement for `softmin_loss(losses_per_layer, τ)`
+    when you want late-layer emphasis without the τ-annealing complexity.
+    """
+    n_layers = length(losses_per_layer)
+    aggregate_loss = sum(losses_per_layer[layer] * Float32(tanh(layer / n_layers)) for layer in 1:n_layers)
+    return aggregate_loss
+end
+
+function last_layer_only_loss(losses_per_layer::AbstractVector{Float32}, _unused::Float32 = 0f0)::Float32
+    """
+    Simple loss that only considers the last layer's loss, ignoring all earlier layers.
+    """
+    return losses_per_layer[end]
+end
+
+function sparsity_penalty(posterior_llrs::Matrix{Float32})::Float32
+    """
+    L1 sparsity penalty on the predicted error pattern.
+
+    L_sparse(μ) = (1 / n_samples) * Σ_samples Σ_v σ(μ_v).
+
+    Pushes σ(μ_v) toward 0 — i.e., prefers fewer predicted errors. Combined
+    with the syndrome term, the loss minimum corresponds to minimum-weight
+    syndrome-satisfying predictions, which is the unique correct decode for
+    any error of weight ≤ (d − 1) / 2.
+
+    Intended to be used with a small `sparsity_importance` so that syndrome
+    satisfaction dominates and sparsity acts as a tie-breaker.
+    """
+    n_samples = size(posterior_llrs, 2)
+    sparsity_loss = sum(sigmoid.(posterior_llrs)) / n_samples
+    return sparsity_loss
 end
 
 function compute_loss_including_correlations(
@@ -187,33 +225,40 @@ function compute_loss_including_correlations(
     connectivity::Matrix{Int},
     correlation_strengths::Vector{Float32},
     is_correlated::Bool,
-    correlation_importance::Vector{Float32},
-    loss_layer_regularizer::Vector{Float32}
+    correlation_importance::Float32,
+    loss_layer_temperature::Float32,
+    llr_certainty_importance::Float32,
+    sparsity_importance::Float32,
+    warmup_loss_layers::Int
 )::Float32
     """
-    Compute the total Loss function including the correlation penalty.
-    This function combines `compute_loss_error_from_llrs` and `compute_additional_loss_from_ising_correlations`.
-    The total Loss L is a weighted sum of the penalty from failing to satisfy the commutation relations (with the normalizers)
-    and the penalty from violating the correlations.
-    L_total = L_syndrome + α * L_correlations
-    where
-        - L_syndrome is the original Loss function from `compute_loss_error_from_llrs`.
-        - L_correlations is the additional penalty from violating correlations, computed by `compute_additional_loss_from_ising_correlations`.
-        - α is a hyperparameter (`correlation_importance`) that controls the relative importance of the correlation penalty compared to the original Loss.
+    Total per-batch loss combining:
+      - base_loss    : quadratic-residue penalty on H^⊥(e + σ(μ))   [syndrome]
+      - llr_reg      : β · binary-entropy of σ(μ)                   [commitment]
+      - sparse_pen   : L1 norm of σ(μ) per sample                   [low-weight bias]
+      - corr_pen     : Σ_(i,j) λ_ij (σ_i − σ_j)²                    [Ising correlation, optional]
+    The four per-layer losses are combined across layers via softmin at
+    temperature `loss_layer_temperature`.
+
+    All hyperparameters are plain `Float32` scalars (not singleton arrays).
     """
-    n_layers::Int = size(posterior_llrs, 3)
+    n_layers = size(posterior_llrs, 3)
     losses_per_layer = zeros(Float32, n_layers)
-    for layer in 1:n_layers
-        base_loss = compute_quadratic_residue_loss_from_llrs(posterior_llrs[:, :, layer], expected_recoveries, parity_check_matrix_dual)
-        syndrome_regularizer = syndrome_loss_regularizer(posterior_llrs[:, :, layer])
-        if is_correlated
-            correlation_penalty = compute_additional_loss_from_ising_correlations(posterior_llrs[:, :, layer], parity_check_matrix_dual, expected_recoveries, connectivity, correlation_strengths)
-        else
-            correlation_penalty = 0.0f0
-        end
-        loss_per_layer = base_loss + syndrome_regularizer + correlation_importance[1] * correlation_penalty
-        losses_per_layer[layer] = loss_per_layer
+    for layer in warmup_loss_layers:n_layers
+        post = posterior_llrs[:, :, layer]
+        # base_loss   = compute_quadratic_residue_loss_from_llrs(post, expected_recoveries, parity_check_matrix_dual)
+        base_loss   = compute_sine_residue_loss_from_llrs(post, expected_recoveries, parity_check_matrix_dual)
+        llr_reg     = syndrome_loss_regularizer(post) * tanh(layer / n_layers)
+        sparse_pen  = sparsity_penalty(post)
+        corr_pen    = is_correlated ? compute_additional_loss_from_ising_correlations(post, connectivity, correlation_strengths) : 0f0
+
+        losses_per_layer[layer] = base_loss +
+                                  llr_certainty_importance * llr_reg +
+                                  correlation_importance * corr_pen +
+                                  sparsity_importance * sparse_pen
     end
-    total_loss = softmin_loss(losses_per_layer, loss_layer_regularizer[1])
+    # total_loss = softmin_loss(losses_per_layer, loss_layer_temperature)
+    total_loss = linear_ramp_loss(losses_per_layer)
+    # total_loss = last_layer_only_loss(losses_per_layer)
     return total_loss
 end
