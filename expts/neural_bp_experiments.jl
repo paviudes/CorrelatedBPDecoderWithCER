@@ -260,8 +260,6 @@ if abspath(PROGRAM_FILE) == @__FILE__
     println("Test sample results saved to file: $(test_samples_csv_file)")
     #################################
     
-    # Save the predicted recoveries for the first 100 test samples to a CSV file for
-    
     # Load the results on to the `DecoderStatistics` structure.
     stats = DecoderStatistics(
         "NN",
@@ -292,7 +290,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     record_decoder_statistics(stats, results_file)
 end
 #=
-parallel -j4 --bar '
+parallel -j1 --bar '
 julia --project="./../" neural_bp_experiments.jl \
   --codename 90q_BB_p_0.008_q_0.2_std_0.2_data \
   --n_hidden_layers 100 \
@@ -300,5 +298,5 @@ julia --project="./../" neural_bp_experiments.jl \
   --correlation_strengths_file correlated_weights_p_0.008_q_0.2_s_{}.txt \
   --train train_ballistic_p_0.008_q_0.2_s_{}.txt \
   --test test_ballistic_p_0.008_q_0.2_s_{}.txt
-' ::: 1 2 3 4
+' ::: $(seq 1 32)
 =#
