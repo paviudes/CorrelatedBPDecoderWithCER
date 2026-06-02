@@ -7,7 +7,7 @@ from ldpc import BpOsdDecoder
 import time
 from bposd.hgp import hgp
 import os
-
+import itertools
 #Write BB_code matrix generations here
 #Writing the important functions
 # Geometry: Ladder grid R x C
@@ -135,6 +135,63 @@ def compute_CER(independent_error_prob, conditional_nb_flip_prob):
     return CER_normalized
 
 
+
+#-----------------------------------------------------------------
+# I am adding a new function that computes the one-qubit marginals that can be used as LLRs for BP
+#See handwritten notes for the detailed steps. The main idea is to analyze all configurations of independently flipped neighbors (active neighbors) that can cause a flip on the qubit and compute the total probability of a flip from neighbors. We then combine this with the independent error probability to get the final marginal.
+def prob_exactly_one_trigger(active_neighbors, qubit,conditional_nb_flip_prob):
+    """computes the probability that exactly one neighbor in active_neighbors causes a flip on qubit
+    where by active neighbors we mean those neighboring qubits that have an error due to independent flip"""
+    if len(active_neighbors) == 0:
+        return 0.0
+     # Since your assigned q values are symmetric,
+     # conditional_nb_flip_prob[(qubit, nb)] and [(nb, qubit)] are equal.
+    qs=[conditional_nb_flip_prob.get((qubit, nb), 0) for nb in active_neighbors]
+    prob=0.0
+    for trigger_index in range(len(qs)):
+        term=1.0
+        for k, nflip_prob_value in enumerate(qs):#enumerates only over the active neighbors, not non-active ones
+            if k == trigger_index:
+                term *= nflip_prob_value
+            else:
+                term *= (1 - nflip_prob_value)
+        prob += term
+    return prob
+
+def compute_one_qubit_marginals(independent_error_prob, conditional_nb_flip_prob, normalize=True):#Maybe I shouldnt normalize and send the unnormalized as LLRs?
+    one_body_marginals = {}
+    for qubit in range(1, n_qubits + 1):
+        p_i=independent_error_prob[qubit]
+        nbs=sorted(neighbors[qubit]) 
+
+        neighbor_contribution=0.0
+        #Now we have to analyze all configurations of independently flipped neighbore(active neighbors) that can cause a flip on the qubit 
+        for bits in itertools.product([0, 1], repeat=len(nbs)):
+            config_prob=1.0
+            active_neighbors=[]
+            for bit, nb in zip(bits, nbs):
+                p_nb=independent_error_prob[nb]
+                if bit == 1:
+                    config_prob *= p_nb
+                    active_neighbors.append(nb)
+                else:
+                    config_prob *= (1 - p_nb)
+                
+            flip_from_neighbors=prob_exactly_one_trigger(active_neighbors, qubit, conditional_nb_flip_prob)
+            neighbor_contribution+= config_prob * flip_from_neighbors
+        
+        one_body_marginals[qubit] = p_i + (1 - p_i) * neighbor_contribution
+
+    if normalize:
+        total=sum(one_body_marginals.values())
+        one_body_marginals={qubit: val/total for qubit, val in one_body_marginals.items()}
+    return one_body_marginals
+                
+            
+    
+#-------------------------------
+
+
 # Error pattern generation
 def generate_error_patterns(num_err, independent_error_prob, conditional_nb_flip_prob):
     error_patterns = []
@@ -189,11 +246,20 @@ for p_value in p_values:
             # Compute CER and normalize
             CER_normalized = compute_CER(independent_error_prob, conditional_nb_flip_prob)
 
-            # Save CER
-            cer_file = os.path.join(output_dir_CER, f"correlated_weights_p_{p_value}_q_{q_mean}_s_{s}.txt")
+            #compute one-qubit marginals that can be used as LLRs for BP
+            one_body_marginals = compute_one_qubit_marginals(independent_error_prob, conditional_nb_flip_prob, normalize=True)
+            
+            #Saving one body marginals first and then two body marginals
+            cer_file= os.path.join(output_dir_CER, f"correlated_weights_p_{p_value}_q_{q_mean}_s_{s}.txt")
             with open(cer_file, "w") as f:
+                # Write one-body marginals
+                for key,val in one_body_marginals.items():
+                    f.write(f" {key} : {val}\n")
+                f.write("\n")
+                # Write two-body marginals
                 for key, val in CER_normalized.items():
                     f.write(f"{key} : {val}\n")
+           
 
             # Generate error patterns
             error_patterns = generate_error_patterns(num_patterns, independent_error_prob, conditional_nb_flip_prob)
