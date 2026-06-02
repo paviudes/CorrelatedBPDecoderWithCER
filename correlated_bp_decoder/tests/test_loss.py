@@ -192,3 +192,68 @@ def test_loss_breakdown_and_aggregate_loss_are_consistent() -> None:
         linear_ramp_loss(layer_totals),
         atol=1e-6,
     )
+
+
+def test_julia_compat_loss_preserves_global_layer_indexing() -> None:
+    """Julia-compatible aggregation should keep the full layer axis."""
+
+    posterior_llrs = torch.tensor(
+        [
+            [[0.0, 0.3, 0.6, 0.9]],
+            [[-0.2, -0.4, -0.6, -0.8]],
+        ],
+        dtype=torch.float32,
+    )
+    expected_recoveries = torch.tensor([[True], [False]], dtype=torch.bool)
+    parity_check_dual = torch.tensor([[1.0, 1.0]], dtype=torch.float32)
+    connectivity = torch.zeros((0, 2), dtype=torch.int64)
+    strengths = torch.zeros((0,), dtype=torch.float32)
+
+    julia_breakdown = compute_loss_breakdown(
+        posterior_llrs,
+        expected_recoveries,
+        parity_check_dual,
+        connectivity,
+        strengths,
+        is_correlated=False,
+        correlation_importance=0.0,
+        loss_layer_temperature=1.0,
+        llr_certainty_importance=0.0,
+        sparsity_importance=0.0,
+        warmup_loss_layers=2,
+        aggregation="linear_ramp",
+        julia_loss_compat=True,
+    )
+    compressed_breakdown = compute_loss_breakdown(
+        posterior_llrs,
+        expected_recoveries,
+        parity_check_dual,
+        connectivity,
+        strengths,
+        is_correlated=False,
+        correlation_importance=0.0,
+        loss_layer_temperature=1.0,
+        llr_certainty_importance=0.0,
+        sparsity_importance=0.0,
+        warmup_loss_layers=2,
+        aggregation="linear_ramp",
+        julia_loss_compat=False,
+    )
+
+    participating_totals = torch.stack(
+        [layer.total_loss for layer in julia_breakdown.per_layer]
+    )
+    full_totals = torch.zeros((4,), dtype=participating_totals.dtype)
+    full_totals[1:] = participating_totals
+
+    assert len(julia_breakdown.per_layer) == 3
+    assert torch.isclose(
+        julia_breakdown.aggregate_loss,
+        linear_ramp_loss(full_totals),
+        atol=1e-6,
+    )
+    assert not torch.isclose(
+        julia_breakdown.aggregate_loss,
+        compressed_breakdown.aggregate_loss,
+        atol=1e-6,
+    )

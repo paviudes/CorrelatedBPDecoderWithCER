@@ -85,6 +85,14 @@ class TrainingConfig:
     use_quadratic_residue
         Whether to use the quadratic-residue base loss instead of the active
         sine-residue loss.
+    julia_loss_compat
+        Whether to mirror the current Julia loss indexing/aggregation
+        semantics exactly for apples-to-apples comparisons.
+    batching_mode
+        Batch-ordering strategy. ``"global_shuffle"`` applies a fresh epoch
+        permutation before chunking into batches, while ``"julia_batch_local"``
+        preserves Julia's current sequential batch partition with in-batch
+        shuffling only.
     loss_layer_temperature
         Schedule for the soft-min temperature.
     correlation_importance
@@ -105,6 +113,8 @@ class TrainingConfig:
     warmup_loss_layers: int = 0
     aggregation: Literal["linear_ramp", "softmin", "last_layer"] = "linear_ramp"
     use_quadratic_residue: bool = False
+    julia_loss_compat: bool = False
+    batching_mode: Literal["global_shuffle", "julia_batch_local"] = "global_shuffle"
     loss_layer_temperature: AnnealingSchedule = field(
         default_factory=lambda: AnnealingSchedule(1.0, 1.0, 1.0, "down")
     )
@@ -199,6 +209,7 @@ def compute_loss_value(
     warmup_loss_layers: int = 0,
     aggregation: str = "linear_ramp",
     use_quadratic_residue: bool = False,
+    julia_loss_compat: bool = False,
 ) -> torch.Tensor:
     """Compute the total neural-BP loss for one batch.
 
@@ -220,6 +231,9 @@ def compute_loss_value(
         Loss aggregation mode across unfolded layers.
     use_quadratic_residue
         Whether to use the quadratic-residue base penalty.
+    julia_loss_compat
+        Whether to mirror the current Julia loss indexing/aggregation
+        semantics exactly.
 
     Returns
     -------
@@ -242,6 +256,7 @@ def compute_loss_value(
         warmup_loss_layers=warmup_loss_layers,
         aggregation=aggregation,
         use_quadratic_residue=use_quadratic_residue,
+        julia_loss_compat=julia_loss_compat,
     ).aggregate_loss
 
 
@@ -255,6 +270,7 @@ def compute_loss_diagnostics(
     warmup_loss_layers: int = 0,
     aggregation: str = "linear_ramp",
     use_quadratic_residue: bool = False,
+    julia_loss_compat: bool = False,
 ) -> LossBreakdown:
     """Compute full loss diagnostics for one batch.
 
@@ -276,6 +292,9 @@ def compute_loss_diagnostics(
         Loss aggregation mode across unfolded layers.
     use_quadratic_residue
         Whether to use the quadratic-residue base penalty.
+    julia_loss_compat
+        Whether to mirror the current Julia loss indexing/aggregation
+        semantics exactly.
 
     Returns
     -------
@@ -298,6 +317,7 @@ def compute_loss_diagnostics(
         warmup_loss_layers=warmup_loss_layers,
         aggregation=aggregation,
         use_quadratic_residue=use_quadratic_residue,
+        julia_loss_compat=julia_loss_compat,
     )
 
 
@@ -349,12 +369,13 @@ def train_nachmani_neuralbp(
         applied_batches = 0
         rolled_back = False
 
-        permutation = torch.randperm(
-            syndromes_tensor.shape[1],
-            device=syndromes_tensor.device,
-        )
         for batch_index, indices in enumerate(
-            _iter_batch_indices(permutation, config.batch_size),
+            _iter_epoch_batches(
+                syndromes_tensor.shape[1],
+                config.batch_size,
+                syndromes_tensor.device,
+                config.batching_mode,
+            ),
             start=1,
         ):
             syndromes_batch = syndromes_tensor.index_select(1, indices)
@@ -371,6 +392,7 @@ def train_nachmani_neuralbp(
                 warmup_loss_layers=config.warmup_loss_layers,
                 aggregation=config.aggregation,
                 use_quadratic_residue=config.use_quadratic_residue,
+                julia_loss_compat=config.julia_loss_compat,
             )
 
             if not torch.isfinite(loss):
@@ -533,6 +555,30 @@ def _iter_batch_indices(
 
     for start in range(0, permutation.shape[0], batch_size):
         yield permutation[start : start + batch_size]
+
+
+def _iter_epoch_batches(
+    n_samples: int,
+    batch_size: int,
+    device: torch.device,
+    batching_mode: str,
+):
+    """Yield batch-index tensors according to the selected batching mode."""
+
+    if batching_mode == "global_shuffle":
+        permutation = torch.randperm(n_samples, device=device)
+        yield from _iter_batch_indices(permutation, batch_size)
+        return
+
+    if batching_mode == "julia_batch_local":
+        for start in range(0, n_samples, batch_size):
+            stop = min(start + batch_size, n_samples)
+            indices = torch.arange(start, stop, device=device)
+            local_permutation = torch.randperm(indices.shape[0], device=device)
+            yield indices.index_select(0, local_permutation)
+        return
+
+    raise ValueError(f"Unsupported batching mode: {batching_mode!r}")
 
 
 def _gradients_are_finite(model: NachmaniNeuralBP) -> bool:

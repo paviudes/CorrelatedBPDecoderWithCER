@@ -1,0 +1,77 @@
+{
+  "adam_eps": 0.0001,
+  "batch_size": 100,
+  "bp_osd_reference": {
+    "comparable_to_full_test_run": true,
+    "full_test_samples": 100000,
+    "logical_failures": 439,
+    "results_file": "/Users/quantum/Documents/workspace/projects/research/ML for decoding/pavi/Standard_BP_OSD/72q_BB_p_0.006_q_0.1_std_0.1_data/72q_BB_BP+OSD_failure_rates_OSD_E_order_2.txt",
+    "sample": 52,
+    "success_rate": 0.99561
+  },
+  "dataset": "72q",
+  "dataset_root": "/Users/quantum/Documents/workspace/projects/research/ML for decoding/pavi/Standard_BP_OSD/72q_BB_p_0.006_q_0.1_std_0.1_data",
+  "dual_n_correct": 99452,
+  "dual_success_rate": 0.99452,
+  "epoch_summaries": [
+    {
+      "applied_batches": 100,
+      "epoch": 1,
+      "mean_loss": 166.03564153671266,
+      "nan_skip_count": 0,
+      "rolled_back": false
+    },
+    {
+      "applied_batches": 100,
+      "epoch": 2,
+      "mean_loss": 194.7949755859375,
+      "nan_skip_count": 0,
+      "rolled_back": false
+    },
+    {
+      "applied_batches": 100,
+      "epoch": 3,
+      "mean_loss": 179.68298309326173,
+      "nan_skip_count": 0,
+      "rolled_back": false
+    },
+    {
+      "applied_batches": 100,
+      "epoch": 4,
+      "mean_loss": 172.37864791870118,
+      "nan_skip_count": 0,
+      "rolled_back": false
+    },
+    {
+      "applied_batches": 27,
+      "epoch": 5,
+      "mean_loss": 169.40375038429542,
+      "nan_skip_count": 6,
+      "rolled_back": true
+    }
+  ],
+  "eval_batch_size": 1024,
+  "evaluation_time_s": 109.62620337493718,
+  "implementation": "python",
+  "initial_conditions_scale": 0.3,
+  "initial_weights_file": "pavi/Standard_BP_OSD/72q_BB_p_0.006_q_0.1_std_0.1_data/models/head_to_head_initial_72q_sample_52_nlayers_50_seed_0_legacy.json",
+  "learning_rate": 0.1,
+  "max_grad_norm": 2.0,
+  "n_epochs": 5,
+  "n_layers": 50,
+  "parity_n_correct": 99633,
+  "parity_success_rate": 0.99633,
+  "run_label": "rerun_shared_init",
+  "sample": 52,
+  "script": "/Users/quantum/Documents/workspace/projects/research/ML for decoding/pavi/correlated_bp_decoder/scripts/head_to_head_explicit_compare.py",
+  "seed": 0,
+  "test_samples_available": 100000,
+  "test_samples_used": 100000,
+  "train_samples_available": 10000,
+  "train_samples_used": 10000,
+  "training_time_s": 71.30208987509832,
+  "warmup_layers_requested": 10,
+  "warmup_layers_used": 10,
+  "weight_decay": 0.0001,
+  "weights_file": "/Users/quantum/Documents/workspace/projects/research/ML for decoding/pavi/Standard_BP_OSD/72q_BB_p_0.006_q_0.1_std_0.1_data/models/head_to_head_python_72q_sample_52_nlayers_50_epochs_5_rerun_shared_init.json"
+}

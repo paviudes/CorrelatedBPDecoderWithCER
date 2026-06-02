@@ -54,7 +54,7 @@ As of this branch state:
   - Julia regression coverage for the Hamming-code baseline
 - Validation note as of June 2, 2026:
   - phases 1-5 can be treated as complete for the scoped Python translation milestone
-  - `pytest -q pavi/correlated_bp_decoder/tests` passed with `35 passed, 1 skipped`
+  - `pytest -q pavi/correlated_bp_decoder/tests` passed with `36 passed, 1 skipped`
   - the Python tests now track the Julia suite more closely, including:
     - functional vs in-place message-update parity
     - all-ones neural-BP parity with standard BP at the final layer
@@ -64,6 +64,84 @@ As of this branch state:
   - exact parity for older file-backed Julia training workflows and dataset layouts
   - CSS wrappers and broader experiment parity
   - any additional archival Julia helpers we decide are still worth porting
+
+## Head-to-Head Comparison Scripts
+
+To compare the translated Python implementation against the Julia reference on
+the same explicit error-model data, this workspace now includes a paired set of
+single-sample runners:
+
+- `pavi/expts/head_to_head_explicit_compare.jl`
+  - trains the Julia `NachmaniNeuralBP` implementation directly from one
+    `Standard_BP_OSD` training file
+  - evaluates the matching test file in batches
+  - saves trained weights and a JSON run summary under the selected dataset's
+    `models/` and `results/` directories
+- `pavi/correlated_bp_decoder/scripts/head_to_head_explicit_compare.py`
+  - performs the same direct file-backed workflow using the Python translation
+  - uses Julia-style random initialization around `1.0` so the starting point is
+    closer to the reference implementation
+  - saves trained weights and a JSON run summary alongside the Julia outputs
+
+These scripts are meant to bypass the older CLI-layout assumptions and act as a
+reproducible bridge between the two implementations:
+
+- both target the same `Standard_BP_OSD/<dataset>/` tree
+- both default to the same representative sample for each dataset
+- both expose the same main hyperparameters:
+  - layer count
+  - epoch count
+  - batch size
+  - optional caps on the number of training and testing samples
+  - annealing schedule values
+- both report two evaluation views:
+  - parity-check success rate, matching the current Julia prediction helper
+  - dual-matrix success rate, which is stricter and useful for debugging logical
+    discrepancies
+- both now also support:
+  - `--run-label` to keep multiple comparison runs distinct
+  - `--initial-weights-file` to force Python and Julia to start from the exact
+    same serialized weights rather than only sharing a nominal RNG seed
+
+### Shared-Initialization Rerun
+
+As of June 2, 2026, the latest head-to-head rerun used:
+
+- dataset `72q`
+- sample `52`
+- `50` layers
+- `5` epochs
+- shared initial weights file:
+  - `pavi/Standard_BP_OSD/72q_BB_p_0.006_q_0.1_std_0.1_data/models/head_to_head_initial_72q_sample_52_nlayers_50_seed_0_legacy.json`
+- run label:
+  - `rerun_shared_init`
+
+Result summaries:
+
+- Python:
+  - parity success rate `0.99633`
+  - dual success rate `0.99452`
+  - training time about `71.3s`
+  - evaluation time about `109.6s`
+  - one unstable epoch at the end:
+    - epoch 5 rolled back after `6` skipped batches
+- Julia:
+  - parity success rate `0.99901`
+  - dual success rate `0.99631`
+  - training time about `184.9s`
+  - evaluation time about `50.9s`
+  - repeated instability across later epochs:
+    - epochs 2-5 each hit the `6` skipped-batch rollback threshold
+
+Interpretation:
+
+- forcing exact shared initialization narrows the comparison more meaningfully
+  than seed-matching alone
+- the Python translation is now close to the Julia reference on this benchmark,
+  but still slightly below it
+- the remaining discrepancy appears to be smaller than the original loss-path
+  mismatch and is likely tied to residual optimizer / training-dynamics
+  differences rather than a large structural translation error
 
 ## Translation Principles
 

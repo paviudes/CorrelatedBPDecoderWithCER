@@ -300,6 +300,7 @@ def compute_loss_breakdown(
     warmup_loss_layers: int = 0,
     aggregation: str = "linear_ramp",
     use_quadratic_residue: bool = False,
+    julia_loss_compat: bool = False,
 ) -> LossBreakdown:
     """Compute the aggregate loss and its per-layer components.
 
@@ -333,6 +334,9 @@ def compute_loss_breakdown(
     use_quadratic_residue
         Whether to use the quadratic-residue base penalty instead of the
         active sine-residue penalty.
+    julia_loss_compat
+        Whether to mirror the current Julia indexing and aggregation
+        semantics exactly when excluding warmup layers.
 
     Returns
     -------
@@ -348,6 +352,7 @@ def compute_loss_breakdown(
 
     dual = _as_float_tensor(parity_check_matrix_dual, posterior_llrs)
     per_layer: list[LayerLossBreakdown] = []
+    aggregate_inputs = posterior_llrs.new_zeros((n_layers,)) if julia_loss_compat else None
 
     base_loss_fn = (
         compute_quadratic_residue_loss_from_llrs
@@ -355,7 +360,13 @@ def compute_loss_breakdown(
         else compute_sine_residue_loss_from_llrs
     )
 
-    for layer_index in range(warmup_loss_layers, n_layers):
+    start_layer = warmup_loss_layers
+    if julia_loss_compat:
+        # Mirror the current Julia loop `for layer in warmup_loss_layers:n_layers`,
+        # where the CLI value is treated as a 1-based first included layer index.
+        start_layer = max(warmup_loss_layers - 1, 0)
+
+    for layer_index in range(start_layer, n_layers):
         post = posterior_llrs[:, :, layer_index]
         base_loss = base_loss_fn(post, expected_recoveries, dual)
         llr_reg = syndrome_loss_regularizer(post) * torch.tanh(
@@ -389,8 +400,14 @@ def compute_loss_breakdown(
                 total_loss=total_loss,
             )
         )
+        if aggregate_inputs is not None:
+            aggregate_inputs[layer_index] = total_loss
 
-    losses_per_layer = torch.stack([layer.total_loss for layer in per_layer])
+    losses_per_layer = (
+        aggregate_inputs
+        if aggregate_inputs is not None
+        else torch.stack([layer.total_loss for layer in per_layer])
+    )
     if aggregation == "linear_ramp":
         aggregate_loss = linear_ramp_loss(losses_per_layer)
     elif aggregation == "softmin":
