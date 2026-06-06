@@ -406,3 +406,78 @@ function forward_pass(bpnn, initial_llrs_batch, syndromes_batch)
 
     return posterior_llrs_all
 end
+
+function (bpnn::NachmaniNeuralBP)(
+    initial_llrs_batch::AbstractMatrix{<:Real},
+    syndromes_batch::BitMatrix
+)
+    """
+    Forward pass through the Neural Network for Nachmani et al. architecture, returning the LLRs at each layer.
+    """
+
+    base = bpnn.base
+    n_batches = size(initial_llrs_batch, 2)
+    neurons_per_layer = base.nb_neurons_per_layer
+
+    # Buffers
+    messages_c2v      = zeros(Float32, neurons_per_layer, n_batches)
+
+    # C2V buffers (magnitude + sign)
+    m_c2v_magnitudes  = similar(messages_c2v)
+    m_c2v_signs       = falses(size(messages_c2v))
+
+    # V2C buffers
+    messages_v2c      = similar(messages_c2v)
+
+    # V2C activated (magnitude + sign)
+    m_v2c_magnitudes  = similar(messages_v2c)
+    m_v2c_signs       = falses(size(messages_v2c))
+
+    # Channel contribution buffer
+    weighted_channel_llrs = similar(initial_llrs_batch)
+    # this will carry weights_llrs .* channel_llrs to avoid recomputing
+
+    posterior_llrs_layer = zeros(Float32, base.code_n_bits, n_batches)
+
+    # Sparse templates
+    weight_matrix_v2c = sparse(
+        base.non_zero_rows_C2V_V2C,
+        base.non_zero_cols_C2V_V2C,
+        zeros(Float32, length(base.non_zero_rows_C2V_V2C)),
+        base.nb_neurons_per_layer,
+        base.nb_neurons_per_layer
+    )
+
+    weight_matrix_readout = sparse(
+        base.non_zero_rows_C2V_readout,
+        base.non_zero_cols_C2V_readout,
+        zeros(Float32, length(base.non_zero_rows_C2V_readout)),
+        base.code_n_bits,
+        base.nb_neurons_per_layer
+    )
+
+    posterior_llrs = Zygote.Buffer(zeros(Float32, base.code_n_bits, n_batches, base.n_layers))
+
+    for layer in 1:base.n_layers
+        compute_layer!(
+            messages_c2v,
+            m_c2v_magnitudes,
+            m_c2v_signs,
+            messages_v2c,
+            m_v2c_magnitudes,
+            m_v2c_signs,
+            weighted_channel_llrs,
+            posterior_llrs_layer,
+            syndromes_batch,
+            initial_llrs_batch,
+            bpnn,
+            layer,
+            weight_matrix_v2c,
+            weight_matrix_readout
+        )
+
+        posterior_llrs[:, :, layer] = posterior_llrs_layer
+    end
+
+    return copy(posterior_llrs)
+end

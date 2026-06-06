@@ -25,8 +25,6 @@
 #   posteriors :: Array{Float32, 3},             (n_bits × n_samples × n_layers)
 # ----------------------------------------------------------------------------
 
-#module NeuralBPGPU
-
 # ============================================================================
 # BACKEND — conditionally defined based on USE_GPU environment variable
 #   Apple Silicon (M-series): ArrayT = Metal.MtlArray (when USE_GPU=1)
@@ -355,7 +353,3 @@ function _forward_pass_gpu_chunk(
     posterior_llrs = Array(posterior_3d_gpu)   # transfer to CPU
     return posterior_llrs
 end
-
-# ----------------------------------------------------------------------------
-
-#end # module NeuralBPGPU
