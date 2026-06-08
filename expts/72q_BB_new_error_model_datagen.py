@@ -15,9 +15,9 @@ import matplotlib.pyplot as plt
 # Geometry: Ladder grid R x C
 R, C = 2, 36 #change to 2,45 for 90 qubits and change file names accordingly
 n_qubits = R * C
-output_dir_errors = f"BB_codes/72q_BB_p_0.010_q_0.001_std_0.01_data/testing_data"
-output_dir_CER = f"BB_codes/72q_BB_p_0.010_q_0.001_std_0.01_data/correlated_weights"
-output_dir_prob = f"BB_codes/72q_BB_p_0.010_q_0.001_std_0.01_data/assigned_probabilities"
+output_dir_errors = f"data/72q_BB_p_0.010_q_0.001_std_0.01_data/testing_data"
+output_dir_CER = f"data/72q_BB_p_0.010_q_0.001_std_0.01_data/correlated_weights"
+output_dir_prob = f"data/72q_BB_p_0.010_q_0.001_std_0.01_data/assigned_probabilities"
 os.makedirs(output_dir_errors, exist_ok=True)
 os.makedirs(output_dir_CER, exist_ok=True)
 os.makedirs(output_dir_prob, exist_ok=True)
@@ -132,10 +132,10 @@ def compute_one_qubit_marginals(independent_error_prob, conditional_nb_flip_prob
     #normalize by the sum of all one-qubit marginals to get a distribution
     total=sum(one_qubit_marginals.values())
     print("Total sum of one-qubit marginals before normalization:", total)  
-    for key in one_qubit_marginals:
-        one_qubit_marginals[key]/=total
-    total_after=sum(one_qubit_marginals.values())
-    print("Total sum of one-qubit marginals after normalization:", total_after)
+    #for key in one_qubit_marginals:
+        #one_qubit_marginals[key]/=total
+    #total_after=sum(one_qubit_marginals.values())
+    #print("Total sum of one-qubit marginals after normalization:", total_after)
 
     return one_qubit_marginals          
 
@@ -201,10 +201,10 @@ def compute_two_qubit_marginals_all_edge(independent_error_prob, conditional_nb_
     #normalize by the sum of all two-qubit marginals to get a distribution
     total=sum(two_qubit_marginals.values())
     print("Total sum of two-qubit marginals before normalization:", total)
-    for key in two_qubit_marginals:
-        two_qubit_marginals[key]/=total
-    total_after=sum(two_qubit_marginals.values())
-    print("Total sum of two-qubit marginals after normalization:", total_after)
+    #for key in two_qubit_marginals:
+        #two_qubit_marginals[key]/=total
+    #total_after=sum(two_qubit_marginals.values())
+    #print("Total sum of two-qubit marginals after normalization:", total_after)
     return two_qubit_marginals
 
 
@@ -237,7 +237,7 @@ def plot_one_qubit_marginals(one_marginals, R, C):
     plt.tight_layout()
     
     #save as pdf
-    plt.savefig("BB_codes/72q_BB_p_0.010_q_0.001_std_0.01_data/one_qubit_marginals_bar_s_1.pdf")
+    plt.savefig("data/72q_BB_p_0.010_q_0.001_std_0.01_data/one_qubit_marginals_bar_s_1.pdf")
     plt.show()
 
 
@@ -276,7 +276,7 @@ def plot_two_qubit_marginals(two_marginals):
     plt.title("Two-qubit marginal for each nearest-neighbor edge")
     plt.tight_layout()
     #save as pdf
-    plt.savefig("BB_codes/72q_BB_p_0.010_q_0.001_std_0.01_data/two_qubit_marginals_bar_s_1.pdf")
+    plt.savefig("data/72q_BB_p_0.010_q_0.001_std_0.01_data/two_qubit_marginals_bar_s_1.pdf")
     plt.show()
 
     # Print largest few edges
@@ -379,13 +379,13 @@ for p_value in p_means:
 
 
 # Create training data directory sampling from testing data
-training_dir = f"BB_codes/72q_BB_p_0.010_q_0.001_std_0.01_data/training_data"
+training_dir = f"data/72q_BB_p_0.010_q_0.001_std_0.01_data/training_data"
 os.makedirs(training_dir, exist_ok=True)
 for p_value in p_means:
     for q_value in q_means:
         for s in range(1, n_samples + 1):
 
-            filename = f"BB_codes/72q_BB_p_0.010_q_0.001_std_0.01_data/testing_data/test_ballistic_p_{p_value}_q_{q_value}_s_{s}.txt"
+            filename = f"data/72q_BB_p_0.010_q_0.001_std_0.01_data/testing_data/test_ballistic_p_{p_value}_q_{q_value}_s_{s}.txt"
 
             # load (qubits x patterns)
             data = np.loadtxt(filename, dtype=int)
