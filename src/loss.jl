@@ -165,8 +165,9 @@ function softmin_loss(losses_per_layer::AbstractVector{Float32}, temp::Float32):
     Compute a smooth approximation to the minimum of the per-layer losses using the softmin function.
     We want to derive a function that approximates the minimum of the losses across layers, but is differentiable and allows for gradient flow to all layers.
     The softmin function is defined as:
-    softmin(x_i) = - temp * log(sum(exp(-x_i / temp)))
-    where temp is a temperature parameter that controls the smoothness of the approximation. As temp approaches zero, the softmin approaches the true minimum, but for larger temp, it provides a smoother approximation that allows for gradient flow to all layers.
+    softmin(x) = - temp * log( ∑_i exp(-x_i / temp) )
+    where temp is a temperature parameter that controls the smoothness of the approximation.
+    As temp approaches zero, the softmin approaches the true minimum, but for larger temp, it provides a smoother approximation that allows for gradient flow to all layers.
     """
     min_loss = minimum(losses_per_layer)
     aggregate_loss = min_loss - temp * log(sum(exp.(-(losses_per_layer .- min_loss) ./ temp)))
@@ -243,22 +244,22 @@ function compute_loss_including_correlations(
     All hyperparameters are plain `Float32` scalars (not singleton arrays).
     """
     n_layers = size(posterior_llrs, 3)
-    losses_per_layer = zeros(Float32, n_layers)
-    for layer in warmup_loss_layers:n_layers
+    losses_per_layer = zeros(Float32, n_layers - warmup_loss_layers)
+    for layer in (warmup_loss_layers + 1):n_layers
         post = posterior_llrs[:, :, layer]
         # base_loss   = compute_quadratic_residue_loss_from_llrs(post, expected_recoveries, parity_check_matrix_dual)
         base_loss   = compute_sine_residue_loss_from_llrs(post, expected_recoveries, parity_check_matrix_dual)
-        llr_reg     = syndrome_loss_regularizer(post) * tanh(layer / n_layers)
+        llr_reg     = syndrome_loss_regularizer(post)
         sparse_pen  = sparsity_penalty(post)
         corr_pen    = is_correlated ? compute_additional_loss_from_ising_correlations(post, connectivity, correlation_strengths) : 0f0
 
-        losses_per_layer[layer] = base_loss +
+        losses_per_layer[layer - warmup_loss_layers] = base_loss +
                                   llr_certainty_importance * llr_reg +
                                   correlation_importance * corr_pen +
                                   sparsity_importance * sparse_pen
     end
-    # total_loss = softmin_loss(losses_per_layer, loss_layer_temperature)
-    total_loss = linear_ramp_loss(losses_per_layer)
+    total_loss = softmin_loss(losses_per_layer, loss_layer_temperature)
+    # total_loss = linear_ramp_loss(losses_per_layer)
     # total_loss = last_layer_only_loss(losses_per_layer)
     return total_loss
 end

@@ -1,64 +1,6 @@
 # Legacy functions that are no longer used in the current implementation
 # These functions were moved here to keep the main codebase clean
 
-function v2c_to_c2v!(
-    messages_c2v,                            # output (final LLRs)
-    activated_m_c2v_magnitudes,       # buffer: aggregated magnitudes
-    activated_m_c2v_signs,            # buffer: aggregated signs
-    activated_m_v2c_magnitudes,
-    activated_m_v2c_signs,
-    syndromes_batch,
-    base
-)
-    """
-    Compute the messages from check nodes to variable nodes (C2V) given the messages from variable nodes to check nodes (V2C) and the syndromes, for a single layer.
-
-    We have to compute the following for each edge (c, v):
-
-        a(m^t_(c->v)) = i π s_c + ∑_(v' ∈ N(c) - v) a(m^t_(v'->c))
-
-    where
-    - s_c is the syndrome bit corresponding to check node c
-    - N(c) is the set of variable nodes connected to check node c.
-
-    We then have to apply the inverse activation function to get the messages m^t_(c->v) from a(m^t_(c->v)): 
-        m^t_(c->v) = a^(-1)(a(m^t_(c->v)))
-    where a^(-1)(x) = 2 * atanh(exp(x)).
-
-    Instead of representing a(m^t_(c->v)) as a complex number, which needs to be exponentiated, we note that
-    exp(i π s_c + ∑ a(m^t_(v'->c))) = exp(∑ a(m^t_(v'->c))) * (-1)^(s_c)
-                                    = exp(∑ |a(m^t_(v'->c))|) * (-1)^(s_c + parity of signs of incoming messages)
-
-    So we will
-    - magnitudes sum linearly
-    - combine the signs with the syndromes via XOR (parity)
-
-    Final output:
-        exp(x) = exp(magnitude) * (-1)^sign
-    """
-
-    # -------------------------
-    # 1. Magnitude aggregation (same as before, but real)
-    # -------------------------
-    mul!(activated_m_c2v_magnitudes, base.adj_V2C_C2V, activated_m_v2c_magnitudes)
-
-    # -------------------------
-    # 2. Set the signs to the parity of the incoming signs, XOR with syndrome
-    # -------------------------
-    xor_affine!(activated_m_c2v_signs, base.adj_V2C_C2V, activated_m_v2c_signs, syndromes_batch[base.neuron_to_checks, :])
-    
-    # -------------------------
-    # 3. Activation: 2 * atanh(exp(x))
-    # -------------------------
-    safe_atanh_exp_signed!(
-        messages_c2v,
-        activated_m_c2v_magnitudes,
-        activated_m_c2v_signs
-    )
-
-    return nothing
-end
-
 function v2c_to_c2v(
     activated_m_v2c_magnitudes,
     activated_m_v2c_signs,

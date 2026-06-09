@@ -58,6 +58,8 @@ function test_forward_propagation()
     """
     # Load the NeuralBP model with predefined weights.
     bpnn = load_neural_BP_model()
+    (n_checks, n_bits) = size(bpnn.base.parity_check_matrix)
+    n_layers = bpnn.base.n_layers
 
     # Define a syndrome to be a random binary vector of size equal to the number of rows of H
     syndrome = [1, 1, 0, 1, 1, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0]
@@ -94,7 +96,8 @@ function test_forward_propagation()
 
     # Run the standard BP decoder for `n_layers` iterations to get the expected LLRs after `n_layers` iterations.
     n_iterations = n_layers
-    (final_llrs_standard_bp, _) = run_bp("SumProduct", H, size(H, 1) + 1, syndrome, convert.(Float64, initial_llrs), n_iterations; verbose=false)
+    parity_check_matrix_int = convert.(Int, bpnn.base.parity_check_matrix)
+    (final_llrs_standard_bp, _) = run_bp("SumProduct", parity_check_matrix_int, n_checks + 1, syndrome, convert.(Float64, initial_llrs), n_iterations; verbose=false)
 
     # Check if the final LLRs from the functional form of the Neural BP match the expected LLRs from the standard BP after `n_layers` iterations.
     if all(isapprox.(output_llrs_functional_version[:, :, n_layers], final_llrs_standard_bp, atol=1e-6))

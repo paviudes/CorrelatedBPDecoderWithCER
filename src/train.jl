@@ -28,6 +28,7 @@ function get_loss_value(
         llrs_batch,
         syndromes_batch
     )
+
     # Compute the total Loss including the correlation penalty
     total_loss = compute_loss_including_correlations(
         posterior_llrs,
@@ -83,22 +84,22 @@ function get_individual_loss_values(
     is_correlated = base.is_correlated
 
     # Compute the loss from the syndrome and correlation parts individually.
-    n_layers::Int = size(posterior_llrs, 3) - warmup_loss_layers
+    n_layers::Int = size(posterior_llrs, 3)
     # Record the syndrome loss, syndrome regularizer, the correlation loss, and the total loss separately per layer.
-    losses_per_layer = zeros(Float32, (n_layers, 4))
-    for layer in warmup_loss_layers:n_layers
+    losses_per_layer = zeros(Float32, (n_layers - warmup_loss_layers, 4))
+    for layer in (warmup_loss_layers + 1):n_layers
         post = posterior_llrs[:, :, layer]
         # base_loss   = compute_quadratic_residue_loss_from_llrs(post, expected_recoveries, parity_check_matrix_dual)
         base_loss   = compute_sine_residue_loss_from_llrs(post, expected_recoveries, parity_check_matrix_dual)
-        llr_reg     = syndrome_loss_regularizer(post) * tanh(layer / n_layers)
+        llr_reg     = syndrome_loss_regularizer(post)
         sparse_pen  = sparsity_penalty(post)
         corr_pen    = is_correlated ? compute_additional_loss_from_ising_correlations(post, connectivity, correlation_strengths) : 0f0
 
         # Record the individual losses
-        losses_per_layer[layer - warmup_loss_layers + 1, 1] = base_loss
-        losses_per_layer[layer - warmup_loss_layers + 1, 2] = llr_reg
-        losses_per_layer[layer - warmup_loss_layers + 1, 3] = corr_pen
-        losses_per_layer[layer - warmup_loss_layers + 1, 4] = sparse_pen
+        losses_per_layer[layer - warmup_loss_layers, 1] = base_loss
+        losses_per_layer[layer - warmup_loss_layers, 2] = llr_reg
+        losses_per_layer[layer - warmup_loss_layers, 3] = corr_pen
+        losses_per_layer[layer - warmup_loss_layers, 4] = sparse_pen
         
         # Compute the total loss for the layer
         loss_per_layer = base_loss + 
@@ -106,10 +107,10 @@ function get_individual_loss_values(
                          correlation_importance * corr_pen +
                          sparsity_importance * sparse_pen
         
-        losses_per_layer[layer - warmup_loss_layers + 1, 4] = loss_per_layer
+        losses_per_layer[layer - warmup_loss_layers, 4] = loss_per_layer
     end
-    # total_loss = softmin_loss(losses_per_layer[:, 4], loss_layer_regularizer)
-    total_loss = linear_ramp_loss(losses_per_layer[:, 4])
+    total_loss = softmin_loss(losses_per_layer[:, 4], loss_layer_regularizer)
+    # total_loss = linear_ramp_loss(losses_per_layer[:, 4])
     # total_loss = last_layer_only_loss(losses_per_layer[:, 4])
     return (total_loss, losses_per_layer)
 end
@@ -291,7 +292,7 @@ function train_neuralbp_enzyme!(
             "sparsity_importance"
         ]
     )
-    
+
     # ---------------------------------
     # Create batches
     # ---------------------------------
@@ -389,19 +390,20 @@ function train_neuralbp_enzyme!(
                 Enzyme.Const(syndromes_batch),
                 Enzyme.Const(expected_batch)
             )
-
+            
             # -------------------------
             # NaN / Inf guard — skip the optimizer step entirely if any
             # gradient component is non-finite. This preserves the last
             # known-good Adam state and the last known-good weights.
             # -------------------------
-            grads_finite = all(isfinite, grad_w_c2v_v2c) &&
+            grads_finite = isfinite(loss_value)          && 
+                           all(isfinite, grad_w_c2v_v2c) &&
                            all(isfinite, grad_w_llrs)    &&
                            all(isfinite, grad_w_readout)
 
             if !grads_finite
                 nan_skip_count += 1
-                @warn "Non-finite gradient at epoch=$epoch batch=$b — skipping update." nan_skip_count
+                @warn "Non-finite gradient at epoch=$epoch batch=$b. Loss = $(loss_value). Skipping update." nan_skip_count
                 ProgressMeter.next!(batch_progress; showvalues = [(:loss, NaN32), (:nan_skips, nan_skip_count)])
 
                 # If too many batches have been skipped in this epoch due to NaN/Inf gradients, we break out of the batch loop early to trigger the epoch rollback at the end of the epoch.
@@ -420,8 +422,23 @@ function train_neuralbp_enzyme!(
             end
 
             # -------------------------
+            # Adaptive Gradient Step (Adam / AdamW + ClipGrad)
+            # -------------------------
+            grads = (
+                weights_c2v_v2c     = grad_w_c2v_v2c,
+                weights_llrs        = grad_w_llrs,
+                weights_c2v_readout = grad_w_readout
+            )
+            (opt_state, bpnn) = Optimisers.update!(opt_state, bpnn, grads)
+            # -------------------------
+
+            # -------------------------
             # Progress update
             # -------------------------
+            ProgressMeter.next!(batch_progress; showvalues = [(:loss, loss_value), (:nan_skips, nan_skip_count)])
+
+            # --------------------------------------------------
+            # Debugging: log this batch.
             (aggregate_loss, individual_losses) = get_individual_loss_values(
                 bpnn.weights_c2v_v2c,
                 bpnn.weights_llrs,
@@ -437,21 +454,6 @@ function train_neuralbp_enzyme!(
                 expected_batch
             )
             
-            # -------------------------
-            # Adaptive Gradient Step (Adam / AdamW + ClipGrad)
-            # -------------------------
-            grads = (
-                weights_c2v_v2c     = grad_w_c2v_v2c,
-                weights_llrs        = grad_w_llrs,
-                weights_c2v_readout = grad_w_readout
-            )
-            (opt_state, bpnn) = Optimisers.update!(opt_state, bpnn, grads)
-            # -------------------------
-
-            ProgressMeter.next!(batch_progress; showvalues = [(:loss, aggregate_loss), (:nan_skips, nan_skip_count)])
-
-            # --------------------------------------------------
-            # Debugging: log this batch.
             index = (epoch - 1) * length(training_dataset) + b
             log_batch_debug!(
                 hp_log,
@@ -552,7 +554,7 @@ function train_Nachmani_neuralbp(
             training_syndromes, 
             expected_recoveries, 
             hyperparameters;
-            debugging_logfile="$(prefix)/log/debugging_$(training_source)"
+            debugging_logfile="$(prefix)/logs/debugging_$(training_source)"
         )
 
         # Save the trained weights to a file

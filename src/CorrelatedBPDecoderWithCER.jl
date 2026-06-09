@@ -116,7 +116,7 @@ include("forward_gpu.jl")
 export forward_pass_gpu
 
 include("legacy.jl") # these are solely for debugging and testing, not intended for external use.
-export forward_pass, c2v_to_v2c, v2c_to_c2v, v2c_to_c2v!, readout
+export forward_pass, c2v_to_v2c, v2c_to_c2v, readout
 
 # Print functions for Neural BP models
 include("printfuns.jl")

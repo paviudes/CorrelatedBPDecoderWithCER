@@ -283,6 +283,7 @@ function parse_cer_data(correlation_strengths_file::String)::Tuple{Matrix{Int}, 
     - the correlation strengths: vector where each element corresponds to the weight of the edge between the two qubits (same order as the rows of the connectivity matrix)
     - single qubit error rates: dictionary where each key is a qubit index and the value is the error rate of that qubit
     """
+    min_error_rate::Float32 = 1f-6  # minimum error rate to avoid issues with log(0) in the decoder
     connectivity = Vector{Tuple{Int, Int}}(undef, 0)
     correlation_strengths = Vector{Float32}(undef, 0)
     single_qubit_error_rates = Dict{Int, Float32}()
@@ -302,7 +303,7 @@ function parse_cer_data(correlation_strengths_file::String)::Tuple{Matrix{Int}, 
                 if m !== nothing
                     qubit = parse(Int, m.captures[1])
                     error_rate = parse(Float32, m.captures[2])
-                    single_qubit_error_rates[qubit] = error_rate
+                    single_qubit_error_rates[qubit] = max(error_rate, min_error_rate)
                 end
             elseif case_b
                 # Case (b)
@@ -310,9 +311,9 @@ function parse_cer_data(correlation_strengths_file::String)::Tuple{Matrix{Int}, 
                 if m !== nothing
                     qubit1 = parse(Int, m.captures[1])
                     qubit2 = parse(Int, m.captures[2])
-                    strength = parse(Float32, m.captures[3])
+                    two_qubit_error_rate = parse(Float32, m.captures[3])
                     push!(connectivity, (qubit1, qubit2))
-                    push!(correlation_strengths, strength)
+                    push!(correlation_strengths, max(two_qubit_error_rate, min_error_rate))
                 end
             else
                 @warn "Line in correlation strengths file does not match expected format: $line"
