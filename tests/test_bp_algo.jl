@@ -88,7 +88,7 @@ function test_training_Nachmani_BP()
     logicals_file = "$(prefix)/code/LZ.txt"
     correlation_strengths_file = "$(prefix)/correlated_weights/correlated_weights_p_0.01_q_0.001_s_1.txt"
     training_errors_file = "$(prefix)/training_data/train_ballistic_p_0.01_q_0.001_s_1.txt"
-    n_layers = 50
+    n_layers = 5
     
     start = time()
     
