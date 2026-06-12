@@ -113,8 +113,8 @@ function run_on_SLURM(commands_file::String, n_commands::Int; n_cpus::Int=10, ma
         "",
         "# Load necessary modules and set up environment",
         "module load julia", # The default version on Trillium is 1.12.
-        "cp -r ~/.julia $SLURM_TMPDIR/",
-        "export JULIA_DEPOT_PATH=\"$SLURM_TMPDIR/.julia\"",
+        "cp -r ~/.julia \$SLURM_TMPDIR/",
+        "export JULIA_DEPOT_PATH=\"\$SLURM_TMPDIR/.julia\"",
         "",
         "# Disable GPU usage since the cluster nodes we have access to do not have GPUs.",
         "export USE_GPU=0",
