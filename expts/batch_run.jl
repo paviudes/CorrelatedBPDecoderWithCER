@@ -37,6 +37,7 @@ function generate_parallel_commands(
                 --n_hidden_layers $(n_hidden_layers) \
                 --hyperparams $(hyperparams_file) \
                 --correlation_strengths_file $(cer_file) \
+                --quiet true \
                 --train $(train_file)"""
 
             cmd = replace(cmd, "\n" => " ")
@@ -89,7 +90,7 @@ function run_on_SLURM(commands_file::String, n_commands::Int; n_cpus::Int=10, ma
 
     slurm_script_lines = [
         "#!/bin/bash",
-        "#SBATCH --account=default",
+        "#SBATCH --account=def-jemerson",
         "#SBATCH --job-name=nbp_$(timestamp)",
         "#SBATCH --output=$(output_file)",
         "#SBATCH --error=$(error_file)",
@@ -119,8 +120,11 @@ function run_on_SLURM(commands_file::String, n_commands::Int; n_cpus::Int=10, ma
         "# Disable GPU usage since the cluster nodes we have access to do not have GPUs.",
         "export USE_GPU=0",
         "",
+        "# Edit permissions for the file containing the commands to ensure it is readable by the job",
+        "chmod +x $(commands_dir)/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt",
+        "",
         "# Run commands in parallel",
-        "parallel --bar --keep-order --jobs $(n_cpus) --results $(commands_dir)/logs/\${SLURM_ARRAY_TASK_ID} ::: $(commands_dir)/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt"
+        "parallel --bar --keep-order --jobs $(n_cpus) --results $(commands_dir)/logs/\${SLURM_ARRAY_TASK_ID}.txt < $(commands_dir)/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt"
     ]
 
     # Write the SLURM job script
@@ -194,7 +198,7 @@ function main()
         # Cluster settings.
         ncpus = 6,
         max_nodes = 1,
-        wall_time = "3:00:00",
+        wall_time = "1:00:00",
         cluster_backend = "SLURM" # "SLURM" or "Google_VM" or "local"
     )
 end
