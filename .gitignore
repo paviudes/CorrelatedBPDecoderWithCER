@@ -21,6 +21,7 @@ plots/**
 # Project-specific artifacts
 Manifest.toml  # optional: ignore if you want others to resolve deps themselves
 *.toml.bk
+*.json
 
 # macOS files
 .DS_Store
