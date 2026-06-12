@@ -232,6 +232,10 @@ if abspath(PROGRAM_FILE) == @__FILE__
     )
 
     # Test the Neural BP model predictions
+    results_dir = "$(prefix)/results"
+    if !isdir(results_dir)
+        mkdir(results_dir)
+    end
     
     # If no test file is provided, skip testing of the Neural BP model and exit.
     if args_dict["test"] == ""
@@ -240,6 +244,23 @@ if abspath(PROGRAM_FILE) == @__FILE__
     end
     
     test_errors_file = "$(prefix)/testing_data/$(args_dict["test"])"
+    
+    # The filename to save the results is:
+    training_source = splitext(basename(training_errors_file))[1]
+    testing_source = splitext(basename(test_errors_file))[1]
+    results_file = "$(results_dir)/simulation_results_" *
+               "$(testing_source)_nlayers_" *
+               "$(n_hidden_layers)_epochs_" *
+               "$(n_epochs)_trained_using_" *
+               "$(training_source).csv"
+    
+    if isfile(results_file)
+        println("Results file already exists: $(results_file). Skipping testing of the Neural BP model and loading results from file.")
+        results_df = collect_decoder_statistics(results_file)
+        println(results_df)
+        exit(0)
+    end
+    
     is_correct = neuralbp_test_predictions(bpnn, test_errors_file)
     failures = collect(.!is_correct)
 
@@ -281,19 +302,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     )
 
     # Save the decoder statistics to a CSV file for later analysis.
-    results_dir = "$(prefix)/results"
-    if !isdir(results_dir)
-        mkdir(results_dir)
-    end
-    # The filename to save the results is:
-    training_source = splitext(basename(training_errors_file))[1]
-    testing_source = splitext(basename(test_errors_file))[1]
-    results_file = "$(results_dir)/simulation_results_" *
-               "$(testing_source)_nlayers_" *
-               "$(n_hidden_layers)_epochs_" *
-               "$(n_epochs)_trained_using_" *
-               "$(training_source).csv"
-    record_decoder_statistics(stats, results_file)
+    results_df = record_decoder_statistics(stats, results_file)
 end
 #=
 For batch runs, copy paste the following command in the terminal.

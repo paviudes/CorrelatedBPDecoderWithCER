@@ -41,7 +41,7 @@ struct DecoderStatistics
     end
 end
 
-function record_decoder_statistics(stats::DecoderStatistics, output_filename::String="./../data/decoder_statistics.csv")::String
+function record_decoder_statistics(stats::DecoderStatistics, output_filename::String="./../data/decoder_statistics.csv")::DataFrame
     """
     Print the statistics in a JSON format so that they can be easily printed into a file using GNU `parallel`.
     """
@@ -53,7 +53,7 @@ function record_decoder_statistics(stats::DecoderStatistics, output_filename::St
     # Save the statistics to a CSV file
     stats_dataframe = DataFrame(stats_dict)
     CSV.write(output_filename, stats_dataframe)
-    return output_filename
+    return stats_dataframe
 end
 
 """
@@ -88,29 +88,13 @@ end
 function collect_decoder_statistics(simulation_output_file::String)::DataFrame
     """
     Collect decoder statistics from simulations with settings.
-    The `output_data_file` is is a text file where each line corresponds to a dictionary specifying all the parameters of a simulation run, which are also parameters that define `DecoderStatistics`.
-    Each line should be a valid dictionary of the form: {`parameter_name1` => `value1`, `parameter_name2` => `value2`, ...}.
+    The simulation output file is expected to be a CSV file containing a DataFrame saved using `record_decoder_statistics`.
     """
-    # Create an empty DataFrame to store the statistics
-    parameter_names = fieldnames(DecoderStatistics)
-    # Create an empty DataFrame with the field names in `parameter_names` and the corresponding types in `parameter_types`
-    stats_dataframe = DataFrame(
-        [name => fieldtype(DecoderStatistics, name)[] for name in parameter_names]...
-    )
-    # println("Empty DataFrame:\n", stats_dataframe)
-    fp = open(simulation_output_file, "r")
-    for line in eachline(fp)
-        # Interpret the line as a dictionary, where the line is given as a JSON string
-        line_dict = JSON.parse(line)
-        # println("Parsed line dictionary: ", line_dict)
-        # Create a new row in the DataFrame with the values from the dictionary, where the keys correspond to the parameter names
-        new_dataframe_row = DataFrame(
-            [Symbol(name) => [line_dict[name]] for name in keys(line_dict)]...
-        )
-        # println("New DataFrame row:\n", new_dataframe_row)
-        append!(stats_dataframe, new_dataframe_row)
+    if !isfile(simulation_output_file)
+        @warn ("File $(simulation_output_file) is missing.")
+        return DataFrame()
     end
-    close(fp)
+    stats_dataframe = CSV.read(simulation_output_file, DataFrame)
     return stats_dataframe
 end
 

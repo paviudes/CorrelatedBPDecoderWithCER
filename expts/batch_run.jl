@@ -98,7 +98,7 @@ function run_on_SLURM(commands_file::String, n_commands::Int; n_cpus::Int=10, ma
         "#SBATCH --ntasks=1",
         "#SBATCH --cpus-per-task=$(n_cpus)",
         "#SBATCH --time=$(wall_time)",
-        "#SBATCH --partition=cpu",
+        "#SBATCH --partition=compute",
         "",
         "#SBATCH --mail-type=ALL",
         "#SBATCH --mail-user=pavithran.sridhar@gmail.com",
