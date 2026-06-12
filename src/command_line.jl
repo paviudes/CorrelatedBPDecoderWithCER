@@ -194,7 +194,7 @@ function parse_command_line_args_NN(;prefix::String="./../data")::Dict{String, A
 		"--correlation_strengths_file"
 			help = "File containing the correlation strengths for the additional loss term for correlations. The file should contain a vector of correlation strengths corresponding to the rows of the connectivity matrix."
 			arg_type = String
-			default = "correlation_strengths.txt"
+			default = "unspecified.txt"
 		"--hyperparams"
 			help = "JSON file containing the hyperparameters for training the Neural BP model. If not provided, default hyperparameters will be used."
 			arg_type = String
@@ -207,6 +207,14 @@ function parse_command_line_args_NN(;prefix::String="./../data")::Dict{String, A
 			help = "Name of the file used for testing the trained Neural BP model."
 			arg_type = String
 			default = ""
+		"--debug"
+			help = "Enable debug mode: log per-batch loss components and weight statistics."
+			arg_type = Bool
+			default = false
+		"--quiet"
+			help = "Suppress progress bars."
+			arg_type = Bool
+			default = false
 	end
 	args_dict = parse_args(settings)
 	return args_dict

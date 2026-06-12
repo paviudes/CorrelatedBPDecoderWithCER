@@ -105,14 +105,18 @@ export NeuralBPBase, NeuralBP, add_soft_constraints_to_neuralbpbase, parse_cer_d
 
 # Nachmani Neural BP model
 include("nachmani.jl")
-export NachmaniNeuralBP, forward_pass, forward_pass_with_weights, c2v_to_v2c_with_weights!, v2c_to_c2v!, readout_with_weights!
+export NachmaniNeuralBP
+
+# Explicit-weight forward pass helpers
+include("forward_pass_weights.jl")
+export forward_pass_with_weights, c2v_to_v2c_with_weights!, readout_with_weights!, v2c_to_c2v!
 
 # GPU-accelerated forward pass
 include("forward_gpu.jl")
 export forward_pass_gpu
 
 include("legacy.jl") # these are solely for debugging and testing, not intended for external use.
-export c2v_to_v2c, v2c_to_c2v, readout
+export forward_pass, c2v_to_v2c, v2c_to_c2v, readout
 
 # Print functions for Neural BP models
 include("printfuns.jl")
@@ -134,7 +138,7 @@ export compute_additional_loss_from_ising_correlations, compute_loss_including_c
 
 # Training routines
 include("train.jl")
-export train_neuralbp!, train_neuralbp_enzyme!, generate_training_data, train_Nachmani_neuralbp
+export train_neuralbp!, train_neuralbp_enzyme!, train_Nachmani_neuralbp
 
 # Predictions with trained models
 include("predict.jl")

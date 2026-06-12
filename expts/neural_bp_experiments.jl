@@ -205,6 +205,8 @@ if abspath(PROGRAM_FILE) == @__FILE__
     correlation_strengths_file = "$(prefix)/correlated_weights/$(args_dict["correlation_strengths_file"])"
     training_errors_file = "$(prefix)/training_data/$(args_dict["train"])"
     n_hidden_layers = args_dict["n_hidden_layers"]
+    is_debug = args_dict["debug"]
+    is_quiet = args_dict["quiet"]
 
     # Extract hyperparameters from file or use defaults
     hyperparams_file = args_dict["hyperparams"]
@@ -224,7 +226,9 @@ if abspath(PROGRAM_FILE) == @__FILE__
         training_errors_file,
         hyperparams;
         initial_conditions=initial_conditions,
-        prefix=prefix
+        prefix=prefix,
+        is_debug=is_debug,
+        is_quiet=is_quiet
     )
 
     # Test the Neural BP model predictions
@@ -248,16 +252,18 @@ if abspath(PROGRAM_FILE) == @__FILE__
     ################################# =#
     # Save which of the test samples were correctly decoded and which were not to a CSV file for later analysis.
     # We want to save the index of the test sample, whether it was correctly decoded or not, and the weight of the error for each test sample that failed.
-    test_errors = convert.(Bool, readdlm(test_errors_file, Int))
-    failed_error_indices = findall(failures)
-    test_samples_df = DataFrame(
-        sample_index = failed_error_indices,
-        error_weight = vec(sum(test_errors[:, failed_error_indices], dims=1)) # Sum the number of bit flips in each error pattern to get the error weight
-    )
-    test_filename = splitext(basename(test_errors_file))[1]
-    test_samples_csv_file = "$(prefix)/results/failures_$(test_filename).csv"
-    CSV.write(test_samples_csv_file, test_samples_df)
-    println("Test sample results saved to file: $(test_samples_csv_file)")
+    if is_debug
+        test_errors = convert.(Bool, readdlm(test_errors_file, Int))
+        failed_error_indices = findall(failures)
+        test_samples_df = DataFrame(
+            sample_index = failed_error_indices,
+            error_weight = vec(sum(test_errors[:, failed_error_indices], dims=1)) # Sum the number of bit flips in each error pattern to get the error weight
+        )
+        test_filename = splitext(basename(test_errors_file))[1]
+        test_samples_csv_file = "$(prefix)/results/failures_$(test_filename).csv"
+        CSV.write(test_samples_csv_file, test_samples_df)
+        println("Test sample results saved to file: $(test_samples_csv_file)")
+    end
     #################################
     
     # Load the results on to the `DecoderStatistics` structure.
@@ -290,13 +296,25 @@ if abspath(PROGRAM_FILE) == @__FILE__
     record_decoder_statistics(stats, results_file)
 end
 #=
-parallel -j1 --bar '
+For batch runs, copy paste the following command in the terminal.
+parallel --jobs 56 --bar '
 julia --project="./../" neural_bp_experiments.jl \
-  --codename 90q_BB_p_0.008_q_0.2_std_0.2_data \
+  --codename 72q_BB_p_0.010_q_0.001_std_0.01_data \
   --n_hidden_layers 100 \
   --hyperparams default_hyperparams.toml \
-  --correlation_strengths_file correlated_weights_p_0.008_q_0.2_s_{}.txt \
-  --train train_ballistic_p_0.008_q_0.2_s_{}.txt \
-  --test test_ballistic_p_0.008_q_0.2_s_{}.txt
-' ::: $(seq 1 32)
+  --correlation_strengths_file correlated_weights_p_0.01_q_0.001_s_{}.txt \
+  --train train_ballistic_p_0.01_q_0.001_s_{}.txt \
+  --test test_ballistic_p_0.01_q_0.001_s_{}.txt
+' ::: $(seq 1 56)
+
+parallel --jobs 6 --bar 'julia --project="./../" neural_bp_experiments.jl --codename 90q_BB_p_0.010_q_0.001_std_0.01_data --n_hidden_layers 100 --hyperparams default_hyperparams.toml --correlation_strengths_file correlated_weights_p_0.01_q_0.001_s_{}.txt --train train_ballistic_p_0.01_q_0.001_s_{}.txt' ::: $(seq 1 6)
+
+For single runs, copy paste the following command in the terminal.
+julia --project="./../" neural_bp_experiments.jl \
+  --codename 90q_BB_p_0.010_q_0.001_std_0.01_data \
+  --n_hidden_layers 100 \
+  --hyperparams default_hyperparams.toml \
+  --correlation_strengths_file correlated_weights_p_0.01_q_0.001_s_1.txt \
+  --train train_ballistic_p_0.01_q_0.001_s_1.txt \
+  --test test_ballistic_p_0.01_q_0.001_s_1.txt
 =#

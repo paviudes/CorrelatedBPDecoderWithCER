@@ -9,12 +9,7 @@ function generate_parallel_commands(
     codename::String="aps",
     # Hyperparameters for the Neural BP model
     n_hidden_layers::Int=100,
-    n_epochs::Int=10,
-    batch_size::Int=2,
-    retrain::Bool=false,
-    # Hyperparameters for training the Neural BP model
-    learning_rate::Float32=1f-1,
-    max_grad_norm::Float32=2.0f0,
+    hyperparams_file::String="default_hyperparams.toml",
     julia_project::String="./../",
     commands_file::String="commands.txt",
     output_file::String="simulation_results.log",
@@ -40,14 +35,10 @@ function generate_parallel_commands(
             cmd = """julia --project="$(julia_project)" neural_bp_experiments.jl \
                 --codename $(codename) \
                 --n_hidden_layers $(n_hidden_layers) \
-                --n_epochs $(n_epochs) \
-                --batch_size $(batch_size) \
+                --hyperparams $(hyperparams_file) \
                 --correlation_strengths_file $(cer_file) \
-                --train $(train_file) \
-                --test $(test_file) \
-                --retrain $(retrain) \
-                --learning_rate $(learning_rate) \
-                --max_grad_norm $(max_grad_norm)"""
+                --quiet true \
+                --train $(train_file)"""
 
             cmd = replace(cmd, "\n" => " ")
 
@@ -99,7 +90,7 @@ function run_on_SLURM(commands_file::String, n_commands::Int; n_cpus::Int=10, ma
 
     slurm_script_lines = [
         "#!/bin/bash",
-        "#SBATCH --account=default",
+        "#SBATCH --account=def-jemerson",
         "#SBATCH --job-name=nbp_$(timestamp)",
         "#SBATCH --output=$(output_file)",
         "#SBATCH --error=$(error_file)",
@@ -121,8 +112,19 @@ function run_on_SLURM(commands_file::String, n_commands::Int; n_cpus::Int=10, ma
         "# Extract commands for this node",
         "sed -n \"\${START},\${END}p\" $(commands_file) > $(commands_dir)/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt",
         "",
+        "# Load necessary modules and set up environment",
+        "module load julia", # The default version on Trillium is 1.12.
+        "cp -r ~/.julia \$SLURM_TMPDIR/",
+        "export JULIA_DEPOT_PATH=\"\$SLURM_TMPDIR/.julia\"",
+        "",
+        "# Disable GPU usage since the cluster nodes we have access to do not have GPUs.",
+        "export USE_GPU=0",
+        "",
+        "# Edit permissions for the file containing the commands to ensure it is readable by the job",
+        "chmod +x $(commands_dir)/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt",
+        "",
         "# Run commands in parallel",
-        "parallel --bar --keep-order --jobs $(n_cpus) --results $(commands_dir)/results_\${SLURM_ARRAY_TASK_ID} :::: $(commands_dir)/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt"
+        "parallel --bar --keep-order --jobs $(n_cpus) --results $(commands_dir)/logs/\${SLURM_ARRAY_TASK_ID}.txt < $(commands_dir)/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt"
     ]
 
     # Write the SLURM job script
@@ -180,25 +182,23 @@ function main()
     p: 0.001:0.001:0.005
     q: 0.3:0.04:0.66
     """
-    dirname = "72q_BB_p_0.006_q_0.1_std_0.1"
+    dirname = "90q_BB_p_0.010_q_0.001_std_0.01_data"
     generate_parallel_commands(
-        [0.006, 0.008], # set of p values
-        [0.1], # set of q values
-        56; # number of samples per (p, q) pair. For optimal usage of the machine, please set this to be a multiple of the number of CPUs available.
+        [0.01], # set of p values
+        [0.001], # set of q values
+        6; # number of samples per (p, q) pair. For optimal usage of the machine, please set this to be a multiple of the number of CPUs available.
         codename = dirname,
+        # Hyperparameters for the Neural BP model
         n_hidden_layers = 100,
-        n_epochs = 20,
-        batch_size = 8,
-        retrain = false,
-        learning_rate = 1f-1,
-        max_grad_norm = 2.0f0,
+        hyperparams_file = "default_hyperparams.toml",
+        # File paths and project settings for running the commands
         julia_project = "./../",
-        commands_file = "./../data/$(dirname)/commands.txt",
-        output_file = "./../data/$(dirname)/simulation_results.log",
+        commands_file = "./../data/$(dirname)/cluster/commands.txt",
+        output_file = "./../data/$(dirname)/logs/simulation_results.log",
         # Cluster settings.
-        ncpus = 56,
-        max_nodes = 10,
-        wall_time = "4:00:00",
+        ncpus = 6,
+        max_nodes = 1,
+        wall_time = "1:00:00",
         cluster_backend = "SLURM" # "SLURM" or "Google_VM" or "local"
     )
 end

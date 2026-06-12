@@ -83,11 +83,11 @@ function test_training_Nachmani_BP()
     We will generate training data with a certain error probability, train the NeuralBP model, and then test it on some test syndromes.
     
     """
-    prefix = "./../data/test_neural_BP/BB_code_90"
+    prefix = "./../data/72q_BB_p_0.010_q_0.001_std_0.01_data"
     parity_check_matrix_file = "$(prefix)/code/HZ.txt"
     logicals_file = "$(prefix)/code/LZ.txt"
-    correlation_strengths_file = "$(prefix)/correlated_weights/correlated_weights_p_0.008_q_0.2_s_2.txt"
-    training_errors_file = "$(prefix)/training_data/train_ballistic_p_0.008_q_0.2_s_2.txt"
+    correlation_strengths_file = "$(prefix)/correlated_weights/correlated_weights_p_0.01_q_0.001_s_1.txt"
+    training_errors_file = "$(prefix)/training_data/train_ballistic_p_0.01_q_0.001_s_1.txt"
     n_layers = 50
     
     start = time()
@@ -95,11 +95,18 @@ function test_training_Nachmani_BP()
     # Load the base model and initialize the weights.
     base = load_base_BP_model(parity_check_matrix_file, logicals_file, n_layers; correlation_strengths_file=correlation_strengths_file)
     
-    weights_c2v_v2c = random_values_around_one([base.nb_weights_c2v_v2c * base.n_layers]; scale=0.01f0)
-    weights_llrs = random_values_around_one([base.code_n_bits * base.n_layers]; scale=0.01f0)
-    weights_c2v_readout = random_values_around_one([base.nb_weights_c2v_readout]; scale=0.01f0)
+    # Extract hyperparameters from file or use defaults
+    hyperparams_file = "default_hyperparams.toml"
+    hyperparams = parse_hyper_parameters(hyperparams_file; prefix=prefix)
+    n_epochs = hyperparams["n_epochs"]
+
+    # Define initial conditions for the learnable parameters: all weights are initialized to Gaussian random values around 1, with a standard deviation of σ specified in the hyperparameters.
+    weights_c2v_v2c = random_values_around_one([base.nb_weights_c2v_v2c * base.n_layers]; scale=hyperparams["initial_conditions_scale"])
+    weights_llrs = random_values_around_one([base.code_n_bits * base.n_layers]; scale=hyperparams["initial_conditions_scale"])
+    weights_c2v_readout = random_values_around_one([base.nb_weights_c2v_readout]; scale=hyperparams["initial_conditions_scale"])
+    
     #=
-    # Explicitly define weights for testing, to be all ones since that corresponds to standard BP.
+    # Explicitly define weights for debugging, to be all ones since that corresponds to standard BP.
     weights_c2v_v2c = ones(Float32, base.nb_weights_c2v_v2c * base.n_layers)
     weights_llrs = ones(Float32, base.code_n_bits * base.n_layers)
     weights_c2v_readout = ones(Float32, base.nb_weights_c2v_readout)
@@ -109,20 +116,13 @@ function test_training_Nachmani_BP()
         "weights_llrs" => weights_llrs,
         "weights_c2v_readout" => weights_c2v_readout
     )
-
-    # For testing purposes, we will skip the actual training and directly initialize the model with the predefined weights.
     bpnn = NachmaniNeuralBP(
         base,
         weights_c2v_v2c=initial_conditions["weights_c2v_v2c"],
         weights_llrs=initial_conditions["weights_llrs"],
         weights_c2v_readout=initial_conditions["weights_c2v_readout"]
     )
-
-    # Extract hyperparameters from file or use defaults
-    hyperparams_file = "test_hyperparams.toml"
-    hyperparams = parse_hyper_parameters(hyperparams_file; prefix=prefix)
-    n_epochs = hyperparams["n_epochs"]
-
+    
     # Train the model using the training data and the specified hyperparameters.
     n_weights = length(weights_c2v_v2c) + length(weights_llrs) + length(weights_c2v_readout)
     println("Going to train the Nachmani Neural BP model with $(n_weights) weights.")
@@ -146,7 +146,7 @@ function test_training_Nachmani_BP()
     end
     
     # Test the model.
-    test_errors_file = "$(prefix)/testing_data/selected_p_0.008_q_0.2_s_2.txt"
+    test_errors_file = "$(prefix)/testing_data/test_ballistic_p_0.01_q_0.001_s_1.txt"
     is_correct = neuralbp_test_predictions(bpnn, test_errors_file)
     n_error_patterns = size(is_correct, 1)
     n_successful_decodings = sum(is_correct)

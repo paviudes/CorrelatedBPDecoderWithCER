@@ -28,6 +28,7 @@ function get_loss_value(
         llrs_batch,
         syndromes_batch
     )
+
     # Compute the total Loss including the correlation penalty
     total_loss = compute_loss_including_correlations(
         posterior_llrs,
@@ -83,22 +84,22 @@ function get_individual_loss_values(
     is_correlated = base.is_correlated
 
     # Compute the loss from the syndrome and correlation parts individually.
-    n_layers::Int = size(posterior_llrs, 3) - warmup_loss_layers
+    n_layers::Int = size(posterior_llrs, 3)
     # Record the syndrome loss, syndrome regularizer, the correlation loss, and the total loss separately per layer.
-    losses_per_layer = zeros(Float32, (n_layers, 4))
-    for layer in warmup_loss_layers:n_layers
+    losses_per_layer = zeros(Float32, (n_layers - warmup_loss_layers, 4))
+    for layer in (warmup_loss_layers + 1):n_layers
         post = posterior_llrs[:, :, layer]
         # base_loss   = compute_quadratic_residue_loss_from_llrs(post, expected_recoveries, parity_check_matrix_dual)
         base_loss   = compute_sine_residue_loss_from_llrs(post, expected_recoveries, parity_check_matrix_dual)
-        llr_reg     = syndrome_loss_regularizer(post) * tanh(layer / n_layers)
+        llr_reg     = syndrome_loss_regularizer(post)
         sparse_pen  = sparsity_penalty(post)
         corr_pen    = is_correlated ? compute_additional_loss_from_ising_correlations(post, connectivity, correlation_strengths) : 0f0
 
         # Record the individual losses
-        losses_per_layer[layer - warmup_loss_layers + 1, 1] = base_loss
-        losses_per_layer[layer - warmup_loss_layers + 1, 2] = llr_reg
-        losses_per_layer[layer - warmup_loss_layers + 1, 3] = corr_pen
-        losses_per_layer[layer - warmup_loss_layers + 1, 4] = sparse_pen
+        losses_per_layer[layer - warmup_loss_layers, 1] = base_loss
+        losses_per_layer[layer - warmup_loss_layers, 2] = llr_reg
+        losses_per_layer[layer - warmup_loss_layers, 3] = corr_pen
+        losses_per_layer[layer - warmup_loss_layers, 4] = sparse_pen
         
         # Compute the total loss for the layer
         loss_per_layer = base_loss + 
@@ -106,10 +107,10 @@ function get_individual_loss_values(
                          correlation_importance * corr_pen +
                          sparsity_importance * sparse_pen
         
-        losses_per_layer[layer - warmup_loss_layers + 1, 4] = loss_per_layer
+        losses_per_layer[layer - warmup_loss_layers, 4] = loss_per_layer
     end
-    # total_loss = softmin_loss(losses_per_layer[:, 4], loss_layer_regularizer)
-    total_loss = linear_ramp_loss(losses_per_layer[:, 4])
+    total_loss = softmin_loss(losses_per_layer[:, 4], loss_layer_regularizer)
+    # total_loss = linear_ramp_loss(losses_per_layer[:, 4])
     # total_loss = last_layer_only_loss(losses_per_layer[:, 4])
     return (total_loss, losses_per_layer)
 end
@@ -140,12 +141,110 @@ function clip_grad!(grad_vector::AbstractArray{Float32}; max_grad_norm::Float32=
     return nothing
 end
 
+# ---------------------------------------------------------------------------
+# Debug-logging helpers for train_neuralbp_enzyme!
+# These are kept separate so the training loop stays readable and the
+# logging concern can be disabled / replaced without touching core logic.
+# ---------------------------------------------------------------------------
+
+function init_training_debug_logs(n_samples_to_log::Int)
+    """
+    Initialize DataFrames for logging hyperparameters, losses, and weight statistics during training.
+    The `hp_log` DataFrame logs the hyperparameters and weight statistics for each batch, while the `losses_log` DataFrame logs the individual loss components for each layer and the total loss for each batch.
+    """
+    hp_log = DataFrame(
+        epoch = zeros(Int, n_samples_to_log),
+        sample = zeros(Int, n_samples_to_log),
+        loss_layer_temp = zeros(Float32, n_samples_to_log),
+        correlation_importance = zeros(Float32, n_samples_to_log),
+        llr_certainty_importance = zeros(Float32, n_samples_to_log),
+        sparsity_importance = zeros(Float32, n_samples_to_log),
+        loss = zeros(Float32, n_samples_to_log),
+        nan_skip_count = zeros(Int, n_samples_to_log),
+        min_weight_c2v_v2c = zeros(Float32, n_samples_to_log),
+        max_weight_c2v_v2c = zeros(Float32, n_samples_to_log),
+        median_weight_c2v_v2c = zeros(Float32, n_samples_to_log),
+        min_weight_llrs = zeros(Float32, n_samples_to_log),
+        max_weight_llrs = zeros(Float32, n_samples_to_log),
+        median_weight_llrs = zeros(Float32, n_samples_to_log),
+        min_weight_c2v_readout = zeros(Float32, n_samples_to_log),
+        max_weight_c2v_readout = zeros(Float32, n_samples_to_log),
+        median_weight_c2v_readout = zeros(Float32, n_samples_to_log)
+    )
+    losses_log = DataFrame(
+        :epoch => zeros(Int, n_samples_to_log),
+        :batch => zeros(Int, n_samples_to_log),
+        :layers => zeros(Int, n_samples_to_log),
+        :base_loss => ["" for _ in 1:n_samples_to_log],
+        :syndrome_regularizer => ["" for _ in 1:n_samples_to_log],
+        :correlation_penalty => ["" for _ in 1:n_samples_to_log],
+        :loss_at_layer => ["" for _ in 1:n_samples_to_log],
+        :total_loss => zeros(Float32, n_samples_to_log)
+    )
+    return hp_log, losses_log
+end
+
+function log_batch_debug!(
+    hp_log::DataFrame,
+    losses_log::DataFrame,
+    index::Int,
+    epoch::Int,
+    b::Int,
+    n_layers::Int,
+    hp::Dict{Symbol, Float32},
+    aggregate_loss::Float32,
+    nan_skip_count::Int,
+    bpnn::NachmaniNeuralBP,
+    individual_losses::Matrix{Float32}
+)
+    """
+    Log the hyperparameters, loss values, and weight statistics for a given batch into the provided DataFrames.
+    """
+    hp_log[index, :epoch] = epoch
+    hp_log[index, :sample] = b
+    hp_log[index, :loss_layer_temp] = hp[:loss_layer_temperature]
+    hp_log[index, :correlation_importance] = hp[:correlation_importance]
+    hp_log[index, :llr_certainty_importance] = hp[:llr_certainty_importance]
+    hp_log[index, :sparsity_importance] = hp[:sparsity_importance]
+    hp_log[index, :loss] = aggregate_loss
+    hp_log[index, :nan_skip_count] = nan_skip_count
+    hp_log[index, :min_weight_c2v_v2c] = minimum(bpnn.weights_c2v_v2c)
+    hp_log[index, :max_weight_c2v_v2c] = maximum(bpnn.weights_c2v_v2c)
+    hp_log[index, :median_weight_c2v_v2c] = median(bpnn.weights_c2v_v2c)
+    hp_log[index, :min_weight_llrs] = minimum(bpnn.weights_llrs)
+    hp_log[index, :max_weight_llrs] = maximum(bpnn.weights_llrs)
+    hp_log[index, :median_weight_llrs] = median(bpnn.weights_llrs)
+    hp_log[index, :min_weight_c2v_readout] = minimum(bpnn.weights_c2v_readout)
+    hp_log[index, :max_weight_c2v_readout] = maximum(bpnn.weights_c2v_readout)
+    hp_log[index, :median_weight_c2v_readout] = median(bpnn.weights_c2v_readout)
+
+    losses_log[index, :epoch] = epoch
+    losses_log[index, :batch] = b
+    losses_log[index, :layers] = n_layers
+    losses_log[index, :base_loss]             = join(["$(individual_losses[l, 1])" for l in 1:n_layers], ",")
+    losses_log[index, :syndrome_regularizer]  = join(["$(individual_losses[l, 2])" for l in 1:n_layers], ",")
+    losses_log[index, :correlation_penalty]   = join(["$(individual_losses[l, 3])" for l in 1:n_layers], ",")
+    losses_log[index, :loss_at_layer]         = join(["$(individual_losses[l, 4])" for l in 1:n_layers], ",")
+    losses_log[index, :total_loss] = aggregate_loss
+    return nothing
+end
+
+function save_training_debug_logs(debugging_logfile::String, hp_log::DataFrame, losses_log::DataFrame)
+    CSV.write("$(debugging_logfile).csv", hp_log)
+    CSV.write("$(debugging_logfile)_individual_losses.csv", losses_log)
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
+
 function train_neuralbp_enzyme!(
     bpnn::NachmaniNeuralBP,
     syndromes::BitMatrix,
     expected_recoveries::BitMatrix,
     hyperparameters::Dict;
-    debugging_logfile::String=""
+    debugging_logfile::String="",
+    is_debug::Bool=false,
+    is_quiet::Bool=false
 )
     """
     Train the NeuralBP model using the provided syndromes and expected recoveries.
@@ -195,7 +294,7 @@ function train_neuralbp_enzyme!(
             "sparsity_importance"
         ]
     )
-    
+
     # ---------------------------------
     # Create batches
     # ---------------------------------
@@ -216,39 +315,13 @@ function train_neuralbp_enzyme!(
     ]
 
     # --------------------------
-    # Debugging: log the individual losses for samples and epochs.
-    n_samples_to_log = n_epochs * length(training_dataset)
-    hyperparameters = DataFrame(
-        epoch = zeros(Int, n_samples_to_log),
-        sample = zeros(Int, n_samples_to_log),
-        loss_layer_temp = zeros(Float32, n_samples_to_log),
-        correlation_importance = zeros(Float32, n_samples_to_log),
-        llr_certainty_importance = zeros(Float32, n_samples_to_log),
-        sparsity_importance = zeros(Float32, n_samples_to_log),
-        loss = zeros(Float32, n_samples_to_log),
-        nan_skip_count = zeros(Int, n_samples_to_log),
-        min_weight_c2v_v2c = zeros(Float32, n_samples_to_log),
-        max_weight_c2v_v2c = zeros(Float32, n_samples_to_log),
-        median_weight_c2v_v2c = zeros(Float32, n_samples_to_log),
-        min_weight_llrs = zeros(Float32, n_samples_to_log),
-        max_weight_llrs = zeros(Float32, n_samples_to_log),
-        median_weight_llrs = zeros(Float32, n_samples_to_log),
-        min_weight_c2v_readout = zeros(Float32, n_samples_to_log),
-        max_weight_c2v_readout = zeros(Float32, n_samples_to_log),
-        median_weight_c2v_readout = zeros(Float32, n_samples_to_log)
-    )
-    n_layers = bpnn.base.n_layers - warmup_loss_layers
-    individual_losses_log = DataFrame(
-        :epoch => zeros(Int, n_samples_to_log),
-        :batch => zeros(Int, n_samples_to_log),
-        :layers => zeros(Int, n_samples_to_log),
-        :base_loss => ["" for _ in 1:n_samples_to_log],
-        :syndrome_regularizer => ["" for _ in 1:n_samples_to_log],
-        :correlation_penalty => ["" for _ in 1:n_samples_to_log],
-        :loss_at_layer => ["" for _ in 1:n_samples_to_log],
-        :total_loss => zeros(Float32, n_samples_to_log)
-    )
-    # -------------------------
+    # Debugging: pre-allocate log DataFrames.
+    if is_debug
+        n_samples_to_log = n_epochs * length(training_dataset)
+        n_layers = bpnn.base.n_layers - warmup_loss_layers
+        hp_log, individual_losses_log = init_training_debug_logs(n_samples_to_log)
+    end
+    # --------------------------
 
     # -------------------------
     # Optimizer setup
@@ -264,13 +337,17 @@ function train_neuralbp_enzyme!(
     opt_rule  = OptimiserChain(ClipGrad(max_grad_norm), inner_opt)
     opt_state = Optimisers.setup(opt_rule, bpnn)
 
+    if !is_quiet
+        n_weights = length(bpnn.weights_c2v_v2c) + length(bpnn.weights_llrs) + length(bpnn.weights_c2v_readout)
+        @info "Starting training $(n_samples) samples, split into batches of $(batch_size), with $(n_weights) learnable parameters."
+    end
     # -------------------------
     # Progress bars
     # -------------------------
-    epoch_progress = Progress(n_epochs, desc="Training Epochs: ")
+    epoch_progress = is_quiet ? nothing : Progress(n_epochs, desc="Training Epochs: ")
 
     for epoch in 1:n_epochs
-        batch_progress = Progress(length(training_dataset), desc="Epoch $epoch Batches: ")
+        batch_progress = is_quiet ? nothing : Progress(length(training_dataset), desc="Epoch $epoch Batches: ")
 
         hp = compute_hyperparameters(epoch, annealing_schedule)
 
@@ -321,20 +398,23 @@ function train_neuralbp_enzyme!(
                 Enzyme.Const(syndromes_batch),
                 Enzyme.Const(expected_batch)
             )
-
+            
             # -------------------------
             # NaN / Inf guard — skip the optimizer step entirely if any
             # gradient component is non-finite. This preserves the last
             # known-good Adam state and the last known-good weights.
             # -------------------------
-            grads_finite = all(isfinite, grad_w_c2v_v2c) &&
+            grads_finite = isfinite(loss_value)          && 
+                           all(isfinite, grad_w_c2v_v2c) &&
                            all(isfinite, grad_w_llrs)    &&
                            all(isfinite, grad_w_readout)
 
             if !grads_finite
                 nan_skip_count += 1
-                @warn "Non-finite gradient at epoch=$epoch batch=$b — skipping update." nan_skip_count
-                ProgressMeter.next!(batch_progress; showvalues = [(:loss, NaN32), (:nan_skips, nan_skip_count)])
+                @warn "Non-finite gradient at epoch=$epoch batch=$b. Loss = $(loss_value). Skipping update." nan_skip_count
+                if !is_quiet
+                    ProgressMeter.next!(batch_progress; showvalues = [(:loss, NaN32), (:nan_skips, nan_skip_count)])
+                end
 
                 # If too many batches have been skipped in this epoch due to NaN/Inf gradients, we break out of the batch loop early to trigger the epoch rollback at the end of the epoch.
                 if nan_skip_count > max_nan_skips_per_epoch
@@ -352,24 +432,6 @@ function train_neuralbp_enzyme!(
             end
 
             # -------------------------
-            # Progress update
-            # -------------------------
-            (aggregate_loss, individual_losses) = get_individual_loss_values(
-                bpnn.weights_c2v_v2c,
-                bpnn.weights_llrs,
-                bpnn.weights_c2v_readout,
-                hp[:correlation_importance],
-                hp[:loss_layer_temperature],
-                hp[:llr_certainty_importance],
-                hp[:sparsity_importance],
-                warmup_loss_layers,
-                base,
-                llrs_batch,
-                syndromes_batch,
-                expected_batch
-            )
-            
-            # -------------------------
             # Adaptive Gradient Step (Adam / AdamW + ClipGrad)
             # -------------------------
             grads = (
@@ -380,47 +442,45 @@ function train_neuralbp_enzyme!(
             (opt_state, bpnn) = Optimisers.update!(opt_state, bpnn, grads)
             # -------------------------
 
-            ProgressMeter.next!(batch_progress; showvalues = [(:loss, aggregate_loss), (:nan_skips, nan_skip_count)])
+            # -------------------------
+            # Progress update
+            # -------------------------
+            if !is_quiet
+                ProgressMeter.next!(batch_progress; showvalues = [(:loss, loss_value), (:nan_skips, nan_skip_count)])
+            end
 
             # --------------------------------------------------
-            # Log the hyperparameters and loss for this batch and epoch for debugging and visualization later.
-            index = (epoch - 1) * length(training_dataset) + b
-            hyperparameters[index, :epoch] = epoch
-            hyperparameters[index, :sample] = b
-            hyperparameters[index, :loss_layer_temp] = hp[:loss_layer_temperature]
-            hyperparameters[index, :correlation_importance] = hp[:correlation_importance]
-            hyperparameters[index, :llr_certainty_importance] = hp[:llr_certainty_importance]
-            hyperparameters[index, :sparsity_importance] = hp[:sparsity_importance]
-            hyperparameters[index, :loss] = aggregate_loss
-            hyperparameters[index, :nan_skip_count] = nan_skip_count
-            hyperparameters[index, :min_weight_c2v_v2c] = minimum(bpnn.weights_c2v_v2c)
-            hyperparameters[index, :max_weight_c2v_v2c] = maximum(bpnn.weights_c2v_v2c)
-            hyperparameters[index, :median_weight_c2v_v2c] = median(bpnn.weights_c2v_v2c)
-            hyperparameters[index, :min_weight_llrs] = minimum(bpnn.weights_llrs)
-            hyperparameters[index, :max_weight_llrs] = maximum(bpnn.weights_llrs)
-            hyperparameters[index, :median_weight_llrs] = median(bpnn.weights_llrs)
-            hyperparameters[index, :min_weight_c2v_readout] = minimum(bpnn.weights_c2v_readout)
-            hyperparameters[index, :max_weight_c2v_readout] = maximum(bpnn.weights_c2v_readout)
-            hyperparameters[index, :median_weight_c2v_readout] = median(bpnn.weights_c2v_readout)
-
-            # Log the individual Losses
-            individual_losses_log[index, :epoch] = epoch
-            individual_losses_log[index, :batch] = b
-            individual_losses_log[index, :layers] = n_layers
-
-            base_losses = join(["$(individual_losses[layer, 1])" for layer in 1:n_layers], ",")
-            individual_losses_log[index, :base_loss] = base_losses
-
-            syndrome_regularizers = join(["$(individual_losses[layer, 2])" for layer in 1:n_layers], ",")
-            individual_losses_log[index, :syndrome_regularizer] = syndrome_regularizers
-
-            correlation_penalties = join(["$(individual_losses[layer, 3])" for layer in 1:n_layers], ",")
-            individual_losses_log[index, :correlation_penalty] = correlation_penalties
-
-            loss_at_layer = join(["$(individual_losses[layer, 4])" for layer in 1:n_layers], ",")
-            individual_losses_log[index, :loss_at_layer] = loss_at_layer
-
-            individual_losses_log[index, :total_loss] = aggregate_loss
+            # Debugging: log this batch.
+            if is_debug
+                (aggregate_loss, individual_losses) = get_individual_loss_values(
+                    bpnn.weights_c2v_v2c,
+                    bpnn.weights_llrs,
+                    bpnn.weights_c2v_readout,
+                    hp[:correlation_importance],
+                    hp[:loss_layer_temperature],
+                    hp[:llr_certainty_importance],
+                    hp[:sparsity_importance],
+                    warmup_loss_layers,
+                    base,
+                    llrs_batch,
+                    syndromes_batch,
+                    expected_batch
+                )
+                index = (epoch - 1) * length(training_dataset) + b
+                log_batch_debug!(
+                    hp_log,
+                    individual_losses_log,
+                    index,
+                    epoch,
+                    b,
+                    n_layers,
+                    hp,
+                    aggregate_loss,
+                    nan_skip_count,
+                    bpnn,
+                    individual_losses
+                )
+            end
             # --------------------------------------------------
         end
 
@@ -436,12 +496,14 @@ function train_neuralbp_enzyme!(
             opt_state = deepcopy(opt_state_checkpoint)
         end
 
-        ProgressMeter.next!(epoch_progress; showvalues = [(:nan_skips_this_epoch, nan_skip_count)])
+        if !is_quiet
+            ProgressMeter.next!(epoch_progress; showvalues = [(:nan_skips_this_epoch, nan_skip_count)])
+        end
     end
 
-    # Debugging: write the hyperparameters and loss values into a file for visualization later.
-    CSV.write("$(debugging_logfile).csv", hyperparameters)
-    CSV.write("$(debugging_logfile)_individual_losses.csv", individual_losses_log)
+    if is_debug
+        save_training_debug_logs(debugging_logfile, hp_log, individual_losses_log)
+    end
 
     return bpnn
 end
@@ -451,7 +513,9 @@ function train_Nachmani_neuralbp(
     training_errors_file::String,
     hyperparameters::Dict=Dict(); # Hyperparameters for training the Neural BP model
     initial_conditions::Dict=Dict(),
-    prefix::String="./../data"
+    prefix::String="./../data",
+    is_debug::Bool=false,
+    is_quiet::Bool=false
 )
     """
     Train a Neural Belief Propagation decoder for the given parity-check matrix.
@@ -485,9 +549,15 @@ function train_Nachmani_neuralbp(
     # We only want the filename without the path and extension.
     # For example, if the training file is `data/hamming/training_data.txt`, we want to extract `training_data`.
     training_source = splitext(basename(training_errors_file))[1]
+    
     # Check if the weights file already exists
     n_epochs = hyperparameters["n_epochs"]
-    weights_filename = "$(models_dir)/neuralbp_weights_nlayers_$(base.n_layers)_epochs_$(n_epochs)_trained_using_$(training_source).json"
+    weights_filename =
+        "$(models_dir)/neuralbp_weights_" *
+        "nlayers_$(base.n_layers)_" *
+        "epochs_$(n_epochs)_" *
+        "trained_using_$(training_source).json"
+    
     if isfile(weights_filename) && !hyperparameters["retrain"]
         # println("Loading existing weights from file: $weights_filename")
         bpnn = load_trained_neuralbp_model(weights_filename, bpnn)
@@ -499,48 +569,17 @@ function train_Nachmani_neuralbp(
         
         # Train the Neural BP model
         train_neuralbp_enzyme!(
-            bpnn, 
-            training_syndromes, 
-            expected_recoveries, 
+            bpnn,
+            training_syndromes,
+            expected_recoveries,
             hyperparameters;
-            debugging_logfile="$(prefix)/models/debugging_$(training_source)"
+            debugging_logfile="$(prefix)/logs/debugging_$(training_source)",
+            is_debug=is_debug,
+            is_quiet=is_quiet
         )
 
         # Save the trained weights to a file
         save_trained_neuralbp_model(weights_filename, bpnn)
     end
     return bpnn
-end
-
-function generate_training_data(parity_check_matrix::Matrix{Int}, n_samples::Int, error_probability::Float64)::Tuple{BitMatrix, BitMatrix}
-    """
-    Generate training data for the NeuralBP model.
-    Each sample consists of a random error pattern generated according to the specified error probability.
-    The corresponding syndrome is computed using the provided parity-check matrix.
-    The error patterns serve as the expected recoveries.
-
-    Arguments:
-    - `parity_check_matrix::Matrix{Int}`: The parity-check matrix defining the code.
-    - `n_samples::Int`: The number of samples to generate.
-    - `error_probability::Float64`: The probability of an error occurring on each bit.
-    
-    Returns:
-    - `syndromes::BitMatrix`: A matrix where each column represents a syndrome corresponding to an error pattern.
-    - `expected_recoveries::BitMatrix`: A matrix where each column represents the expected recovery (error pattern) corresponding to the syndrome.
-    """
-    (n_checks, n_bits) = size(parity_check_matrix)
-    syndromes = zeros(Bool, n_checks, n_samples)
-    expected_recoveries = zeros(Bool, n_bits, n_samples)
-
-    for i in 1:n_samples
-        # Generate a random error pattern
-        error_pattern = rand(Bool, n_bits) .< error_probability
-        expected_recoveries[:, i] = error_pattern
-
-        # Compute the syndrome
-        syndrome = mod.(parity_check_matrix * error_pattern, 2)
-        syndromes[:, i] = syndrome
-    end
-
-    return syndromes, expected_recoveries
 end
