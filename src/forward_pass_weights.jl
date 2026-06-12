@@ -1,5 +1,5 @@
 function v2c_to_c2v!(
-    messages_c2v,                            # output (final LLRs)
+    messages_c2v,                     # output (final LLRs)
     activated_m_c2v_magnitudes,       # buffer: aggregated magnitudes
     activated_m_c2v_signs,            # buffer: aggregated signs
     activated_m_v2c_magnitudes,

@@ -242,7 +242,9 @@ function train_neuralbp_enzyme!(
     syndromes::BitMatrix,
     expected_recoveries::BitMatrix,
     hyperparameters::Dict;
-    debugging_logfile::String=""
+    debugging_logfile::String="",
+    is_debug::Bool=false,
+    is_quiet::Bool=false
 )
     """
     Train the NeuralBP model using the provided syndromes and expected recoveries.
@@ -314,9 +316,11 @@ function train_neuralbp_enzyme!(
 
     # --------------------------
     # Debugging: pre-allocate log DataFrames.
-    n_samples_to_log = n_epochs * length(training_dataset)
-    n_layers = bpnn.base.n_layers - warmup_loss_layers
-    hp_log, individual_losses_log = init_training_debug_logs(n_samples_to_log)
+    if is_debug
+        n_samples_to_log = n_epochs * length(training_dataset)
+        n_layers = bpnn.base.n_layers - warmup_loss_layers
+        hp_log, individual_losses_log = init_training_debug_logs(n_samples_to_log)
+    end
     # --------------------------
 
     # -------------------------
@@ -333,13 +337,17 @@ function train_neuralbp_enzyme!(
     opt_rule  = OptimiserChain(ClipGrad(max_grad_norm), inner_opt)
     opt_state = Optimisers.setup(opt_rule, bpnn)
 
+    if !is_quiet
+        n_weights = length(bpnn.weights_c2v_v2c) + length(bpnn.weights_llrs) + length(bpnn.weights_c2v_readout)
+        @info "Starting training $(n_samples) samples, split into batches of $(batch_size), with $(n_weights) learnable parameters."
+    end
     # -------------------------
     # Progress bars
     # -------------------------
-    epoch_progress = Progress(n_epochs, desc="Training Epochs: ")
+    epoch_progress = is_quiet ? nothing : Progress(n_epochs, desc="Training Epochs: ")
 
     for epoch in 1:n_epochs
-        batch_progress = Progress(length(training_dataset), desc="Epoch $epoch Batches: ")
+        batch_progress = is_quiet ? nothing : Progress(length(training_dataset), desc="Epoch $epoch Batches: ")
 
         hp = compute_hyperparameters(epoch, annealing_schedule)
 
@@ -404,7 +412,9 @@ function train_neuralbp_enzyme!(
             if !grads_finite
                 nan_skip_count += 1
                 @warn "Non-finite gradient at epoch=$epoch batch=$b. Loss = $(loss_value). Skipping update." nan_skip_count
-                ProgressMeter.next!(batch_progress; showvalues = [(:loss, NaN32), (:nan_skips, nan_skip_count)])
+                if !is_quiet
+                    ProgressMeter.next!(batch_progress; showvalues = [(:loss, NaN32), (:nan_skips, nan_skip_count)])
+                end
 
                 # If too many batches have been skipped in this epoch due to NaN/Inf gradients, we break out of the batch loop early to trigger the epoch rollback at the end of the epoch.
                 if nan_skip_count > max_nan_skips_per_epoch
@@ -435,39 +445,42 @@ function train_neuralbp_enzyme!(
             # -------------------------
             # Progress update
             # -------------------------
-            ProgressMeter.next!(batch_progress; showvalues = [(:loss, loss_value), (:nan_skips, nan_skip_count)])
+            if !is_quiet
+                ProgressMeter.next!(batch_progress; showvalues = [(:loss, loss_value), (:nan_skips, nan_skip_count)])
+            end
 
             # --------------------------------------------------
             # Debugging: log this batch.
-            (aggregate_loss, individual_losses) = get_individual_loss_values(
-                bpnn.weights_c2v_v2c,
-                bpnn.weights_llrs,
-                bpnn.weights_c2v_readout,
-                hp[:correlation_importance],
-                hp[:loss_layer_temperature],
-                hp[:llr_certainty_importance],
-                hp[:sparsity_importance],
-                warmup_loss_layers,
-                base,
-                llrs_batch,
-                syndromes_batch,
-                expected_batch
-            )
-            
-            index = (epoch - 1) * length(training_dataset) + b
-            log_batch_debug!(
-                hp_log,
-                individual_losses_log,
-                index,
-                epoch,
-                b,
-                n_layers,
-                hp,
-                aggregate_loss,
-                nan_skip_count,
-                bpnn,
-                individual_losses
-            )
+            if is_debug
+                (aggregate_loss, individual_losses) = get_individual_loss_values(
+                    bpnn.weights_c2v_v2c,
+                    bpnn.weights_llrs,
+                    bpnn.weights_c2v_readout,
+                    hp[:correlation_importance],
+                    hp[:loss_layer_temperature],
+                    hp[:llr_certainty_importance],
+                    hp[:sparsity_importance],
+                    warmup_loss_layers,
+                    base,
+                    llrs_batch,
+                    syndromes_batch,
+                    expected_batch
+                )
+                index = (epoch - 1) * length(training_dataset) + b
+                log_batch_debug!(
+                    hp_log,
+                    individual_losses_log,
+                    index,
+                    epoch,
+                    b,
+                    n_layers,
+                    hp,
+                    aggregate_loss,
+                    nan_skip_count,
+                    bpnn,
+                    individual_losses
+                )
+            end
             # --------------------------------------------------
         end
 
@@ -483,10 +496,14 @@ function train_neuralbp_enzyme!(
             opt_state = deepcopy(opt_state_checkpoint)
         end
 
-        ProgressMeter.next!(epoch_progress; showvalues = [(:nan_skips_this_epoch, nan_skip_count)])
+        if !is_quiet
+            ProgressMeter.next!(epoch_progress; showvalues = [(:nan_skips_this_epoch, nan_skip_count)])
+        end
     end
 
-    save_training_debug_logs(debugging_logfile, hp_log, individual_losses_log)
+    if is_debug
+        save_training_debug_logs(debugging_logfile, hp_log, individual_losses_log)
+    end
 
     return bpnn
 end
@@ -496,7 +513,9 @@ function train_Nachmani_neuralbp(
     training_errors_file::String,
     hyperparameters::Dict=Dict(); # Hyperparameters for training the Neural BP model
     initial_conditions::Dict=Dict(),
-    prefix::String="./../data"
+    prefix::String="./../data",
+    is_debug::Bool=false,
+    is_quiet::Bool=false
 )
     """
     Train a Neural Belief Propagation decoder for the given parity-check matrix.
@@ -550,11 +569,13 @@ function train_Nachmani_neuralbp(
         
         # Train the Neural BP model
         train_neuralbp_enzyme!(
-            bpnn, 
-            training_syndromes, 
-            expected_recoveries, 
+            bpnn,
+            training_syndromes,
+            expected_recoveries,
             hyperparameters;
-            debugging_logfile="$(prefix)/logs/debugging_$(training_source)"
+            debugging_logfile="$(prefix)/logs/debugging_$(training_source)",
+            is_debug=is_debug,
+            is_quiet=is_quiet
         )
 
         # Save the trained weights to a file

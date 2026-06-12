@@ -37,8 +37,7 @@ function generate_parallel_commands(
                 --n_hidden_layers $(n_hidden_layers) \
                 --hyperparams $(hyperparams_file) \
                 --correlation_strengths_file $(cer_file) \
-                --train $(train_file) \
-                --test $(test_file)"""
+                --train $(train_file)"""
 
             cmd = replace(cmd, "\n" => " ")
 
@@ -112,6 +111,11 @@ function run_on_SLURM(commands_file::String, n_commands::Int; n_cpus::Int=10, ma
         "# Extract commands for this node",
         "sed -n \"\${START},\${END}p\" $(commands_file) > $(commands_dir)/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt",
         "",
+        "# Load necessary modules and set up environment",
+        "module load julia", # The default version on Trillium is 1.12.
+        "cp -r ~/.julia $SLURM_TMPDIR/",
+        "export JULIA_DEPOT_PATH=\"$SLURM_TMPDIR/.julia\"",
+        "",
         "# Disable GPU usage since the cluster nodes we have access to do not have GPUs.",
         "export USE_GPU=0",
         "",
@@ -174,11 +178,11 @@ function main()
     p: 0.001:0.001:0.005
     q: 0.3:0.04:0.66
     """
-    dirname = "72q_BB_p_0.010_q_0.001_std_0.01_data"
+    dirname = "90q_BB_p_0.010_q_0.001_std_0.01_data"
     generate_parallel_commands(
         [0.01], # set of p values
         [0.001], # set of q values
-        56; # number of samples per (p, q) pair. For optimal usage of the machine, please set this to be a multiple of the number of CPUs available.
+        6; # number of samples per (p, q) pair. For optimal usage of the machine, please set this to be a multiple of the number of CPUs available.
         codename = dirname,
         # Hyperparameters for the Neural BP model
         n_hidden_layers = 100,
@@ -188,9 +192,9 @@ function main()
         commands_file = "./../data/$(dirname)/cluster/commands.txt",
         output_file = "./../data/$(dirname)/logs/simulation_results.log",
         # Cluster settings.
-        ncpus = 56,
-        max_nodes = 10,
-        wall_time = "4:00:00",
+        ncpus = 6,
+        max_nodes = 1,
+        wall_time = "3:00:00",
         cluster_backend = "SLURM" # "SLURM" or "Google_VM" or "local"
     )
 end
