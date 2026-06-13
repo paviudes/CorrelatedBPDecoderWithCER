@@ -8,7 +8,7 @@ using CorrelatedBPDecoderWithCER
     """
     # Define the parity-check matrix
     example_name = "hamming"
-    prefix = "./../data/90q_BB_p_0.010_q_0.001_std_0.01_data/code"
+    prefix = "./../data/$(example_name)"
     # Read from the files `data/<example_name>/HX.txt` and `data/<example_name>/LX.txt`
     H = readdlm("$(prefix)/HX.txt", Int)
     # To load the dual matrix, load the logical operators LX and append it to H to form H_dual
@@ -62,12 +62,7 @@ function test_forward_propagation()
     n_layers = bpnn.base.n_layers
 
     # Define a syndrome to be a random binary vector of size equal to the number of rows of H
-    #syndrome = [1, 1, 0, 1, 1, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0]
-    syndrome=[1, 0, 1, 1, 0, 0, 1, 0, 1, 0,
-            0, 1, 1, 0, 1, 0, 0, 1, 0, 1,
-            1, 1, 0, 0, 1, 0, 1, 0, 0, 1,
-            1, 0, 1, 0, 0, 1, 0, 1, 1, 0,
-            0, 1, 0, 1, 1]
+    syndrome = [1, 1, 0, 1, 1, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0]
     syndromes_batch = repeat(convert.(Bool, syndrome), 1, 1)  # single sample
 
     # Define initial LLRs batch

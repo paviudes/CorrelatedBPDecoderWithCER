@@ -59,13 +59,17 @@ function test_neural_BP()
 
     We will compare the output LLRs of the Neural BP decoder with those of the classical BP decoder after K iterations.
     """
-    prefix = "./../data/90q_BB_p_0.010_q_0.001_std_0.01_data"
-    parity_check_matrix_file = "$(prefix)/code/HX.txt"
-    logicals_file = "$(prefix)/code/LX.txt"
-    parity_check_matrix = readdlm(parity_check_matrix_file, Int)
-    logicals = readdlm(logicals_file, Int)
-    dual_parity_check_matrix = vcat(parity_check_matrix, logicals)
-    (n_checks, n_bits) = size(parity_check_matrix)
+    bpnn = load_neural_BP_model()
+    (n_checks, n_bits) = size(bpnn.base.parity_check_matrix)
+    n_layers = bpnn.base.n_layers
+    
+    # Define a syndrome to be a random binary vector of size equal to the number of rows of H
+    syndrome = [1, 1, 0, 1, 1, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0]
+    
+    # Define initial LLRs batch
+    initial_llrs = convert.(Float64, log(9)) .* ones(Float64, n_bits) # Initial LLRs corresponding to p=0.1
+    
+    n_iterations = n_layers
     
     ## Run the standard BP decoder
     parity_check_matrix_int = convert.(Int, bpnn.base.parity_check_matrix)
