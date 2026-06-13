@@ -73,7 +73,7 @@ function test_neural_BP()
     
     ## Run the standard BP decoder
     parity_check_matrix_int = convert.(Int, bpnn.base.parity_check_matrix)
-    (final_llrs_standard_bp, _) = run_bp("SumProduct", parity_check_matrix_int, 4, syndrome, initial_llrs, n_iterations; verbose=false)
+    (final_llrs_standard_bp, _) = run_bp("SumProduct", parity_check_matrix_int, n_checks + 1, syndrome, initial_llrs, n_iterations; verbose=false)
     # println("Final LLRs from standard BP after $(n_iterations) iterations: ", final_llrs_standard_bp)
 
     # println("--------------------------------------------------")
@@ -86,7 +86,7 @@ function test_neural_BP()
 
     # Perform `n_iterations` forward passes: this corresponds to N iterations of standard BP
     # println("Performing forward pass through the NeuralBP model on syndrome: ", syndromes[:, 1], " and with initial LLRs: ", initial_llrs_batch[:, 1], ".")
-    llrs_neural_bp = bpnn(initial_llrs_batch, syndromes_batch) # shape (n_bits, n_samples, n_layers)
+    llrs_neural_bp = forward_pass_with_weights(bpnn, initial_llrs_batch, syndromes_batch) # shape (n_bits, n_samples, n_layers)
     
     final_llrs_neural_bp = llrs_neural_bp[:, :, n_layers]  # Get the final layer's LLRs from the 3D tensor output
 
