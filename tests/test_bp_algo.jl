@@ -2,6 +2,52 @@ using SparseArrays
 using DelimitedFiles
 using CorrelatedBPDecoderWithCER
 
+@inline function load_neural_BP_model()::NeuralBP
+    """
+    Load a Neural BP model from a file.
+    """
+    # Define the parity-check matrix
+    example_name = "hamming"
+    prefix = "./../data/$(example_name)"
+    # Read from the files `data/<example_name>/HX.txt` and `data/<example_name>/LX.txt`
+    H = readdlm("$(prefix)/HX.txt", Int)
+    # To load the dual matrix, load the logical operators LX and append it to H to form H_dual
+    logicals = readdlm("$(prefix)/LX.txt", Int)
+    H_dual = vcat(H, logicals)
+    n_bits = size(H, 2)
+    
+    # Number of layers (rounds of BP)
+    n_layers = 3
+    
+    # Initialize the NeuralBP model with random weights around 1.0.
+    base = NeuralBPBase(
+        H,
+        H_dual,
+        zeros(Float32, n_bits), # default initial LLRs corresponding to p=0.5
+        n_layers
+    )
+    
+    #=
+    weights_c2v_v2c = random_values_around_one([base.nb_weights_c2v_v2c * n_layers]; scale=0.01f0)
+    weights_llrs = random_values_around_one([n_bits * n_layers]; scale=0.01f0)
+    weights_c2v_readout = random_values_around_one([base.nb_weights_c2v_readout]; scale=0.01f0)
+    =#
+
+    # Set all weights to 1.0 for testing, since that corresponds to standard BP.
+    weights_c2v_v2c = ones(Float32, base.nb_weights_c2v_v2c * n_layers)
+    weights_llrs = ones(Float32, n_bits * n_layers)
+    weights_c2v_readout = ones(Float32, base.nb_weights_c2v_readout)
+    bpnn = NachmaniNeuralBP(
+        base,
+        weights_c2v_v2c=weights_c2v_v2c,
+        weights_llrs=weights_llrs,
+        weights_c2v_readout=weights_c2v_readout
+    )
+
+    return bpnn
+
+end
+
 function test_neural_BP()
     """
     Test the neural belief propagation decoder on a simple parity-check matrix of the Hamming code.
@@ -13,56 +59,34 @@ function test_neural_BP()
 
     We will compare the output LLRs of the Neural BP decoder with those of the classical BP decoder after K iterations.
     """
-    prefix = "./../data/test_neural_BP/BB_code_90"
-    parity_check_matrix_file = "$(prefix)/code/HX.txt"
-    logicals_file = "$(prefix)/code/LX.txt"
-    parity_check_matrix = readdlm(parity_check_matrix_file, Int)
-    logicals = readdlm(logicals_file, Int)
-    dual_parity_check_matrix = vcat(parity_check_matrix, logicals)
-    (n_checks, n_bits) = size(parity_check_matrix)
+    bpnn = load_neural_BP_model()
+    (n_checks, n_bits) = size(bpnn.base.parity_check_matrix)
+    n_layers = bpnn.base.n_layers
     
-    # Example syndrome
-    syndrome = rand(0:1, n_checks)  # Random syndrome for testing.
-    initial_llrs = log(9) .* ones(n_bits)  # Assuming an initial bit-flip probability of 0.1
-    n_iterations = 3
-    n_layers = n_iterations
-
+    # Define a syndrome to be a random binary vector of size equal to the number of rows of H
+    syndrome = [1, 1, 0, 1, 1, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0]
+    
+    # Define initial LLRs batch
+    initial_llrs = convert.(Float64, log(9)) .* ones(Float64, n_bits) # Initial LLRs corresponding to p=0.1
+    
+    n_iterations = n_layers
+    
     ## Run the standard BP decoder
-    (final_llrs_standard_bp, _) = run_bp("SumProduct", parity_check_matrix, 4, syndrome, initial_llrs, n_iterations; verbose=false)
+    parity_check_matrix_int = convert.(Int, bpnn.base.parity_check_matrix)
+    (final_llrs_standard_bp, _) = run_bp("SumProduct", parity_check_matrix_int, 4, syndrome, initial_llrs, n_iterations; verbose=false)
     # println("Final LLRs from standard BP after $(n_iterations) iterations: ", final_llrs_standard_bp)
 
     # println("--------------------------------------------------")
 
     ## Run the Neural BP decoder
-    
-    # Initialize the NeuralBP model
-    base = NeuralBPBase(
-        parity_check_matrix,
-        dual_parity_check_matrix,
-        convert.(Float32, initial_llrs),
-        n_layers
-    )
-    # Explicitly define weights for testing, to be all ones since that corresponds to standard BP.
-    weights_c2v_v2c = ones(Float32, base.nb_weights_c2v_v2c * n_layers)
-    weights_llrs = ones(Float32, n_bits * n_layers)
-    weights_c2v_readout = ones(Float32, base.nb_weights_c2v_readout)
-
-    bpnn = NachmaniNeuralBP(
-        base,
-        weights_c2v_v2c=weights_c2v_v2c,
-        weights_llrs=weights_llrs,
-        weights_c2v_readout=weights_c2v_readout
-    )
-    # print_neuralbp_info(bpnn)
-
     # define the batch of syndromes (in this case, just one syndrome)
-    syndromes = convert.(Bool, repeat(syndrome, 1, 1))  # single sample
+    syndromes_batch = repeat(convert.(Bool, syndrome), 1, 1)  # single sample
     # define initial LLRs batch
-    initial_llrs_batch = convert.(Float32, repeat(initial_llrs, 1, 1))  # single sample
+    initial_llrs_batch = repeat(convert.(Float32, initial_llrs), 1, 1) # Initial LLRs corresponding to p=0.1
 
     # Perform `n_iterations` forward passes: this corresponds to N iterations of standard BP
     # println("Performing forward pass through the NeuralBP model on syndrome: ", syndromes[:, 1], " and with initial LLRs: ", initial_llrs_batch[:, 1], ".")
-    llrs_neural_bp = bpnn(initial_llrs_batch, syndromes)
+    llrs_neural_bp = bpnn(initial_llrs_batch, syndromes_batch) # shape (n_bits, n_samples, n_layers)
     
     final_llrs_neural_bp = llrs_neural_bp[:, :, n_layers]  # Get the final layer's LLRs from the 3D tensor output
 

@@ -316,7 +316,12 @@ julia --project="./../" neural_bp_experiments.jl \
   --test test_ballistic_p_0.01_q_0.001_s_{}.txt
 ' ::: $(seq 1 56)
 
+To train only without testing, copy paste the following command in the terminal.
 parallel --jobs 6 --bar 'julia --project="./../" neural_bp_experiments.jl --codename 90q_BB_p_0.010_q_0.001_std_0.01_data --n_hidden_layers 100 --hyperparams default_hyperparams.toml --correlation_strengths_file correlated_weights_p_0.01_q_0.001_s_{}.txt --train train_ballistic_p_0.01_q_0.001_s_{}.txt' ::: $(seq 1 6)
+
+To test after training, copy paste the following command in the terminal.
+After using `export USE_GPU="1"`
+parallel --jobs 1 --bar 'julia --project="./../" neural_bp_experiments.jl --codename 72q_BB_p_0.010_q_0.001_std_0.01_data --n_hidden_layers 100 --hyperparams default_hyperparams.toml --correlation_strengths_file correlated_weights_p_0.01_q_0.001_s_{}.txt --train train_ballistic_p_0.01_q_0.001_s_{}.txt --test test_ballistic_p_0.01_q_0.001_s_{}.txt' ::: $(seq 1 56)
 
 For single runs, copy paste the following command in the terminal.
 julia --project="./../" neural_bp_experiments.jl \
