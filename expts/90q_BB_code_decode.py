@@ -14,7 +14,7 @@ from tqdm import tqdm
 # Parameters
 p_values  = [0.01]
 q_means   = [0.001]
-n_samples = 6
+n_samples = 1
 n_qubits  = 90
 n_errors  = 100000
 PCM_Z=np.loadtxt("data/90q_BB_p_0.010_q_0.001_std_0.01_data/code/HZ.txt", dtype=int)
