@@ -100,14 +100,14 @@ function collect_results()
     neighbour_error_probs = 0.3:0.04:0.66
     =#
 
-    per_qubit_error_probs = [0.006]
-    neighbour_error_probs = [0.1]
+    per_qubit_error_probs = [0.01]
+    neighbour_error_probs = [0.001]
     n_samples = 56
-    codename = "90q_BB_p_0.006_q_0.1_std_0.1"
+    codename = "72q_BB_p_0.010_q_0.001_std_0.01_data_no_cer"
 
     prefix = "./../data/$(codename)"
     n_hidden_layers = 100
-    n_epochs = 20
+    n_epochs = 10
 
     # Create the plots directory if it doesn't exist
     plots_dir = "$(prefix)/plots"
@@ -141,7 +141,7 @@ function collect_results()
     else
         standardbp_results = collect_standard_decoder_statistics_for_ballistic_data(
             prefix; 
-            standard_BP_output_file="90q_BB_BP+OSD_failure_rates_OSD_E_order_2.txt"
+            standard_BP_output_file="72q_BB_BP+OSD_failure_rates_OSD_E_order_2.txt"
         )
         save_decoder_dataframe(standardbp_results, output_csv_file_standard)
         println("Standard decoder statistics saved to file: $output_csv_file_standard")
@@ -160,7 +160,7 @@ function collect_results()
     
     # Violin plots to show the spread of the logical error rates across different samples for a given set of error parameters.
     violin_error_parameters = [
-        (0.006, 0.1)
+        (0.01, 0.001)
     ]
     plot_performance_spread(
         neuralbp_results, 
@@ -250,11 +250,10 @@ if abspath(PROGRAM_FILE) == @__FILE__
     # The filename to save the results is:
     training_source = splitext(basename(training_errors_file))[1]
     testing_source = splitext(basename(test_errors_file))[1]
-    results_file = "$(results_dir)/simulation_results_" *
-               "$(testing_source)_nlayers_" *
-               "$(n_hidden_layers)_epochs_" *
-               "$(n_epochs)_trained_using_" *
-               "$(training_source).csv"
+    results_file = "$(results_dir)/simulation_results_$(testing_source)_" *
+               "nlayers_$(n_hidden_layers)_" *
+               "epochs_$(n_epochs)_" *
+               "trained_using_$(training_source).csv"
     
     if isfile(results_file)
         println("Results file already exists: $(results_file). Skipping testing of the Neural BP model and loading results from file.")

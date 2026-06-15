@@ -1,6 +1,3 @@
-using Plots
-using DelimitedFiles
-
 function plot_statistics_for_ballistic_error_model(
     stats_dataframe::DataFrame, 
     per_qubit_error_probs::AbstractVector{Float64}, 
@@ -46,13 +43,13 @@ function plot_statistics_for_ballistic_error_model(
             # These rows have their `error_model_parameters_description` field of the form ./../data/aps_7q_Hamm_code_data/testing_data/test_ballistic_p_<per_qubit_prob>_q_<neighbour_prob>_*.txt
             # We have to filter the dataframe based on the `error_model_parameters_description` column to select the relevant rows for this pair of parameters.
             data_per_pair = filter(
-                row -> occursin("p_$(per_qubit_prob)_q_$(neighbour_prob)", row.error_model_parameters_description), 
+                row -> occursin(fmt_probs(per_qubit_prob, neighbour_prob), row.error_model_parameters_description), 
                 stats_dataframe
             )
             
             if !isnothing(data_to_compare)
                 data_per_pair_to_compare = filter(
-                    row -> occursin("p_$(per_qubit_prob)_q_$(neighbour_prob)", row.error_model_parameters_description), 
+                    row -> occursin(fmt_probs(per_qubit_prob, neighbour_prob), row.error_model_parameters_description), 
                     data_to_compare
                 )
             end
@@ -144,9 +141,10 @@ function plot_performance_spread(
     This will give us an idea of how much the performance varies across different samples for the same error model parameters.
     We will do violin plots of the performance gains for different samples, grouped by the error model parameters.
     """
+
     # Isolate the data needed for the violin plots.
     error_parameters_labels = [
-        String("p_$(per_qubit_prob)_q_$(neighbour_prob)") 
+        fmt_probs(per_qubit_prob, neighbour_prob)
         for (per_qubit_prob, neighbour_prob) in error_parameters
     ]
     
@@ -177,7 +175,7 @@ function plot_performance_spread(
         end
     end
 
-    # Save the data for the voilin plot in a CSV file for record-keeping and potential future use.
+    # Save the data for the violin plot in a CSV file for record-keeping and potential future use.
     output_csv_file = "$(prefix)/performance_spread_data.csv"
     CSV.write(output_csv_file, data_for_violin)
     println("Data for performance spread violin plot saved to file: $output_csv_file")
@@ -206,4 +204,15 @@ function plot_performance_spread(
 
     # Save the plot to a file.
     savefig(plt, "$(prefix)/performance_spread_violin_plot.pdf")
+end
+
+function fmt_probs(prob1::Float64, prob2::Float64)::String
+    """
+    Format the error model parameters `per_qubit_error_prob` and `neighbour_error_prob` to a string of the form `p_<per_qubit_error_prob>_q_<neighbour_error_prob>`, where the number of decimal places is determined by the maximum number of decimal places in either `prob1` or `prob2`.
+    """
+    ndig = max(length(split(string(prob1), ".")[end]),
+               length(split(string(prob2), ".")[end]))
+    fmt = Printf.Format("%.$(ndig)f")
+    prob_string = "p_$(Printf.format(fmt, prob1))_q_$(Printf.format(fmt, prob2))"
+    return prob_string
 end

@@ -16,6 +16,7 @@ using DelimitedFiles    # File I/O for CSV-like data formats
 using CSV               # CSV file reading and writing
 using ProgressMeter     # Progress bars for training and other long operations
 using ArgParse          # Command-line argument parsing for flexible execution
+using Printf            # Formatted printing for error model parameters
 
 
 # GPU acceleration (conditionally loaded based on environment variable)
