@@ -212,6 +212,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     hyperparams_file = args_dict["hyperparams"]
     hyperparams = parse_hyper_parameters(hyperparams_file; prefix=prefix)
     n_epochs = hyperparams["n_epochs"]
+    online_training = hyperparams["online_training"]
     
     # Train the Neural BP model
     base = load_base_BP_model(parity_check_matrix_file, logicals_file, n_hidden_layers; correlation_strengths_file=correlation_strengths_file)
@@ -228,7 +229,8 @@ if abspath(PROGRAM_FILE) == @__FILE__
         initial_conditions=initial_conditions,
         prefix=prefix,
         is_debug=is_debug,
-        is_quiet=is_quiet
+        is_quiet=is_quiet,
+        online_training=online_training # Set to true if you want to simulate online training by generating random batches of training samples on the fly instead of reading from a file. Note: we don't have an actual implementation for online training yet, so this will just read random batches from the training dataset to simulate the online training scenario.
     )
 
     # Test the Neural BP model predictions

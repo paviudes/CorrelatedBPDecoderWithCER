@@ -244,7 +244,8 @@ function train_neuralbp_enzyme!(
     hyperparameters::Dict;
     debugging_logfile::String="",
     is_debug::Bool=false,
-    is_quiet::Bool=false
+    is_quiet::Bool=false,
+    online_training::Bool=false # If true, we will generate training samples on the fly instead of reading from a file. However, right now we don't have an implementation for this, so we will simply read a random subset of `batch_size` samples from the training dataset.
 )
     """
     Train the NeuralBP model using the provided syndromes and expected recoveries.
@@ -309,7 +310,6 @@ function train_neuralbp_enzyme!(
         (
             syndromes[:, idx],
             expected_recoveries[:, idx],
-            repeat(base.initial_llrs, 1, length(idx))
         )
         for idx in samples_grouped_by_batch
     ]
@@ -361,14 +361,25 @@ function train_neuralbp_enzyme!(
 
         for b in 1:length(training_dataset)
 
-            # -------------------------
-            # Shuffle batch
-            # -------------------------
-            shuffled_indices = randperm(size(training_dataset[b][1], 2))
+            if online_training
+                # TODO: implement online training by generating a random batch of syndromes and expected recoveries on the fly.
+                # For now, we just read a random batch from the training dataset to simulate the online training scenario.
+                n_samples_in_batch = length(samples_grouped_by_batch[b])
+                selected_samples = rand(1:n_samples, n_samples_in_batch)
+                syndromes_batch = syndromes[:, selected_samples]
+                expected_batch = expected_recoveries[:, selected_samples]
+                llrs_batch = repeat(base.initial_llrs, 1, n_samples_in_batch) # shape (n_bits, batch_size)
+            else
+                # Use the pre-created batches from the training dataset.
+                # -------------------------
+                # Shuffle batch
+                # -------------------------
+                shuffled_indices = randperm(size(training_dataset[b][1], 2))
 
-            syndromes_batch = training_dataset[b][1][:, shuffled_indices]
-            expected_batch  = training_dataset[b][2][:, shuffled_indices]
-            llrs_batch      = training_dataset[b][3][:, shuffled_indices]
+                syndromes_batch = training_dataset[b][1][:, shuffled_indices]
+                expected_batch  = training_dataset[b][2][:, shuffled_indices]
+                llrs_batch      = repeat(base.initial_llrs, 1, length(shuffled_indices)) # shape (n_bits, batch_size)
+            end
 
             # -------------------------
             # Allocate gradients
@@ -515,7 +526,8 @@ function train_Nachmani_neuralbp(
     initial_conditions::Dict=Dict(),
     prefix::String="./../data",
     is_debug::Bool=false,
-    is_quiet::Bool=false
+    is_quiet::Bool=false,
+    online_training::Bool=false # If true, we will generate training samples on the fly instead of reading from a file. However, right now we don't have an implementation for this, so we will simply read a random subset of `batch_size` samples from the training dataset.
 )
     """
     Train a Neural Belief Propagation decoder for the given parity-check matrix.
@@ -575,7 +587,8 @@ function train_Nachmani_neuralbp(
             hyperparameters;
             debugging_logfile="$(prefix)/logs/debugging_$(training_source)",
             is_debug=is_debug,
-            is_quiet=is_quiet
+            is_quiet=is_quiet,
+            online_training=online_training
         )
 
         # Save the trained weights to a file
