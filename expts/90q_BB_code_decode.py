@@ -17,10 +17,10 @@ q_means   = [0.001]
 n_samples = 1
 n_qubits  = 90
 n_errors  = 100000
-PCM_Z=np.loadtxt("data/90q_BB_p_0.010_q_0.001_std_0.01_data/code/HZ.txt", dtype=int)
-Log_Z=np.loadtxt("data/90q_BB_p_0.010_q_0.001_std_0.01_data/code/LZ.txt", dtype=int)
+PCM_Z=np.loadtxt("data/90q_BB_p_0.010_q_0.001_std_0.05_data/code/HZ.txt", dtype=int)
+Log_Z=np.loadtxt("data/90q_BB_p_0.010_q_0.001_std_0.05_data/code/LZ.txt", dtype=int)
 
-result_directory = "data/90q_BB_p_0.010_q_0.001_std_0.01_data/results"
+result_directory = "data/90q_BB_p_0.010_q_0.001_std_0.05_data/results"
 os.makedirs(result_directory, exist_ok=True)
 
 total_files = len(p_values) * len(q_means) * n_samples  
@@ -49,7 +49,7 @@ with tqdm(total=total_files, desc="Decoding", unit="file") as pbar:
         for q_mean in q_means:
             for sample in range(1, n_samples + 1):
 
-                filename = f"data/90q_BB_p_0.010_q_0.001_std_0.01_data/testing_data/test_ballistic_p_{p_value}_q_{q_mean}_s_{sample}.txt"
+                filename = f"data/90q_BB_p_0.010_q_0.001_std_0.05_data/testing_data/test_ballistic_p_{p_value}_q_{q_mean}_s_{sample}.txt"
 
                 # Load errors (shape: n_errors x n_qubits)
                 sample_errors_x = np.loadtxt(filename, dtype=int).T
@@ -84,4 +84,4 @@ np.savetxt(
     fmt=["%.3f", "%.3f", "%d", "%d"]
 )
 
-print("Results saved to 90q_BB_p_0.010_q_0.001_std_0.01_data/90q_BB_BP+OSD_failure_rates_OSD_E_order_2.txt")
+print("Results saved to 90q_BB_p_0.010_q_0.001_std_0.05_data/90q_BB_BP+OSD_failure_rates_OSD_E_order_2.txt")
