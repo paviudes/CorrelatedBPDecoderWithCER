@@ -245,7 +245,8 @@ function train_neuralbp_enzyme!(
     debugging_logfile::String="",
     is_debug::Bool=false,
     is_quiet::Bool=false,
-    online_training::Bool=false # If true, we will generate training samples on the fly instead of reading from a file. However, right now we don't have an implementation for this, so we will simply read a random subset of `batch_size` samples from the training dataset.
+    online_training::Bool=false, # If true, we will generate training samples on the fly instead of reading from a file. However, right now we don't have an implementation for this, so we will simply read a random subset of `batch_size` samples from the training dataset.
+    n_gradient_updates_per_epoch::Int=0, # If `online_training` is true, this parameter specifies how many random batches we will generate (or read from the training dataset) for each epoch. If `online_training` is false, this parameter is ignored and we simply use all the batches from the training dataset as usual.
 )
     """
     Train the NeuralBP model using the provided syndromes and expected recoveries.
@@ -300,24 +301,29 @@ function train_neuralbp_enzyme!(
     # Create batches
     # ---------------------------------
     n_samples = size(syndromes, 2)
+    
+    if (n_gradient_updates_per_epoch == 0)
+        # Use the full training dataset, split into batches.
+        samples_grouped_by_batch = [
+            (i-1) * batch_size + 1 : min(i * batch_size, n_samples)
+            for i in 1:ceil(Int, n_samples / batch_size)
+        ]
+        
+        training_dataset = [
+            (
+                syndromes[:, idx],
+                expected_recoveries[:, idx],
+            )
+            for idx in samples_grouped_by_batch
+        ]
 
-    samples_grouped_by_batch = [
-        (i-1) * batch_size + 1 : min(i * batch_size, n_samples)
-        for i in 1:ceil(Int, n_samples / batch_size)
-    ]
-
-    training_dataset = [
-        (
-            syndromes[:, idx],
-            expected_recoveries[:, idx],
-        )
-        for idx in samples_grouped_by_batch
-    ]
+        n_gradient_updates_per_epoch = length(training_dataset)
+    end
 
     # --------------------------
     # Debugging: pre-allocate log DataFrames.
     if is_debug
-        n_samples_to_log = n_epochs * length(training_dataset)
+        n_samples_to_log = n_epochs * n_gradient_updates_per_epoch
         n_layers = bpnn.base.n_layers - warmup_loss_layers
         hp_log, individual_losses_log = init_training_debug_logs(n_samples_to_log)
     end
@@ -347,7 +353,7 @@ function train_neuralbp_enzyme!(
     epoch_progress = is_quiet ? nothing : Progress(n_epochs, desc="Training Epochs: ")
 
     for epoch in 1:n_epochs
-        batch_progress = is_quiet ? nothing : Progress(length(training_dataset), desc="Epoch $epoch Batches: ")
+        batch_progress = is_quiet ? nothing : Progress(n_gradient_updates_per_epoch, desc="Epoch $epoch Batches: ")
 
         hp = compute_hyperparameters(epoch, annealing_schedule)
 
@@ -359,16 +365,16 @@ function train_neuralbp_enzyme!(
         opt_state_checkpoint = deepcopy(opt_state)
         nan_skip_count       = 0
 
-        for b in 1:length(training_dataset)
+        for b in 1:n_gradient_updates_per_epoch
 
             if online_training
                 # TODO: implement online training by generating a random batch of syndromes and expected recoveries on the fly.
                 # For now, we just read a random batch from the training dataset to simulate the online training scenario.
-                n_samples_in_batch = length(samples_grouped_by_batch[b])
-                selected_samples = rand(1:n_samples, n_samples_in_batch)
+                # n_samples_in_batch = length(samples_grouped_by_batch[b])
+                selected_samples = rand(1:n_samples, batch_size)
                 syndromes_batch = syndromes[:, selected_samples]
                 expected_batch = expected_recoveries[:, selected_samples]
-                llrs_batch = repeat(base.initial_llrs, 1, n_samples_in_batch) # shape (n_bits, batch_size)
+                llrs_batch = repeat(base.initial_llrs, 1, batch_size) # shape (n_bits, batch_size)
             else
                 # Use the pre-created batches from the training dataset.
                 # -------------------------
@@ -477,7 +483,7 @@ function train_neuralbp_enzyme!(
                     syndromes_batch,
                     expected_batch
                 )
-                index = (epoch - 1) * length(training_dataset) + b
+                index = (epoch - 1) * n_gradient_updates_per_epoch + b
                 log_batch_debug!(
                     hp_log,
                     individual_losses_log,
@@ -527,7 +533,8 @@ function train_Nachmani_neuralbp(
     prefix::String="./../data",
     is_debug::Bool=false,
     is_quiet::Bool=false,
-    online_training::Bool=false # If true, we will generate training samples on the fly instead of reading from a file. However, right now we don't have an implementation for this, so we will simply read a random subset of `batch_size` samples from the training dataset.
+    online_training::Bool=false, # If true, we will generate training samples on the fly instead of reading from a file. However, right now we don't have an implementation for this, so we will simply read a random subset of `batch_size` samples from the training dataset.
+    n_gradient_updates_per_epoch::Int=0 # If `online_training` is true, this parameter specifies how many random batches we will generate (or read from the training dataset) for each epoch. If `online_training` is false, this parameter is ignored and we simply use all the batches from the training dataset as usual.
 )
     """
     Train a Neural Belief Propagation decoder for the given parity-check matrix.
@@ -588,7 +595,8 @@ function train_Nachmani_neuralbp(
             debugging_logfile="$(prefix)/logs/debugging_$(training_source)",
             is_debug=is_debug,
             is_quiet=is_quiet,
-            online_training=online_training
+            online_training=online_training,
+            n_gradient_updates_per_epoch=n_gradient_updates_per_epoch
         )
 
         # Save the trained weights to a file

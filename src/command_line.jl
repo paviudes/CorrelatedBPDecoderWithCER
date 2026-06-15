@@ -207,7 +207,7 @@ function parse_command_line_args_NN(;prefix::String="./../data")::Dict{String, A
 			help = "Name of the file used for testing the trained Neural BP model."
 			arg_type = String
 			default = ""
-		"--debug"
+		"--isdebug"
 			help = "Enable debug mode: log per-batch loss components and weight statistics."
 			arg_type = Bool
 			default = false
@@ -286,6 +286,7 @@ function parse_hyper_parameters(hyperparams_file::String=""; prefix::String="./.
         "n_epochs" => 5, # Number of training epochs
 		"warmup_layers" => 10, # First number of layers to leave unconstrained in the loss function.
 		"online_training" => false, # If true, we will generate training samples on the fly instead of reading from a file. However, right now we don't have an implementation for this, so we will simply read a random subset of `batch_size` samples from the training dataset to simulate the online training scenario. Important: when this is set to true, explicitly make sure that the batch size divides the number of samples in the training dataset.
+		"n_gradient_updates_per_epoch" => 0, # If `online_training` is true, this specifies the number of gradient updates to perform per epoch. If set to 0, it defaults to the number of batches in the training dataset.
         # Annealing schedule for the loss hyperparameters
         "loss_layer_temperature" => "0.1,5.0,0.9,down", # Smooth minimum approximation temperature
         "correlation_importance" => "0.1,1.0,0.1,down", # Correlation penalty importance

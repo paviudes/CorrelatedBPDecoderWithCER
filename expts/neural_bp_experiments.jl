@@ -205,7 +205,8 @@ if abspath(PROGRAM_FILE) == @__FILE__
     correlation_strengths_file = "$(prefix)/correlated_weights/$(args_dict["correlation_strengths_file"])"
     training_errors_file = "$(prefix)/training_data/$(args_dict["train"])"
     n_hidden_layers = args_dict["n_hidden_layers"]
-    is_debug = args_dict["debug"]
+    n_samples = args_dict["n_samples"]
+    is_debug = args_dict["isdebug"]
     is_quiet = args_dict["quiet"]
 
     # Extract hyperparameters from file or use defaults
@@ -230,7 +231,8 @@ if abspath(PROGRAM_FILE) == @__FILE__
         prefix=prefix,
         is_debug=is_debug,
         is_quiet=is_quiet,
-        online_training=online_training # Set to true if you want to simulate online training by generating random batches of training samples on the fly instead of reading from a file. Note: we don't have an actual implementation for online training yet, so this will just read random batches from the training dataset to simulate the online training scenario.
+        online_training=online_training, # Set to true if you want to simulate online training by generating random batches of training samples on the fly instead of reading from a file. Note: we don't have an actual implementation for online training yet, so this will just read random batches from the training dataset to simulate the online training scenario.
+        n_gradient_updates_per_epoch = hyperparams["n_gradient_updates_per_epoch"]
     )
 
     # Test the Neural BP model predictions
