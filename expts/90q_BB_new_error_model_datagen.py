@@ -15,11 +15,11 @@ import matplotlib.pyplot as plt
 # Geometry: Ladder grid R x C
 R, C = 2, 45 #change to 2,45 for 90 qubits and change file names accordingly
 n_qubits = R * C
-output_dir_training_errors = f"data/90q_BB_p_0.010_q_0.001_std_0.05_data/training_data"
-output_dir_testing_errors = f"data/90q_BB_p_0.010_q_0.001_std_0.05_data/testing_data"
-output_dir_CER = f"data/90q_BB_p_0.010_q_0.001_std_0.05_data/correlated_weights"
-output_dir_prob = f"data/90q_BB_p_0.010_q_0.001_std_0.05_data/assigned_probabilities"
-output_dir_plots = f"data/90q_BB_p_0.010_q_0.001_std_0.05_data/plots"
+output_dir_training_errors = f"data/90q_BB_p_0.010_q_0.001_std_0.03_data/training_data"
+output_dir_testing_errors = f"data/90q_BB_p_0.010_q_0.001_std_0.03_data/testing_data"
+output_dir_CER = f"data/90q_BB_p_0.010_q_0.001_std_0.03_data/correlated_weights"
+output_dir_prob = f"data/90q_BB_p_0.010_q_0.001_std_0.03_data/assigned_probabilities"
+output_dir_plots = f"data/90q_BB_p_0.010_q_0.001_std_0.03_data/plots"
 os.makedirs(output_dir_training_errors, exist_ok=True)
 os.makedirs(output_dir_testing_errors, exist_ok=True)
 os.makedirs(output_dir_CER, exist_ok=True)
@@ -27,9 +27,9 @@ os.makedirs(output_dir_prob, exist_ok=True)
 os.makedirs(output_dir_plots, exist_ok=True)
 
 p_means=[0.010]
-p_std=0.05
+p_std=0.03
 q_means=[0.001]
-q_std=0.05
+q_std=0.03
 n_samples=1
 num_patterns=100000
 
