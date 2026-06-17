@@ -66,6 +66,50 @@ USE_GPU=0 /Users/quantum/.juliaup/bin/julia --compiled-modules=no --project="./.
   --run_label julia_cpu_seed0
 ```
 
+## Python Commands
+
+These Python commands were run from a normal macOS Terminal outside the Codex
+sandbox, using the Python `3.13` virtualenv at
+`/Users/quantum/.venvs/correlated-bp-mps`.
+
+MPS-enabled path:
+
+```bash
+cd /Users/quantum/Documents/workspace/projects/research/ML\ for\ decoding
+
+/Users/quantum/.venvs/correlated-bp-mps/bin/python \
+  pavi/correlated_bp_decoder/scripts/head_to_head_explicit_compare.py \
+  --codename 72q_BB_p_0.010_q_0.001_std_0.01_data \
+  --hyperparams-file default_hyperparams.toml \
+  --correlated-weights-file correlated_weights_p_0.01_q_0.001_s_1.txt \
+  --train-file train_ballistic_p_0.01_q_0.001_s_1.txt \
+  --test-file test_ballistic_p_0.01_q_0.001_s_1.txt \
+  --sample 1 \
+  --n-layers 100 \
+  --seed 0 \
+  --device mps \
+  --run-label mps_full_seed0_outside_sandbox
+```
+
+CPU-only reference path:
+
+```bash
+cd /Users/quantum/Documents/workspace/projects/research/ML\ for\ decoding
+
+/Users/quantum/.venvs/correlated-bp-mps/bin/python \
+  pavi/correlated_bp_decoder/scripts/head_to_head_explicit_compare.py \
+  --codename 72q_BB_p_0.010_q_0.001_std_0.01_data \
+  --hyperparams-file default_hyperparams.toml \
+  --correlated-weights-file correlated_weights_p_0.01_q_0.001_s_1.txt \
+  --train-file train_ballistic_p_0.01_q_0.001_s_1.txt \
+  --test-file test_ballistic_p_0.01_q_0.001_s_1.txt \
+  --sample 1 \
+  --n-layers 100 \
+  --seed 0 \
+  --device cpu \
+  --run-label cpu_full_seed0_outside_sandbox
+```
+
 ## Results Log
 
 | Run label | Impl | USE_GPU | Seed | External wall time | Script runtime | Correct / total | Output CSV | Notes |
