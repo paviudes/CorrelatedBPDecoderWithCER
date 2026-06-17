@@ -14,6 +14,7 @@ from ..io import (
     load_trained_neuralbp_model,
     save_trained_neuralbp_model,
 )
+from ..devices import resolve_torch_device, synchronize_torch_device
 from ..neural.nachmani import NachmaniNeuralBP
 from ..neural.predict import neuralbp_test_predictions
 from ..neural.training import (
@@ -68,7 +69,11 @@ def _build_parser() -> argparse.ArgumentParser:
     train_parser.add_argument("--correlation-importance", type=float, default=0.0)
     train_parser.add_argument("--sparsity-importance", type=float, default=0.0)
     train_parser.add_argument("--seed", type=int, default=0)
-    train_parser.add_argument("--device", type=str, default="cpu")
+    train_parser.add_argument(
+        "--device",
+        choices=("cpu", "mps", "cuda", "auto"),
+        default="cpu",
+    )
     train_parser.add_argument("--weights-out", type=Path)
     train_parser.set_defaults(handler=_run_train_synthetic)
 
@@ -80,7 +85,11 @@ def _build_parser() -> argparse.ArgumentParser:
     evaluate_parser.add_argument("--weights-file", type=Path)
     evaluate_parser.add_argument("--test-errors-file", type=Path, required=True)
     evaluate_parser.add_argument("--batch-size", type=int, default=4096)
-    evaluate_parser.add_argument("--device", type=str, default="cpu")
+    evaluate_parser.add_argument(
+        "--device",
+        choices=("cpu", "mps", "cuda", "auto"),
+        default="cpu",
+    )
     evaluate_parser.set_defaults(handler=_run_evaluate_errors)
 
     return parser
@@ -99,7 +108,8 @@ def _run_train_synthetic(args: argparse.Namespace) -> None:
     """Train the neural-BP model on synthetic data and print a JSON summary."""
 
     torch.manual_seed(args.seed)
-    model = _build_model(args).to(torch.device(args.device))
+    device = resolve_torch_device(args.device)
+    model = _build_model(args).to(device)
     parity_check = torch.tensor(
         model.base.parity_check_matrix.astype("float32"),
         device=model.device,
@@ -109,6 +119,7 @@ def _run_train_synthetic(args: argparse.Namespace) -> None:
         args.n_samples,
         args.error_rate,
     )
+    synchronize_torch_device(device)
     summary = train_nachmani_neuralbp(
         model,
         syndromes,
@@ -133,6 +144,7 @@ def _run_train_synthetic(args: argparse.Namespace) -> None:
             ),
         ),
     )
+    synchronize_torch_device(device)
     if args.weights_out is not None:
         save_trained_neuralbp_model(
             args.weights_out,
@@ -164,18 +176,21 @@ def _run_train_synthetic(args: argparse.Namespace) -> None:
 def _run_evaluate_errors(args: argparse.Namespace) -> None:
     """Evaluate the neural-BP model on a file of explicit test errors."""
 
-    model = _build_model(args).to(torch.device(args.device))
+    device = resolve_torch_device(args.device)
+    model = _build_model(args).to(device)
     if args.weights_file is not None:
         model = load_trained_neuralbp_model(
             args.weights_file,
             model,
             device=model.device,
         )
+    synchronize_torch_device(device)
     is_correct = neuralbp_test_predictions(
         model,
         args.test_errors_file,
         batch_size=args.batch_size,
     )
+    synchronize_torch_device(device)
     n_samples = int(is_correct.shape[0])
     n_correct = int(is_correct.sum().item())
     print(

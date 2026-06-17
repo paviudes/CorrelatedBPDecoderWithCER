@@ -19,6 +19,7 @@ _SINGLE_QUBIT_PATTERN = re.compile(
 _PAIR_PATTERN = re.compile(
     rf"^\s*\((\d+)\s*,\s*(\d+)\)\s*:\s*({_FLOAT_PATTERN})\s*$"
 )
+_MIN_ERROR_RATE = 1e-6
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,7 +82,7 @@ def parse_cer_data(correlation_strengths_file: str | Path) -> CerData:
         single_match = _SINGLE_QUBIT_PATTERN.fullmatch(line)
         if single_match is not None:
             qubit = int(single_match.group(1))
-            error_rate = float(single_match.group(2))
+            error_rate = max(float(single_match.group(2)), _MIN_ERROR_RATE)
             single_qubit_error_rates[qubit] = error_rate
             continue
 
@@ -89,7 +90,7 @@ def parse_cer_data(correlation_strengths_file: str | Path) -> CerData:
         if pair_match is not None:
             qubit_i = int(pair_match.group(1))
             qubit_j = int(pair_match.group(2))
-            strength = float(pair_match.group(3))
+            strength = max(float(pair_match.group(3)), _MIN_ERROR_RATE)
             connectivity.append((qubit_i, qubit_j))
             correlation_strengths.append(strength)
             continue

@@ -54,7 +54,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     # ----------------------------------------------------------------------------
     args_dict = parse_command_line_args_NN(; prefix = "./../data")
 
-    prefix                     = "./../data/$(args_dict["codename"])"
+    prefix                     = resolve_dataset_prefix(args_dict["codename"])
     parity_check_matrix_file   = "$(prefix)/code/HZ.txt"
     logicals_file              = "$(prefix)/code/LZ.txt"
     correlation_strengths_file = "$(prefix)/correlated_weights/$(args_dict["correlation_strengths_file"])"

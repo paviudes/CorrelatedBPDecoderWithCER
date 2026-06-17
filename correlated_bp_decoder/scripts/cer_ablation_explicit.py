@@ -63,10 +63,13 @@ from correlated_bp_decoder import (  # noqa: E402
     build_initial_llrs,
     check_bp_solutions,
     classical_belief_propagation_decoder,
+    describe_torch_runtime,
     load_binary_matrix,
     parse_cer_data,
     random_values_around_one,
+    resolve_torch_device,
     save_trained_neuralbp_model,
+    synchronize_torch_device,
     train_nachmani_neuralbp,
 )
 
@@ -322,7 +325,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="How many test patterns to use. Defaults to the requested 10^5 setup.",
     )
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument(
+        "--device",
+        choices=("cpu", "mps", "cuda", "auto"),
+        default="cpu",
+        help=(
+            "Torch device for training/evaluation. Use 'mps' on Apple Silicon, "
+            "'cpu' for the baseline path, or 'auto' to pick the best available "
+            "accelerator."
+        ),
+    )
     parser.add_argument("--run-label", type=str, default="")
     parser.add_argument("--initial-conditions-scale", type=float, default=0.3)
     parser.add_argument(
@@ -603,7 +615,7 @@ def _run_neural_mode(
         cer_strengths=cer_data.correlation_strengths,
         default_error_rate=args.standard_bp_initial_error_rate,
     )
-    device = torch.device(args.device)
+    device = resolve_torch_device(args.device)
     model = NachmaniNeuralBP(
         base,
         weights_c2v_v2c=random_values_around_one(
@@ -663,6 +675,7 @@ def _run_neural_mode(
         ),
     )
 
+    synchronize_torch_device(device)
     train_start = time.perf_counter()
     training_summary = train_nachmani_neuralbp(
         model,
@@ -670,6 +683,7 @@ def _run_neural_mode(
         torch.as_tensor(train_errors, dtype=torch.bool),
         config,
     )
+    synchronize_torch_device(device)
     training_time_s = time.perf_counter() - train_start
 
     weights_path = models_dir / f"cer_ablation_{mode}_{run_tag}.json"
@@ -685,6 +699,7 @@ def _run_neural_mode(
         },
     )
 
+    synchronize_torch_device(device)
     eval_start = time.perf_counter()
     evaluation = _evaluate_model(
         model,
@@ -694,6 +709,7 @@ def _run_neural_mode(
         errors=test_errors,
         batch_size=args.eval_batch_size,
     )
+    synchronize_torch_device(device)
     evaluation_time_s = time.perf_counter() - eval_start
 
     logical_error_rate = 1.0 - evaluation["dual_success_rate"]
@@ -702,6 +718,9 @@ def _run_neural_mode(
         "uses_pairwise_cer_loss": mode in {"cer_loss", "priors_plus_cer_loss"},
         "uses_assigned_single_qubit_priors": mode in {"priors_only", "priors_plus_cer_loss"},
         "weights_file": str(weights_path),
+        "requested_device": args.device,
+        "resolved_device": str(device),
+        "torch_runtime": describe_torch_runtime(),
         "training_time_s": training_time_s,
         "evaluation_time_s": evaluation_time_s,
         "logical_success_rate": evaluation["dual_success_rate"],

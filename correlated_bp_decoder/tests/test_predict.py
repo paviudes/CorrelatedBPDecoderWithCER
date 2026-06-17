@@ -92,6 +92,36 @@ def test_predict_and_check_neuralbp_decodes_zero_errors() -> None:
     assert torch.equal(is_correct, torch.tensor([True, True, True]))
 
 
+def test_predict_and_check_neuralbp_defaults_to_parity_validation() -> None:
+    """Match Julia's default success criterion: parity, not dual, validation."""
+
+    parity_check = [[1, 1, 0]]
+    parity_check_dual = [[1, 1, 0], [1, 0, 0]]
+    initial_llrs = [2.1972246, 2.1972246, 2.1972246]
+    base = NeuralBPBase(parity_check, parity_check_dual, initial_llrs, n_layers=2)
+    model = NachmaniNeuralBP(
+        base,
+        weights_c2v_v2c=torch.ones(base.nb_weights_c2v_v2c * base.n_layers),
+        weights_llrs=torch.ones(base.code_n_bits * base.n_layers),
+        weights_c2v_readout=torch.ones(base.nb_weights_c2v_readout),
+    )
+
+    syndromes = torch.zeros((1, 1), dtype=torch.bool)
+    errors = torch.tensor([[True], [True], [False]], dtype=torch.bool)
+
+    parity_default = predict_and_check_neuralbp(model, syndromes, errors, batch_size=1)
+    strict_dual = predict_and_check_neuralbp(
+        model,
+        syndromes,
+        errors,
+        batch_size=1,
+        validation_matrix=model.base.parity_check_matrix_dual,
+    )
+
+    assert torch.equal(parity_default, torch.tensor([True]))
+    assert torch.equal(strict_dual, torch.tensor([False]))
+
+
 def test_neuralbp_test_predictions_loads_file_backed_errors(tmp_path) -> None:
     """Load Julia-style explicit error files and evaluate them end to end."""
 

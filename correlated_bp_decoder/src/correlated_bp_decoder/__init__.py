@@ -1,6 +1,14 @@
 """Python translation of the correlated neural BP decoder."""
 
 from .cer import CerData, parse_cer_data
+from .devices import (
+    cuda_available,
+    describe_torch_runtime,
+    mps_available,
+    mps_built,
+    resolve_torch_device,
+    synchronize_torch_device,
+)
 from .io import (
     build_initial_llrs,
     load_base_bp_model,
@@ -92,11 +100,13 @@ __all__ = [
     "build_initial_llrs",
     "bp_initialize",
     "bp_round",
+    "cuda_available",
     "c2v_to_v2c",
     "c2v_to_v2c_with_weights_",
     "classical_belief_propagation_decoder",
     "check_bp_solutions",
     "coerce_binary_matrix",
+    "describe_torch_runtime",
     "compute_llrs_from_probabilities",
     "compute_additional_loss_from_ising_correlations",
     "compute_loss_breakdown",
@@ -119,6 +129,8 @@ __all__ = [
     "load_binary_matrix",
     "load_trained_neuralbp_model",
     "load_trained_weights",
+    "mps_available",
+    "mps_built",
     "neuralbp_test_predictions",
     "parse_cer_data",
     "predict_and_check_neuralbp",
@@ -137,7 +149,9 @@ __all__ = [
     "sparsity_penalty",
     "sparse_multiply",
     "sparse_multiply_",
+    "resolve_torch_device",
     "save_trained_neuralbp_model",
+    "synchronize_torch_device",
     "syndrome_loss_regularizer",
     "train_nachmani_neuralbp",
     "trim_constraints",

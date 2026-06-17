@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: correlated-bp-decoder
+Version: 0.1.0
+Summary: Python translation of Pavi's correlated neural belief-propagation decoder.
+Requires-Python: >=3.11
+Requires-Dist: numpy>=1.26
+Requires-Dist: torch
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"

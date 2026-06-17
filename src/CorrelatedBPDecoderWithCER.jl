@@ -97,7 +97,7 @@ export BPSettings, print_bp_settings, belief_propagation_decoder,
 
 # Command line interface
 include("command_line.jl")
-export parse_command_line_args_BP, parse_command_line_args_NN, print_arguments, generate_runs, parse_hyper_parameters
+export parse_command_line_args_BP, parse_command_line_args_NN, print_arguments, generate_runs, parse_hyper_parameters, resolve_dataset_prefix
 
 # Neural belief propagation
 include("neuralbase.jl")

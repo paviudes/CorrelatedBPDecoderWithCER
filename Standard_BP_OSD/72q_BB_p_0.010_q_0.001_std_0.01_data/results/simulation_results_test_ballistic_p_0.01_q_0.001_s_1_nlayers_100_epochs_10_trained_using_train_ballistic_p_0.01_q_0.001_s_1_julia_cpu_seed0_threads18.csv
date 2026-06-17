@@ -1,0 +1,2 @@
+algo,average_logical_error_rate,error_model_name,error_model_parameters_description,n_iterations_BP,num_failures,num_samples_per_error_rate,rounds_per_BP,runtime,std_logical_error_rate,weight_soft_constraint
+NN,0.00434,ExplicitErrorModel,/Users/quantum/Documents/workspace/projects/research/ML for decoding/pavi/Standard_BP_OSD/72q_BB_p_0.010_q_0.001_std_0.01_data/testing_data/test_ballistic_p_0.01_q_0.001_s_1.txt,100,434,100000,10,2550.2907078266144,0.006573556419473404,0.0

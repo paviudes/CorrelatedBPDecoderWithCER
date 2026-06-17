@@ -1,0 +1,2 @@
+[console_scripts]
+correlated-bp-run-neural = correlated_bp_decoder.experiments.run_neural_bp:main

@@ -107,9 +107,11 @@ def check_bp_solutions(
         batch_first=batch_first,
         device=recoveries_tensor.device,
     )
+    use_float_validation = recoveries_tensor.device.type == "mps"
+    validation_dtype = torch.float32 if use_float_validation else torch.int64
     validation_matrix = torch.as_tensor(
         parity_check_matrix_dual,
-        dtype=torch.int64,
+        dtype=validation_dtype,
         device=recoveries_tensor.device,
     )
     if (
@@ -122,10 +124,15 @@ def check_bp_solutions(
         )
 
     residual_errors = torch.logical_xor(errors_tensor.unsqueeze(2), recoveries_tensor)
+    residual_dtype = torch.float32 if use_float_validation else torch.int64
     parity_sums = (
         validation_matrix
-        @ residual_errors.to(torch.int64).reshape(validation_matrix.shape[1], -1)
-    ) % 2
+        @ residual_errors.to(residual_dtype).reshape(validation_matrix.shape[1], -1)
+    )
+    if use_float_validation:
+        parity_sums = torch.remainder(parity_sums, 2.0)
+    else:
+        parity_sums = parity_sums % 2
     layer_success = torch.all(parity_sums == 0, dim=0).reshape(
         recoveries_tensor.shape[1],
         recoveries_tensor.shape[2],
@@ -160,7 +167,8 @@ def predict_and_check_neuralbp(
         Whether the provided arrays use batch-first layout.
     validation_matrix
         Optional matrix used to validate the residual errors. When omitted,
-        the model's stored dual matrix is used.
+        the model's stored parity-check matrix is used to match the current
+        Julia experiment path.
 
     Returns
     -------
@@ -176,7 +184,7 @@ def predict_and_check_neuralbp(
         return_batch_first=batch_first,
     )
     if validation_matrix is None:
-        validation_matrix = model.base.parity_check_matrix_dual
+        validation_matrix = model.base.parity_check_matrix
     return check_bp_solutions(
         validation_matrix,
         errors,
@@ -205,7 +213,8 @@ def neuralbp_test_predictions(
         Number of samples to process per forward batch.
     validation_matrix
         Optional matrix used to validate residual errors. When omitted, the
-        model's dual matrix is used.
+        model's parity-check matrix is used to match the current Julia
+        experiment path.
 
     Returns
     -------

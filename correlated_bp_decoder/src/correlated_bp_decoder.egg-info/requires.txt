@@ -1,0 +1,5 @@
+numpy>=1.26
+torch
+
+[dev]
+pytest>=8.0

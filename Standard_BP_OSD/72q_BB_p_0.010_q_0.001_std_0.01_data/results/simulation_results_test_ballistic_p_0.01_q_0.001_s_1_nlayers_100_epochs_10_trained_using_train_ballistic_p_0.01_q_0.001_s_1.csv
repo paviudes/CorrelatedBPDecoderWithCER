@@ -1,0 +1,2 @@
+algo,average_logical_error_rate,error_model_name,error_model_parameters_description,n_iterations_BP,num_failures,num_samples_per_error_rate,rounds_per_BP,runtime,std_logical_error_rate,weight_soft_constraint
+NN,0.00422,ExplicitErrorModel,./../data/72q_BB_p_0.010_q_0.001_std_0.01_data/testing_data/test_ballistic_p_0.01_q_0.001_s_1.txt,100,422,100000,10,378.6193690299988,0.00648243133399807,0.0

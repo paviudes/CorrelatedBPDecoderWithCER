@@ -1,0 +1,43 @@
+# Whether to retrain the model even if trained weights are available.
+retrain = false
+
+# Learning rate for training the Neural BP model using the ADAM optimizer
+learning_rate = 0.001
+
+# Gradient clipping threshold
+max_grad_norm = 3.0
+
+# L2 regularization strength for ADAM optimizer
+weight_decay = 0.0001
+
+# Number of consecutive NaN occurrences in the loss before skipping the batch during training
+nanskip = 5
+
+# Epsilon parameter for the ADAM optimizer to improve numerical stability
+adam_eps = 0.0001
+
+# Batch size for training
+batch_size = 50
+
+# Number of training epochs
+n_epochs = 10
+
+# Number of layers to leave unconstrained in the loss function.
+warmup_layers = 25
+
+# Initial conditions for the learnable parameters: all weights are initialized to Gaussian random values around 1, with a standard deviation of σ. We will specify σ here.
+initial_conditions_scale = 0.3
+
+# Annealing schedule for the loss hyperparameters
+
+# Smooth minimum approximation temperature: smoothly transitions from max to min over epochs.
+loss_layer_temperature = "1e0,5e1,0.9,down"
+
+# Correlation penalty importance: smoothly transitions from max to min over epochs.
+correlation_importance = "1e-2,1e-1,0.9,down"
+
+# LLR convergence term importance: smoothly transitions from max to min over epochs.
+llr_certainty_importance = "1e-3,1e-2,0.1,up"
+
+# Sparsity encouragement term importance: smoothly transitions from min to max over epochs.
+sparsity_importance = "0,1e-2,0.5,up"

@@ -514,6 +514,7 @@ function train_Nachmani_neuralbp(
     hyperparameters::Dict=Dict(); # Hyperparameters for training the Neural BP model
     initial_conditions::Dict=Dict(),
     prefix::String="./../data",
+    filename_suffix::String="",
     is_debug::Bool=false,
     is_quiet::Bool=false
 )
@@ -556,7 +557,7 @@ function train_Nachmani_neuralbp(
         "$(models_dir)/neuralbp_weights_" *
         "nlayers_$(base.n_layers)_" *
         "epochs_$(n_epochs)_" *
-        "trained_using_$(training_source).json"
+        "trained_using_$(training_source)$(filename_suffix).json"
     
     if isfile(weights_filename) && !hyperparameters["retrain"]
         # println("Loading existing weights from file: $weights_filename")
@@ -573,7 +574,7 @@ function train_Nachmani_neuralbp(
             training_syndromes,
             expected_recoveries,
             hyperparameters;
-            debugging_logfile="$(prefix)/logs/debugging_$(training_source)",
+            debugging_logfile="$(prefix)/logs/debugging_$(training_source)$(filename_suffix)",
             is_debug=is_debug,
             is_quiet=is_quiet
         )

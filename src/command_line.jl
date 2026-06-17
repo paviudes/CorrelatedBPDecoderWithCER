@@ -140,6 +140,39 @@ function parse_command_line_args_BP(;prefix="./../data")::Dict{String, Any}
 	return args_dict
 end
 
+function resolve_dataset_prefix(codename::String)::String
+	"""
+	Resolve a dataset codename to an on-disk directory.
+
+	The historical workflow stored datasets under `data/<codename>/`, while the
+	collaborator BB-code datasets in this repo live under
+	`Standard_BP_OSD/<codename>/`. We support both layouts here so the same
+	`--codename` CLI flag works across old and new experiment trees.
+	"""
+	if isempty(codename)
+		throw(ArgumentError("codename must be a non-empty string."))
+	end
+
+	repo_root = normpath(joinpath(@__DIR__, ".."))
+	candidates = [
+		normpath(joinpath(repo_root, "data", codename)),
+		normpath(joinpath(repo_root, "Standard_BP_OSD", codename)),
+		normpath(joinpath(repo_root, codename)),
+		isabspath(codename) ? normpath(codename) : normpath(joinpath(pwd(), codename)),
+	]
+
+	for candidate in candidates
+		if isdir(candidate)
+			return candidate
+		end
+	end
+
+	tried_paths = join(candidates, "\n  - ")
+	throw(ArgumentError(
+		"Could not locate dataset directory for codename '$(codename)'. Tried:\n  - $(tried_paths)"
+	))
+end
+
 function parse_command_line_args_NN(;prefix::String="./../data")::Dict{String, Any}
 	"""
 	Parse command-line arguments for Neural BP experiments and return them as a dictionary using `ArgParse`.
@@ -173,7 +206,8 @@ function parse_command_line_args_NN(;prefix::String="./../data")::Dict{String, A
 	```sh
 	julia --project="./../" neural_bp_experiments.jl --codename hamming --n_hidden_layers 5 --n_epochs 5 --batch_size 100 --retrain false
 	```
-	Where `codename` is a folder inside `./../data/` containing the required files.
+	Where `codename` is a folder inside either `./../data/` or
+	`./../Standard_BP_OSD/` containing the required files.
 
 	"""
 	settings = ArgParseSettings()
@@ -205,6 +239,14 @@ function parse_command_line_args_NN(;prefix::String="./../data")::Dict{String, A
 			default = ""
 		"--test"
 			help = "Name of the file used for testing the trained Neural BP model."
+			arg_type = String
+			default = ""
+		"--seed"
+			help = "Random seed used for reproducible neural-BP weight initialization."
+			arg_type = Int
+			default = 0
+		"--run_label"
+			help = "Optional suffix used to keep repeated runs on the same dataset distinct."
 			arg_type = String
 			default = ""
 		"--debug"

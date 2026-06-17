@@ -105,7 +105,7 @@ function collect_results()
     n_samples = 56
     codename = "90q_BB_p_0.006_q_0.1_std_0.1"
 
-    prefix = "./../data/$(codename)"
+    prefix = resolve_dataset_prefix(codename)
     n_hidden_layers = 100
     n_epochs = 20
 
@@ -199,12 +199,15 @@ if abspath(PROGRAM_FILE) == @__FILE__
     args_dict = parse_command_line_args_NN(;prefix="./../data")
 
     # Extract arguments
-    prefix = "./../data/$(args_dict["codename"])"
+    prefix = resolve_dataset_prefix(args_dict["codename"])
     parity_check_matrix_file = "$(prefix)/code/HZ.txt"
     logicals_file = "$(prefix)/code/LZ.txt"
     correlation_strengths_file = "$(prefix)/correlated_weights/$(args_dict["correlation_strengths_file"])"
     training_errors_file = "$(prefix)/training_data/$(args_dict["train"])"
     n_hidden_layers = args_dict["n_hidden_layers"]
+    run_label = strip(args_dict["run_label"])
+    filename_suffix = run_label == "" ? "" : "_$(run_label)"
+    seed = args_dict["seed"]
     is_debug = args_dict["debug"]
     is_quiet = args_dict["quiet"]
 
@@ -212,6 +215,9 @@ if abspath(PROGRAM_FILE) == @__FILE__
     hyperparams_file = args_dict["hyperparams"]
     hyperparams = parse_hyper_parameters(hyperparams_file; prefix=prefix)
     n_epochs = hyperparams["n_epochs"]
+
+    CorrelatedBPDecoderWithCER.Random.seed!(seed)
+    println("Using random seed = $(seed)")
     
     # Train the Neural BP model
     base = load_base_BP_model(parity_check_matrix_file, logicals_file, n_hidden_layers; correlation_strengths_file=correlation_strengths_file)
@@ -227,6 +233,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
         hyperparams;
         initial_conditions=initial_conditions,
         prefix=prefix,
+        filename_suffix=filename_suffix,
         is_debug=is_debug,
         is_quiet=is_quiet
     )
@@ -292,7 +299,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
                "$(testing_source)_nlayers_" *
                "$(n_hidden_layers)_epochs_" *
                "$(n_epochs)_trained_using_" *
-               "$(training_source).csv"
+               "$(training_source)$(filename_suffix).csv"
     record_decoder_statistics(stats, results_file)
 end
 #=
