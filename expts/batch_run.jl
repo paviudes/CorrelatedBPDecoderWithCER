@@ -239,14 +239,7 @@ function main_test()
         "p_0.01_q_0.001_s_5.txt",
         "p_0.01_q_0.001_s_6.txt"
     ]
-    individual_cer_files = [
-        "correlated_weights_p_0.01_q_0.001_s_1.txt",
-        "correlated_weights_p_0.01_q_0.001_s_2.txt",
-        "correlated_weights_p_0.01_q_0.001_s_3.txt",
-        "correlated_weights_p_0.01_q_0.001_s_4.txt",
-        "correlated_weights_p_0.01_q_0.001_s_5.txt",
-        "correlated_weights_p_0.01_q_0.001_s_6.txt"
-    ]
+    # The CER files are formatted as "correlated_weights_fname" for each `fname` in `individual_training_files`.
     individual_testing_files = [
         "p_0.01_q_0.001_s_1.txt"
     ]
@@ -255,6 +248,37 @@ function main_test()
         "hyperparams_epochs_15.toml",
         "hyperparams_epochs_20.toml",
     ]
+
+    n_param_combinations = length(individual_training_files) * length(individual_testing_files) * length(individual_hyperparams_files)
+
+    # Generate each combination of training file, testing file, and hyperparameters file.
+    combinations = vec(collect(Iterators.product(
+        individual_training_files,
+        individual_testing_files,
+        individual_hyperparams_files,
+    )))
+    train_files       = [combo[1]                         for combo in combinations]
+    cer_files         = ["correlated_weights_$(combo[1])" for combo in combinations]
+    test_files        = [combo[2]                         for combo in combinations]
+    hyperparams_files = [combo[3]                         for combo in combinations]
+
+    # Generate commands for running the simulations in parallel.
+    generate_parallel_commands(
+        cer_files,
+        train_files,
+        test_files;
+        codename=codename,
+        n_hidden_layers=200,
+        hyperparams_files=hyperparams_files,
+        julia_project="./../",
+        commands_file="./../data/$(codename)/cluster/commands.txt",
+        output_file="./../data/$(codename)/logs/simulation_results.log",
+        ncpus=6,
+        max_nodes=1,
+        wall_time="1:00:00",
+        cluster_backend="SLURM",
+        skip_testing=true
+    )
 end
 
 function main()
