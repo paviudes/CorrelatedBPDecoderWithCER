@@ -16,21 +16,65 @@ function generate_parallel_commands(
     ncpus::Int=10,
     max_nodes::Int=10,
     wall_time::String="4:00:00",
-    cluster_backend::String="Google_VM" # "SLURM" or "Google_VM"
+    cluster_backend::String="Google_VM", # "SLURM" or "Google_VM"
+    skip_testing::Bool=false
+)
+    """
+    Generate shell commands for parallel execution of neural BP experiments.
+    """
+    train_files = [
+        "./../data/$(codename)/train_data/p_$(p)_q_$(q)_samples_$(n_samples).txt"
+        for p in pvals, q in qvals
+    ]
+    test_files = [
+        "./../data/$(codename)/test_data/p_$(p)_q_$(q)_samples_$(n_samples).txt"
+        for p in pvals, q in qvals
+    ]
+    cer_files = [
+        "./../data/$(codename)/correlation_strengths/p_$(p)_q_$(q)_samples_$(n_samples).txt"
+        for p in pvals, q in qvals
+    ]
+    hyperparams_files = [hyperparams_file for _ in 1:length(cer_files)]
+    generate_parallel_commands(
+        cer_files,
+        train_files,
+        test_files;
+        codename=codename,
+        n_hidden_layers=n_hidden_layers,
+        hyperparams_files=hyperparams_files,
+        julia_project=julia_project,
+        commands_file=commands_file,
+        output_file=output_file,
+        ncpus=ncpus,
+        max_nodes=max_nodes,
+        wall_time=wall_time,
+        cluster_backend=cluster_backend,
+        skip_testing=skip_testing,
+    )
+end
+
+function generate_parallel_commands(
+    cer_files::AbstractVector{<:String},
+    train_files::AbstractVector{<:String},
+    test_files::AbstractVector{<:String};
+    codename::String="aps",
+    # Hyperparameters for the Neural BP model
+    n_hidden_layers::Int=100,
+    hyperparams_files::AbstractVector{<:String}=["default_hyperparams.toml"],
+    julia_project::String="./../",
+    commands_file::String="commands.txt",
+    output_file::String="simulation_results.log",
+    ncpus::Int=10,
+    max_nodes::Int=10,
+    wall_time::String="4:00:00",
+    cluster_backend::String="Google_VM", # "SLURM" or "Google_VM"
+    skip_testing::Bool=false
 )
     """
     Generate shell commands for parallel execution of neural BP experiments.
     """
     open(commands_file, "w") do io
-        for p in pvals, q in qvals, s in 1:n_samples
-
-            p_str = @sprintf("%.3g", p)
-            q_str = @sprintf("%.3g", q)
-            samples_str = @sprintf("%d", s)
-
-            cer_file = "correlated_weights_p_$(p_str)_q_$(q_str)_s_$(samples_str).txt"
-            train_file = "train_ballistic_p_$(p_str)_q_$(q_str)_s_$(samples_str).txt"
-            test_file = "test_ballistic_p_$(p_str)_q_$(q_str)_s_$(samples_str).txt"
+        for (cer_file, train_file, test_file, hyperparams_file) in zip(cer_files, train_files, test_files, hyperparams_files)
 
             cmd = """julia --project="$(julia_project)" neural_bp_experiments.jl \
                 --codename $(codename) \
@@ -39,6 +83,11 @@ function generate_parallel_commands(
                 --correlation_strengths_file $(cer_file) \
                 --quiet true \
                 --train $(train_file)"""
+            
+            if !skip_testing
+                cmd *= """ \
+                --test $(test_file)"""
+            end
 
             cmd = replace(cmd, "\n" => " ")
 
@@ -46,10 +95,12 @@ function generate_parallel_commands(
         end
     end
 
-    println("$(length(pvals) * length(qvals) * n_samples) commands written to: $commands_file\n")
+    n_params = length(cer_files)
+
+    println("$(n_params) commands written to: $commands_file\n")
 
     # Calculate the number of simulations and determine how many CPUs to use for parallel execution.
-    n_simulations = length(pvals) * length(qvals) * n_samples
+    n_simulations = n_params
     n_cpus_to_use = min(ncpus, n_simulations)
 
     # Write a shell script to run the commands in `commands_file` in parallel, save results to `output_file`, and halt the Google Cloud VM when done.
@@ -174,6 +225,38 @@ function shut_down_vm(job_cmd::String)
     return join(wrapped_cmd, "\n")
 end
 
+function main_test()
+    """
+    Generate commands for running simulations for different testing ansatzes.
+    We will use different training files, and hyperparameters files combinations.
+    """
+    codename = "90q_BB_p_0.010_q_0.001_std_variable_data_v2"
+    individual_training_files = [
+        "p_0.01_q_0.001_s_1.txt",
+        "p_0.01_q_0.001_s_2.txt",
+        "p_0.01_q_0.001_s_3.txt",
+        "p_0.01_q_0.001_s_4.txt",
+        "p_0.01_q_0.001_s_5.txt",
+        "p_0.01_q_0.001_s_6.txt"
+    ]
+    individual_cer_files = [
+        "correlated_weights_p_0.01_q_0.001_s_1.txt",
+        "correlated_weights_p_0.01_q_0.001_s_2.txt",
+        "correlated_weights_p_0.01_q_0.001_s_3.txt",
+        "correlated_weights_p_0.01_q_0.001_s_4.txt",
+        "correlated_weights_p_0.01_q_0.001_s_5.txt",
+        "correlated_weights_p_0.01_q_0.001_s_6.txt"
+    ]
+    individual_testing_files = [
+        "p_0.01_q_0.001_s_1.txt"
+    ]
+    individual_hyperparams_files = [
+        "hyperparams_epochs_10.toml",
+        "hyperparams_epochs_15.toml",
+        "hyperparams_epochs_20.toml",
+    ]
+end
+
 function main()
     """
     This function generates commands for running simulations over a range of error parameters.
@@ -189,7 +272,7 @@ function main()
         6; # number of samples per (p, q) pair. For optimal usage of the machine, please set this to be a multiple of the number of CPUs available.
         codename = dirname,
         # Hyperparameters for the Neural BP model
-        n_hidden_layers = 100,
+        n_hidden_layers = 200,
         hyperparams_file = "default_hyperparams.toml",
         # File paths and project settings for running the commands
         julia_project = "./../",
