@@ -86,7 +86,7 @@ function get_individual_loss_values(
     # Compute the loss from the syndrome and correlation parts individually.
     n_layers::Int = size(posterior_llrs, 3)
     # Record the syndrome loss, syndrome regularizer, the correlation loss, and the total loss separately per layer.
-    losses_per_layer = zeros(Float32, (n_layers - warmup_loss_layers, 4))
+    losses_per_layer = zeros(Float32, (n_layers - warmup_loss_layers, 5))
     for layer in (warmup_loss_layers + 1):n_layers
         post = posterior_llrs[:, :, layer]
         # base_loss   = compute_quadratic_residue_loss_from_llrs(post, expected_recoveries, parity_check_matrix_dual)
@@ -107,11 +107,11 @@ function get_individual_loss_values(
                          correlation_importance * corr_pen +
                          sparsity_importance * sparse_pen
         
-        losses_per_layer[layer - warmup_loss_layers, 4] = loss_per_layer
+        losses_per_layer[layer - warmup_loss_layers, 5] = loss_per_layer
     end
-    total_loss = softmin_loss(losses_per_layer[:, 4], loss_layer_regularizer)
-    # total_loss = linear_ramp_loss(losses_per_layer[:, 4])
-    # total_loss = last_layer_only_loss(losses_per_layer[:, 4])
+    total_loss = softmin_loss(losses_per_layer[:, 5], loss_layer_regularizer)
+    # total_loss = linear_ramp_loss(losses_per_layer[:, 5])
+    # total_loss = last_layer_only_loss(losses_per_layer[:, 5])
     return (total_loss, losses_per_layer)
 end
 
@@ -121,9 +121,9 @@ function compute_hyperparameters(epoch::Int, annealing_schedule::Dict)::Dict{Sym
     """
     loss_hyperparameters = Dict{Symbol, Float32}()
     for (name, spec) in annealing_schedule
-        if spec["direction"] == "down"
+        if spec["direction"] == "down" # anneal from max toward min
             loss_hyperparameters[Symbol(name)] = max(spec["min"], spec["max"] * spec["decay"]^(epoch - 1))
-        else  # :up — anneal from min toward max
+        else  # "up" — anneal from min toward max
             loss_hyperparameters[Symbol(name)] = spec["max"] - (spec["max"] - spec["min"]) * spec["decay"]^(epoch - 1)
         end
     end
@@ -178,6 +178,7 @@ function init_training_debug_logs(n_samples_to_log::Int)
         :base_loss => ["" for _ in 1:n_samples_to_log],
         :syndrome_regularizer => ["" for _ in 1:n_samples_to_log],
         :correlation_penalty => ["" for _ in 1:n_samples_to_log],
+        :sparsity_penalty => ["" for _ in 1:n_samples_to_log],
         :loss_at_layer => ["" for _ in 1:n_samples_to_log],
         :total_loss => zeros(Float32, n_samples_to_log)
     )
@@ -224,7 +225,8 @@ function log_batch_debug!(
     losses_log[index, :base_loss]             = join(["$(individual_losses[l, 1])" for l in 1:n_layers], ",")
     losses_log[index, :syndrome_regularizer]  = join(["$(individual_losses[l, 2])" for l in 1:n_layers], ",")
     losses_log[index, :correlation_penalty]   = join(["$(individual_losses[l, 3])" for l in 1:n_layers], ",")
-    losses_log[index, :loss_at_layer]         = join(["$(individual_losses[l, 4])" for l in 1:n_layers], ",")
+    losses_log[index, :sparsity_penalty]      = join(["$(individual_losses[l, 4])" for l in 1:n_layers], ",")
+    losses_log[index, :loss_at_layer]         = join(["$(individual_losses[l, 5])" for l in 1:n_layers], ",")
     losses_log[index, :total_loss] = aggregate_loss
     return nothing
 end

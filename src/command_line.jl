@@ -322,8 +322,13 @@ function parse_hyper_parameters(hyperparams_file::String=""; prefix::String="./.
                     "min" => parse(Float32, schedule_parts[1]),
                     "max" => parse(Float32, schedule_parts[2]),
                     "decay" => parse(Float32, schedule_parts[3]),
-                    "direction" => Symbol(schedule_parts[4])
+					"direction" => lowercase(schedule_parts[4])
                 )
+
+				# If the direction is neither "up" nor "down", throw an error
+				if !(updated_hyperparams[key]["direction"] in ["up", "down"])
+					throw(ArgumentError("Unknown direction direction for annealing schedule of key \"$(key)\": $(updated_hyperparams[key]["direction"]). Must be 'up' or 'down'."))
+				end
             end
         end
 
@@ -338,7 +343,7 @@ function parse_hyper_parameters(hyperparams_file::String=""; prefix::String="./.
                 "min" => parse(Float32, schedule_parts[1]),
                 "max" => parse(Float32, schedule_parts[2]),
                 "decay" => parse(Float32, schedule_parts[3]),
-                "direction" => Symbol(schedule_parts[4])
+				"direction" => lowercase(schedule_parts[4])
             )
         end
 

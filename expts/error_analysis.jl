@@ -1,16 +1,17 @@
 using CSV
 using Plots
+using ArgParse
 using DataFrames
 using DelimitedFiles
 
-function count_error_weights(errors_filenames::Vector{String}; prefix::String="")
+function count_error_weights(errors_filenames::Vector{String}, subdir::String; prefix::String="")
     """
     Compute the frequency of error weights in each file.
     Each file is expected to have one error pattern per column, with each error pattern being a binary vector (0s and 1s).
     The function returns a Matrix where the i-th column corresponds to the counts of error patterns of each weight for the i-th file in `errors_filenames`.
     The output file is saved as a DataFrame where the first column contains each file name and the subsequent columns contain the counts of error patterns of each weight.
     """
-    data_directory = "$(prefix)/testing_data"
+    data_directory = "$(prefix)/$(subdir)"
     weight_distribution_filename = "$(data_directory)/weight_counts.csv"
     
     if isfile(weight_distribution_filename)
@@ -121,12 +122,32 @@ function plot_error_weight_distribution(weight_distribution_filename::String)
     return nothing
 end
 
-function main()
+if abspath(PROGRAM_FILE) == @__FILE__
     """
     Main function to count error weights and plot the distribution for a given errors file.
+    We will use argument parsing to specify the prefix for the data directory and the list of error files to analyze.
     """
-    prefix = "./../data/90q_BB_p_0.008_q_0.2_std_0.2_data"
-    errors_filename = ["test_ballistic_p_0.008_q_0.2_s_$(sample).txt" for sample in 1:10]
-    weight_distribution_filename = count_error_weights(errors_filename; prefix=prefix)
+    settings = ArgParseSettings()
+    @add_arg_table settings begin
+        "--codename"
+        help = "Prefix for the data directory"
+        arg_type = String
+        default = "90q_BB_p_0.008_q_0.2_std_0.2_data"
+
+        "--subdir"
+        help = "Whether to analyze test or train error files"
+        arg_type = String
+        default = "testing_data"
+
+        "--errors"
+        help = "List of error files to analyze"
+        nargs = '+'
+        default = ["test_ballistic_p_0.008_q_0.2_s_$(sample).txt" for sample in 1:2]
+    end
+    parsed_args = parse_args(settings)
+    prefix = "./../data/$(parsed_args["codename"])"
+    subdir = parsed_args["subdir"]
+    errors_filename = convert.(String, parsed_args["errors"])
+    weight_distribution_filename = count_error_weights(errors_filename, subdir; prefix=prefix)
     plot_error_weight_distribution(weight_distribution_filename)
 end

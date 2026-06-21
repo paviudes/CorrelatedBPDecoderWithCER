@@ -31,8 +31,8 @@
 ###################################################
 epochs_list=(3 6 9 12) # List of epochs to run.
 n_cpus=4 # Number of CPUs to use for parallel processing.
-n_hidden_layers=50 # Number of hidden layers in the Neural BP model.
-codename="90q_BB_p_0.010_q_0.001_std_0.05_data" # Folder name in `./../data/` for the dataset.
+n_hidden_layers=100 # Number of hidden layers in the Neural BP model.
+codename="90q_BB_p_0.010_q_0.001_std_0.01_large_train_data" # Folder name in `./../data/` for the dataset.
 sample=1 # Sample index for the training and testing data files.
 use_gpu_for_testing=true # If true, GPU usage for testing is enabled.
 ###################################################
