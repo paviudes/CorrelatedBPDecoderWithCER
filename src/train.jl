@@ -352,10 +352,10 @@ function train_neuralbp_enzyme!(
     # -------------------------
     # Progress bars
     # -------------------------
-    epoch_progress = is_quiet ? nothing : Progress(n_epochs, desc="Training Epochs: ")
+    epoch_progress = is_quiet ? nothing : Progress(n_epochs, desc="Training Epochs: ", enabled = isinteractive())
 
     for epoch in 1:n_epochs
-        batch_progress = is_quiet ? nothing : Progress(n_gradient_updates_per_epoch, desc="Epoch $epoch Batches: ")
+        batch_progress = is_quiet ? nothing : Progress(n_gradient_updates_per_epoch, desc="Epoch $epoch Batches: ", enabled = isinteractive())
 
         hp = compute_hyperparameters(epoch, annealing_schedule)
 
@@ -430,20 +430,22 @@ function train_neuralbp_enzyme!(
 
             if !grads_finite
                 nan_skip_count += 1
-                @warn "Non-finite gradient at epoch=$epoch batch=$b. Loss = $(loss_value). Skipping update." nan_skip_count
                 if !is_quiet
+                    @warn "Non-finite gradient at epoch=$epoch batch=$b. Loss = $(loss_value). Skipping update." nan_skip_count
                     ProgressMeter.next!(batch_progress; showvalues = [(:loss, NaN32), (:nan_skips, nan_skip_count)])
                 end
 
                 # If too many batches have been skipped in this epoch due to NaN/Inf gradients, we break out of the batch loop early to trigger the epoch rollback at the end of the epoch.
                 if nan_skip_count > max_nan_skips_per_epoch
-                    @warn """
-                    Epoch $epoch: $nan_skip_count batches skipped due to non-finite gradients.
-                    If this persists, consider:
-                    - Lowering `learning_rate`
-                    - Raising `adam_eps`
-                    - Tightening `max_grad_norm`
-                    """
+                    if !is_quiet
+                        @warn """
+                        Epoch $epoch: $nan_skip_count batches skipped due to non-finite gradients.
+                        If this persists, consider:
+                        - Lowering `learning_rate`
+                        - Raising `adam_eps`
+                        - Tightening `max_grad_norm`
+                        """
+                    end
                     break
                 end
 
