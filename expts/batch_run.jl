@@ -299,7 +299,7 @@ function main()
         codename = dirname,
         # Hyperparameters for the Neural BP model
         n_hidden_layers = 200,
-        hyperparams_file = "default_hyperparams.toml",
+        hyperparams_file = "hyperparams_epochs_10.toml",
         # File paths and project settings for running the commands
         julia_project = "./../",
         commands_file = "./../data/$(dirname)/cluster/commands.txt",
