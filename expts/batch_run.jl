@@ -306,7 +306,7 @@ function main()
         output_file = "./../data/$(dirname)/logs/simulation_results.log",
         skip_testing = true, # If true, only generate commands for training the model, and skip testing.
         # Cluster settings.
-        ncpus = 6,
+        ncpus = 64,
         max_nodes = 1,
         wall_time = "1:00:00",
         cluster_backend = "SLURM" # "SLURM" or "Google_VM" or "local"
