@@ -291,7 +291,7 @@ function main()
     p: 0.001:0.001:0.005
     q: 0.3:0.04:0.66
     """
-    dirname = "90q_BB_p_0.010_q_0.001_std_0.01_data"
+    dirname = "90q_BB_p_0.010_q_0.001_std_0.01_data_single_training"
     generate_parallel_commands(
         [0.01], # set of p values
         [0.001], # set of q values
