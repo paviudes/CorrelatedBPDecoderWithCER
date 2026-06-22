@@ -164,12 +164,12 @@ function run_on_SLURM(commands_file::String, n_commands::Int; n_cpus::Int=10, ma
         "sed -n \"\${START},\${END}p\" $(commands_file) > $(commands_dir)/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt",
         "",
         "# Load necessary modules and set up environment",
-        "module load julia", # The default version on Trillium is 1.12.
+        "module load julia/1.12.5", # The default version on Narval and Trillium is 1.12.
         "cp -r ~/.julia \$SLURM_TMPDIR/",
         "export JULIA_DEPOT_PATH=\"\$SLURM_TMPDIR/.julia\"",
         "",
         "# Disable GPU usage since the cluster nodes we have access to do not have GPUs.",
-        "export USE_GPU=0",
+        "export USE_GPU=\"0\"",
         "",
         "# Edit permissions for the file containing the commands to ensure it is readable by the job",
         "chmod +x $(commands_dir)/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt",
