@@ -175,7 +175,7 @@ function run_on_SLURM(commands_file::String, n_commands::Int; n_cpus::Int=10, ma
         "chmod +x $(commands_dir)/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt",
         "",
         "# Run commands in parallel",
-        "parallel --bar --keep-order --jobs $(n_cpus) --results $(commands_dir)/logs/\${SLURM_ARRAY_TASK_ID}.txt < $(commands_dir)/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt"
+        "parallel --bar --keep-order --jobs $(n_cpus) --results $(commands_dir)/raw_output_\${SLURM_ARRAY_TASK_ID}.txt < $(commands_dir)/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt"
     ]
 
     # Write the SLURM job script
