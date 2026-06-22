@@ -352,10 +352,10 @@ function train_neuralbp_enzyme!(
     # -------------------------
     # Progress bars
     # -------------------------
-    epoch_progress = is_quiet ? nothing : Progress(n_epochs, desc="Training Epochs: ", enabled = isinteractive())
+    epoch_progress = is_quiet ? nothing : Progress(n_epochs, desc="Training Epochs: ")
 
     for epoch in 1:n_epochs
-        batch_progress = is_quiet ? nothing : Progress(n_gradient_updates_per_epoch, desc="Epoch $epoch Batches: ", enabled = isinteractive())
+        batch_progress = is_quiet ? nothing : Progress(n_gradient_updates_per_epoch, desc="Epoch $epoch Batches: ")
 
         hp = compute_hyperparameters(epoch, annealing_schedule)
 

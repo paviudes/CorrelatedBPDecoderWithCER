@@ -175,7 +175,7 @@ function run_on_SLURM(commands_file::String, n_commands::Int; n_cpus::Int=10, ma
         "chmod +x $(commands_dir)/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt",
         "",
         "# Run commands in parallel",
-        "parallel --bar --keep-order --jobs $(n_cpus) --results $(commands_dir)/raw_output_\${SLURM_ARRAY_TASK_ID}.txt < $(commands_dir)/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt"
+        "parallel --jobs $(n_cpus) --results $(commands_dir)/logs/node_\${SLURM_ARRAY_TASK_ID} < $(commands_dir)/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt"
     ]
 
     # Write the SLURM job script
@@ -232,16 +232,16 @@ function main_test()
     """
     codename = "90q_BB_p_0.010_q_0.001_std_variable_data_v2"
     individual_training_files = [
-        "p_0.01_q_0.001_s_1.txt",
-        "p_0.01_q_0.001_s_2.txt",
-        "p_0.01_q_0.001_s_3.txt",
-        "p_0.01_q_0.001_s_4.txt",
-        "p_0.01_q_0.001_s_5.txt",
-        "p_0.01_q_0.001_s_6.txt"
+        "train_ballistic_p_0.01_q_0.001_s_1.txt",
+        "train_ballistic_p_0.01_q_0.001_s_2.txt",
+        "train_ballistic_p_0.01_q_0.001_s_3.txt",
+        "train_ballistic_p_0.01_q_0.001_s_4.txt",
+        "train_ballistic_p_0.01_q_0.001_s_5.txt",
+        "train_ballistic_p_0.01_q_0.001_s_6.txt"
     ]
     # The CER files are formatted as "correlated_weights_fname" for each `fname` in `individual_training_files`.
     individual_testing_files = [
-        "p_0.01_q_0.001_s_1.txt"
+        "test_ballistic_p_0.01_q_0.001_s_1.txt"
     ]
     individual_hyperparams_files = [
         "hyperparams_epochs_10.toml",
