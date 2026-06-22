@@ -23,16 +23,16 @@ function generate_parallel_commands(
     Generate shell commands for parallel execution of neural BP experiments.
     """
     train_files = [
-        "./../data/$(codename)/train_data/p_$(p)_q_$(q)_samples_$(samp).txt"
-        for p in pvals, q in qvals, samp in 1:n_samples
+        "./../data/$(codename)/train_data/p_$(p)_q_$(q)_s_1.txt"
+        for p in pvals, q in qvals, _ in 1:n_samples
     ]
     test_files = [
-        "./../data/$(codename)/test_data/p_$(p)_q_$(q)_samples_$(samp).txt"
+        "./../data/$(codename)/test_data/p_$(p)_q_$(q)_s_$(samp).txt"
         for p in pvals, q in qvals, samp in 1:n_samples
     ]
     cer_files = [
-        "./../data/$(codename)/correlation_strengths/p_$(p)_q_$(q)_samples_$(samp).txt"
-        for p in pvals, q in qvals, samp in 1:n_samples
+        "./../data/$(codename)/correlation_strengths/p_$(p)_q_$(q)_s_1.txt"
+        for p in pvals, q in qvals, _ in 1:n_samples
     ]
     hyperparams_files = [hyperparams_file for _ in 1:length(cer_files)]
     generate_parallel_commands(
