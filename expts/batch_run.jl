@@ -23,16 +23,16 @@ function generate_parallel_commands(
     Generate shell commands for parallel execution of neural BP experiments.
     """
     train_files = [
-        "./../data/$(codename)/train_data/p_$(p)_q_$(q)_s_1.txt"
-        for p in pvals, q in qvals, _ in 1:n_samples
+        "train_ballistic_p_$(p)_q_$(q)_s_1.txt"
+        for p in pvals for q in qvals for _ in 1:n_samples
     ]
     test_files = [
-        "./../data/$(codename)/test_data/p_$(p)_q_$(q)_s_$(samp).txt"
-        for p in pvals, q in qvals, samp in 1:n_samples
+        "test_ballistic_p_$(p)_q_$(q)_s_$(samp).txt"
+        for p in pvals for q in qvals for samp in 1:n_samples
     ]
     cer_files = [
-        "./../data/$(codename)/correlation_strengths/p_$(p)_q_$(q)_s_1.txt"
-        for p in pvals, q in qvals, _ in 1:n_samples
+        "correlated_weights_p_$(p)_q_$(q)_s_1.txt"
+        for p in pvals for q in qvals for _ in 1:n_samples
     ]
     hyperparams_files = [hyperparams_file for _ in 1:length(cer_files)]
     generate_parallel_commands(
@@ -304,6 +304,7 @@ function main()
         julia_project = "./../",
         commands_file = "./../data/$(dirname)/cluster/commands.txt",
         output_file = "./../data/$(dirname)/logs/simulation_results.log",
+        skip_testing = true, # If true, only generate commands for training the model, and skip testing.
         # Cluster settings.
         ncpus = 6,
         max_nodes = 1,
