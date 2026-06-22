@@ -23,16 +23,16 @@ function generate_parallel_commands(
     Generate shell commands for parallel execution of neural BP experiments.
     """
     train_files = [
-        "./../data/$(codename)/train_data/p_$(p)_q_$(q)_samples_$(n_samples).txt"
-        for p in pvals, q in qvals
+        "./../data/$(codename)/train_data/p_$(p)_q_$(q)_samples_$(samp).txt"
+        for p in pvals, q in qvals, samp in 1:n_samples
     ]
     test_files = [
-        "./../data/$(codename)/test_data/p_$(p)_q_$(q)_samples_$(n_samples).txt"
-        for p in pvals, q in qvals
+        "./../data/$(codename)/test_data/p_$(p)_q_$(q)_samples_$(samp).txt"
+        for p in pvals, q in qvals, samp in 1:n_samples
     ]
     cer_files = [
-        "./../data/$(codename)/correlation_strengths/p_$(p)_q_$(q)_samples_$(n_samples).txt"
-        for p in pvals, q in qvals
+        "./../data/$(codename)/correlation_strengths/p_$(p)_q_$(q)_samples_$(samp).txt"
+        for p in pvals, q in qvals, samp in 1:n_samples
     ]
     hyperparams_files = [hyperparams_file for _ in 1:length(cer_files)]
     generate_parallel_commands(
@@ -268,11 +268,13 @@ function main_test()
         train_files,
         test_files;
         codename=codename,
+        # Hyperparameters for the Neural BP model
         n_hidden_layers=200,
         hyperparams_files=hyperparams_files,
         julia_project="./../",
         commands_file="./../data/$(codename)/cluster/commands.txt",
         output_file="./../data/$(codename)/logs/simulation_results.log",
+        # Cluster settings.
         ncpus=6,
         max_nodes=1,
         wall_time="1:00:00",
@@ -293,7 +295,7 @@ function main()
     generate_parallel_commands(
         [0.01], # set of p values
         [0.001], # set of q values
-        6; # number of samples per (p, q) pair. For optimal usage of the machine, please set this to be a multiple of the number of CPUs available.
+        64; # number of samples per (p, q) pair. For optimal usage of the machine, please set this to be a multiple of the number of CPUs available.
         codename = dirname,
         # Hyperparameters for the Neural BP model
         n_hidden_layers = 200,
