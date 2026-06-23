@@ -142,7 +142,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
         "--errors"
         help = "List of error files to analyze"
         nargs = '+'
-        default = ["test_ballistic_p_0.008_q_0.2_s_$(sample).txt" for sample in 1:2]
+        default = ["test_ballistic_p_0.008_q_0.2_s_$(sample).txt" for sample in 1:1]
     end
     parsed_args = parse_args(settings)
     prefix = "./../data/$(parsed_args["codename"])"
