@@ -7,6 +7,7 @@ import torch
 
 from correlated_bp_decoder import (
     describe_torch_runtime,
+    maybe_compile_torch_module,
     resolve_torch_device,
 )
 import correlated_bp_decoder.devices as devices
@@ -45,6 +46,50 @@ def test_describe_torch_runtime_has_expected_keys() -> None:
     info = describe_torch_runtime()
 
     assert "torch_version" in info
+    assert "torch_compile_available" in info
     assert "cuda_available" in info
     assert "mps_built" in info
     assert "mps_available" in info
+
+
+def test_maybe_compile_torch_module_disabled_returns_original() -> None:
+    """Leave the module untouched when compilation is disabled."""
+
+    module = torch.nn.Linear(2, 2)
+
+    assert maybe_compile_torch_module(module, enabled=False) is module
+
+
+def test_maybe_compile_torch_module_forwards_kwargs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pass through the requested compile settings when enabled."""
+
+    captured: dict[str, object] = {}
+    module = torch.nn.Linear(2, 2)
+    sentinel = object()
+
+    def fake_compile(target: object, **kwargs: object) -> object:
+        captured["target"] = target
+        captured["kwargs"] = kwargs
+        return sentinel
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+
+    compiled = maybe_compile_torch_module(
+        module,
+        enabled=True,
+        backend="eager",
+        mode="reduce-overhead",
+        fullgraph=True,
+        dynamic=True,
+    )
+
+    assert compiled is sentinel
+    assert captured["target"] is module
+    assert captured["kwargs"] == {
+        "backend": "eager",
+        "mode": "reduce-overhead",
+        "fullgraph": True,
+        "dynamic": True,
+    }

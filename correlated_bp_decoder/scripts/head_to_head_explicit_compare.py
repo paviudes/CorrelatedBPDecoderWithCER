@@ -34,6 +34,7 @@ from correlated_bp_decoder import (  # noqa: E402
     load_base_bp_model,
     load_binary_matrix,
     load_trained_neuralbp_model,
+    maybe_compile_torch_module,
     random_values_around_one,
     resolve_torch_device,
     save_trained_neuralbp_model,
@@ -120,6 +121,14 @@ def main(argv: list[str] | None = None) -> int:
         )
         torch.manual_seed(args.seed)
         np.random.seed(args.seed)
+    runtime_model = maybe_compile_torch_module(
+        model,
+        enabled=args.torch_compile,
+        backend=args.torch_compile_backend,
+        mode=args.torch_compile_mode,
+        fullgraph=args.torch_compile_fullgraph,
+        dynamic=args.torch_compile_dynamic,
+    )
 
     train_syndromes = np.mod(parity_check @ train_errors, 2)
     effective_warmup = min(args.warmup_layers, args.n_layers - 1)
@@ -175,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
     synchronize_torch_device(device)
     train_start = time.perf_counter()
     training_summary = train_nachmani_neuralbp(
-        model,
+        runtime_model,
         torch.as_tensor(train_syndromes, dtype=torch.bool),
         torch.as_tensor(train_errors, dtype=torch.bool),
         config,
@@ -199,7 +208,7 @@ def main(argv: list[str] | None = None) -> int:
     synchronize_torch_device(device)
     eval_start = time.perf_counter()
     evaluation = _evaluate_model(
-        model,
+        runtime_model,
         test_syndromes,
         test_errors,
         batch_size=args.eval_batch_size,
@@ -229,6 +238,11 @@ def main(argv: list[str] | None = None) -> int:
         "requested_device": args.device,
         "resolved_device": str(device),
         "torch_runtime": describe_torch_runtime(),
+        "torch_compile": args.torch_compile,
+        "torch_compile_backend": args.torch_compile_backend or None,
+        "torch_compile_mode": args.torch_compile_mode,
+        "torch_compile_fullgraph": args.torch_compile_fullgraph,
+        "torch_compile_dynamic": args.torch_compile_dynamic,
         "initial_conditions_scale": args.initial_conditions_scale,
         "initial_weights_file": (
             None if args.initial_weights_file is None else str(args.initial_weights_file)
@@ -336,6 +350,33 @@ def _build_parser() -> argparse.ArgumentParser:
             "'cpu' for the baseline path, or 'auto' to pick the best available "
             "accelerator."
         ),
+    )
+    parser.add_argument(
+        "--torch-compile",
+        action="store_true",
+        help="Wrap the model with torch.compile before training/evaluation.",
+    )
+    parser.add_argument(
+        "--torch-compile-backend",
+        type=str,
+        default="",
+        help="Optional torch.compile backend override.",
+    )
+    parser.add_argument(
+        "--torch-compile-mode",
+        choices=("default", "reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"),
+        default="default",
+        help="Optional torch.compile mode.",
+    )
+    parser.add_argument(
+        "--torch-compile-fullgraph",
+        action="store_true",
+        help="Request fullgraph=True for torch.compile.",
+    )
+    parser.add_argument(
+        "--torch-compile-dynamic",
+        action="store_true",
+        help="Request dynamic=True for torch.compile.",
     )
     parser.add_argument("--run-label", type=str, default="")
     parser.add_argument("--initial-weights-file", type=Path)

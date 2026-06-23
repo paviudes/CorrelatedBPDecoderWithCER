@@ -72,6 +72,12 @@ These Python commands were run from a normal macOS Terminal outside the Codex
 sandbox, using the Python `3.13` virtualenv at
 `/Users/quantum/.venvs/correlated-bp-mps`.
 
+Current status:
+
+- the vectorized-loss path is the current default Python implementation
+- the `torch.compile` path is optional and opt-in only
+- enabling `torch.compile` requires passing `--torch-compile` explicitly
+
 MPS-enabled path:
 
 ```bash
@@ -89,6 +95,26 @@ cd /Users/quantum/Documents/workspace/projects/research/ML\ for\ decoding
   --seed 0 \
   --device mps \
   --run-label mps_full_seed0_outside_sandbox
+```
+
+MPS-enabled path with vectorized loss
+(current default Python path; no extra flag is required):
+
+```bash
+cd /Users/quantum/Documents/workspace/projects/research/ML\ for\ decoding
+
+/Users/quantum/.venvs/correlated-bp-mps/bin/python \
+  pavi/correlated_bp_decoder/scripts/head_to_head_explicit_compare.py \
+  --codename 72q_BB_p_0.010_q_0.001_std_0.01_data \
+  --hyperparams-file default_hyperparams.toml \
+  --correlated-weights-file correlated_weights_p_0.01_q_0.001_s_1.txt \
+  --train-file train_ballistic_p_0.01_q_0.001_s_1.txt \
+  --test-file test_ballistic_p_0.01_q_0.001_s_1.txt \
+  --sample 1 \
+  --n-layers 100 \
+  --seed 0 \
+  --device mps \
+  --run-label mps_full_seed0_vectorized_loss
 ```
 
 CPU-only reference path:
@@ -120,6 +146,10 @@ cd /Users/quantum/Documents/workspace/projects/research/ML\ for\ decoding
 | `python_seed0` | Python | n/a | `0` | `~547s` | `546.51s` (`367.51s` train + `179.00s` eval) | `98341 / 100000` (dual), `99622 / 100000` (parity) | `head_to_head_python_72q_sample_1_nlayers_100_epochs_10_julia_dataset_seed0.json` | same sample/files and TOML as Julia; dual logical error rate `0.01659`, parity logical error rate `0.00378` |
 | `python_mps_full_seed0_outside_sandbox` | Python | `mps` | `0` | n/a | `472.93s` (`466.16s` train + `6.77s` eval) | `98386 / 100000` (dual), `99587 / 100000` (parity) | `head_to_head_python_72q_sample_1_nlayers_100_epochs_10_mps_full_seed0_outside_sandbox.json` | verified outside Codex sandbox with `resolved_device = mps`; evaluation became dramatically faster, while training was slower than CPU and parity accuracy drifted slightly |
 | `python_cpu_full_seed0_outside_sandbox` | Python | `cpu` | `0` | n/a | `551.96s` (`362.89s` train + `189.08s` eval) | `98341 / 100000` (dual), `99622 / 100000` (parity) | `head_to_head_python_72q_sample_1_nlayers_100_epochs_10_cpu_full_seed0_outside_sandbox.json` | matched the earlier CPU benchmark closely; this is the clean outside-sandbox CPU reference for the Python comparison |
+| `python_cpu_full_seed0_vectorized_loss` | Python | `cpu` | `0` | n/a | `311.32s` (`179.95s` train + `131.37s` eval) | `98341 / 100000` (dual), `99622 / 100000` (parity) | `head_to_head_python_72q_sample_1_nlayers_100_epochs_10_cpu_full_seed0_vectorized_loss.json` | after vectorizing the layer-wise loss computation; same decode metrics as the earlier CPU run, with a large training speedup |
+| `python_mps_full_seed0_vectorized_loss` | Python | `mps` | `0` | n/a | `152.78s` (`149.53s` train + `3.25s` eval) | `98419 / 100000` (dual), `99629 / 100000` (parity) | `head_to_head_python_72q_sample_1_nlayers_100_epochs_10_mps_full_seed0_vectorized_loss.json` | after vectorizing the layer-wise loss computation; large speedup on both training and evaluation, and slightly better decode metrics on this run |
+| `python_cpu_full_seed0_vectorized_loss_compile_default` | Python | `cpu` | `0` | n/a | `445.15s` (`247.78s` train + `197.37s` eval) | `98349 / 100000` (dual), `99610 / 100000` (parity) | `head_to_head_python_72q_sample_1_nlayers_100_epochs_10_cpu_full_seed0_vectorized_loss_compile_default.json` | `torch.compile` enabled with default mode; slower than the uncompiled vectorized baseline end-to-end |
+| `python_mps_full_seed0_vectorized_loss_compile_default` | Python | `mps` | `0` | n/a | n/a | n/a | none | `torch.compile` enabled with default mode; failed during compiled backward on the MPS/Metal path |
 
 Important comparison note:
 
@@ -127,6 +157,40 @@ Important comparison note:
 - The Python head-to-head runner records both:
   - `parity_*` for the apples-to-apples Julia comparison
   - `dual_*` as a stricter diagnostic that catches logical-operator mismatches
+
+Vectorized-loss summary:
+
+- CPU improved from `551.96s` to `311.32s` total.
+- MPS improved from `472.93s` to `152.78s` total.
+- The speedup came mostly from training, which is consistent with removing the
+  Python-layer loss loop that used to run once per unfolded BP layer.
+
+`torch.compile` summary:
+
+- On CPU, default `torch.compile` was a regression for this workload:
+  `311.32s` uncompiled vectorized -> `445.15s` compiled.
+- On MPS, default `torch.compile` did not complete. The run failed in the
+  compiled backward path with a Metal compiler error during autograd codegen.
+- Recommendation for now: keep `torch.compile` disabled by default.
+
+## Proposed Next Steps
+
+1. Keep the vectorized-loss implementation as the default Python path, since it
+   produced the largest confirmed speedup without harming decoding quality.
+2. Leave `torch.compile` as an experimental opt-in only. Do not enable it in
+   default scripts or collaborator-facing commands unless a specific mode is
+   shown to help.
+3. If we revisit `torch.compile`, test CPU-only `--torch-compile-mode
+   reduce-overhead` first on the same `72q` benchmark, since the default mode
+   was a regression.
+4. Do not prioritize `torch.compile` on MPS until the current compiled-backward
+   Metal failure is better understood or fixed upstream.
+5. Next optimization target after the loss vectorization should be the unfolded
+   forward pass itself, especially reducing Python-side layer orchestration and
+   buffer allocation overhead in `nachmani.py`.
+6. If more performance is needed after that, benchmark alternative sparse
+   kernels or preallocated message/readout buffers before attempting larger
+   architectural changes.
 
 ## Julia GPU Diagnosis
 

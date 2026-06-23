@@ -14,7 +14,11 @@ from ..io import (
     load_trained_neuralbp_model,
     save_trained_neuralbp_model,
 )
-from ..devices import resolve_torch_device, synchronize_torch_device
+from ..devices import (
+    maybe_compile_torch_module,
+    resolve_torch_device,
+    synchronize_torch_device,
+)
 from ..neural.nachmani import NachmaniNeuralBP
 from ..neural.predict import neuralbp_test_predictions
 from ..neural.training import (
@@ -74,6 +78,7 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("cpu", "mps", "cuda", "auto"),
         default="cpu",
     )
+    _add_torch_compile_arguments(train_parser)
     train_parser.add_argument("--weights-out", type=Path)
     train_parser.set_defaults(handler=_run_train_synthetic)
 
@@ -90,6 +95,7 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("cpu", "mps", "cuda", "auto"),
         default="cpu",
     )
+    _add_torch_compile_arguments(evaluate_parser)
     evaluate_parser.set_defaults(handler=_run_evaluate_errors)
 
     return parser
@@ -104,12 +110,52 @@ def _add_shared_model_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--correlation-strengths-file", type=Path)
 
 
+def _add_torch_compile_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add shared torch.compile toggles to a CLI parser."""
+
+    parser.add_argument(
+        "--torch-compile",
+        action="store_true",
+        help="Wrap the model with torch.compile before use.",
+    )
+    parser.add_argument(
+        "--torch-compile-backend",
+        type=str,
+        default="",
+        help="Optional torch.compile backend override.",
+    )
+    parser.add_argument(
+        "--torch-compile-mode",
+        choices=("default", "reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"),
+        default="default",
+        help="Optional torch.compile mode.",
+    )
+    parser.add_argument(
+        "--torch-compile-fullgraph",
+        action="store_true",
+        help="Request fullgraph=True for torch.compile.",
+    )
+    parser.add_argument(
+        "--torch-compile-dynamic",
+        action="store_true",
+        help="Request dynamic=True for torch.compile.",
+    )
+
+
 def _run_train_synthetic(args: argparse.Namespace) -> None:
     """Train the neural-BP model on synthetic data and print a JSON summary."""
 
     torch.manual_seed(args.seed)
     device = resolve_torch_device(args.device)
     model = _build_model(args).to(device)
+    runtime_model = maybe_compile_torch_module(
+        model,
+        enabled=args.torch_compile,
+        backend=args.torch_compile_backend,
+        mode=args.torch_compile_mode,
+        fullgraph=args.torch_compile_fullgraph,
+        dynamic=args.torch_compile_dynamic,
+    )
     parity_check = torch.tensor(
         model.base.parity_check_matrix.astype("float32"),
         device=model.device,
@@ -121,7 +167,7 @@ def _run_train_synthetic(args: argparse.Namespace) -> None:
     )
     synchronize_torch_device(device)
     summary = train_nachmani_neuralbp(
-        model,
+        runtime_model,
         syndromes,
         expected_recoveries,
         TrainingConfig(
@@ -184,9 +230,17 @@ def _run_evaluate_errors(args: argparse.Namespace) -> None:
             model,
             device=model.device,
         )
+    runtime_model = maybe_compile_torch_module(
+        model,
+        enabled=args.torch_compile,
+        backend=args.torch_compile_backend,
+        mode=args.torch_compile_mode,
+        fullgraph=args.torch_compile_fullgraph,
+        dynamic=args.torch_compile_dynamic,
+    )
     synchronize_torch_device(device)
     is_correct = neuralbp_test_predictions(
-        model,
+        runtime_model,
         args.test_errors_file,
         batch_size=args.batch_size,
     )

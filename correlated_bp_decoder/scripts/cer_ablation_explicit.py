@@ -65,6 +65,7 @@ from correlated_bp_decoder import (  # noqa: E402
     classical_belief_propagation_decoder,
     describe_torch_runtime,
     load_binary_matrix,
+    maybe_compile_torch_module,
     parse_cer_data,
     random_values_around_one,
     resolve_torch_device,
@@ -334,6 +335,33 @@ def _build_parser() -> argparse.ArgumentParser:
             "'cpu' for the baseline path, or 'auto' to pick the best available "
             "accelerator."
         ),
+    )
+    parser.add_argument(
+        "--torch-compile",
+        action="store_true",
+        help="Wrap the model with torch.compile before training/evaluation.",
+    )
+    parser.add_argument(
+        "--torch-compile-backend",
+        type=str,
+        default="",
+        help="Optional torch.compile backend override.",
+    )
+    parser.add_argument(
+        "--torch-compile-mode",
+        choices=("default", "reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"),
+        default="default",
+        help="Optional torch.compile mode.",
+    )
+    parser.add_argument(
+        "--torch-compile-fullgraph",
+        action="store_true",
+        help="Request fullgraph=True for torch.compile.",
+    )
+    parser.add_argument(
+        "--torch-compile-dynamic",
+        action="store_true",
+        help="Request dynamic=True for torch.compile.",
     )
     parser.add_argument("--run-label", type=str, default="")
     parser.add_argument("--initial-conditions-scale", type=float, default=0.3)
@@ -634,6 +662,14 @@ def _run_neural_mode(
             device=device,
         ),
     ).to(device)
+    runtime_model = maybe_compile_torch_module(
+        model,
+        enabled=args.torch_compile,
+        backend=args.torch_compile_backend,
+        mode=args.torch_compile_mode,
+        fullgraph=args.torch_compile_fullgraph,
+        dynamic=args.torch_compile_dynamic,
+    )
 
     train_syndromes = np.mod(parity_check @ train_errors, 2)
     test_syndromes = np.mod(parity_check @ test_errors, 2)
@@ -678,7 +714,7 @@ def _run_neural_mode(
     synchronize_torch_device(device)
     train_start = time.perf_counter()
     training_summary = train_nachmani_neuralbp(
-        model,
+        runtime_model,
         torch.as_tensor(train_syndromes, dtype=torch.bool),
         torch.as_tensor(train_errors, dtype=torch.bool),
         config,
@@ -702,7 +738,7 @@ def _run_neural_mode(
     synchronize_torch_device(device)
     eval_start = time.perf_counter()
     evaluation = _evaluate_model(
-        model,
+        runtime_model,
         parity_check=parity_check,
         dual_matrix=np.vstack((parity_check, logicals)),
         syndromes=test_syndromes,
@@ -721,6 +757,11 @@ def _run_neural_mode(
         "requested_device": args.device,
         "resolved_device": str(device),
         "torch_runtime": describe_torch_runtime(),
+        "torch_compile": args.torch_compile,
+        "torch_compile_backend": args.torch_compile_backend or None,
+        "torch_compile_mode": args.torch_compile_mode,
+        "torch_compile_fullgraph": args.torch_compile_fullgraph,
+        "torch_compile_dynamic": args.torch_compile_dynamic,
         "training_time_s": training_time_s,
         "evaluation_time_s": evaluation_time_s,
         "logical_success_rate": evaluation["dual_success_rate"],

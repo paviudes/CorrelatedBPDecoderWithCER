@@ -1,4 +1,4 @@
-"""Helpers for selecting and synchronizing torch devices."""
+"""Helpers for selecting, synchronizing, and optionally compiling torch workloads."""
 
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ def describe_torch_runtime() -> dict[str, Any]:
 
     return {
         "torch_version": torch.__version__,
+        "torch_compile_available": hasattr(torch, "compile"),
         "cuda_available": cuda_available(),
         "mps_built": mps_built(),
         "mps_available": mps_available(),
@@ -110,3 +111,64 @@ def synchronize_torch_device(device: str | torch.device) -> None:
         mps_module = getattr(torch, "mps", None)
         if mps_module is not None and hasattr(mps_module, "synchronize"):
             mps_module.synchronize()
+
+
+def maybe_compile_torch_module(
+    module: Any,
+    *,
+    enabled: bool = False,
+    backend: str | None = None,
+    mode: str | None = None,
+    fullgraph: bool = False,
+    dynamic: bool | None = None,
+) -> Any:
+    """Optionally wrap a torch module/function with ``torch.compile``.
+
+    Parameters
+    ----------
+    module
+        Module or callable to compile.
+    enabled
+        Whether compilation should be attempted.
+    backend
+        Optional backend name passed through to ``torch.compile``.
+    mode
+        Optional compilation mode. The literal string ``"default"`` is treated
+        the same as omitting the mode argument.
+    fullgraph
+        Whether to require a single compiled graph.
+    dynamic
+        Optional dynamic-shape setting forwarded to ``torch.compile``.
+
+    Returns
+    -------
+    Any
+        The original module when disabled, otherwise the compiled wrapper.
+
+    Raises
+    ------
+    RuntimeError
+        If compilation was requested but the active torch runtime does not
+        expose ``torch.compile``.
+    """
+
+    if not enabled:
+        return module
+
+    compile_fn = getattr(torch, "compile", None)
+    if compile_fn is None:
+        raise RuntimeError(
+            "Requested torch.compile, but the active torch runtime does not "
+            f"provide it: {describe_torch_runtime()}"
+        )
+
+    compile_kwargs: dict[str, Any] = {}
+    if backend:
+        compile_kwargs["backend"] = backend
+    if mode and mode != "default":
+        compile_kwargs["mode"] = mode
+    if fullgraph:
+        compile_kwargs["fullgraph"] = True
+    if dynamic is not None:
+        compile_kwargs["dynamic"] = dynamic
+    return compile_fn(module, **compile_kwargs)

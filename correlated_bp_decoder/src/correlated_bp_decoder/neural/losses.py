@@ -351,63 +351,61 @@ def compute_loss_breakdown(
         raise ValueError("warmup_loss_layers must be smaller than the number of layers.")
 
     dual = _as_float_tensor(parity_check_matrix_dual, posterior_llrs)
-    per_layer: list[LayerLossBreakdown] = []
-    aggregate_inputs = posterior_llrs.new_zeros((n_layers,)) if julia_loss_compat else None
-
-    base_loss_fn = (
-        compute_quadratic_residue_loss_from_llrs
-        if use_quadratic_residue
-        else compute_sine_residue_loss_from_llrs
-    )
-
     start_layer = warmup_loss_layers
     if julia_loss_compat:
         # Mirror the current Julia loop `for layer in warmup_loss_layers:n_layers`,
         # where the CLI value is treated as a 1-based first included layer index.
         start_layer = max(warmup_loss_layers - 1, 0)
+    active_posteriors = posterior_llrs[:, :, start_layer:]
+    active_layer_count = active_posteriors.shape[2]
 
-    for layer_index in range(start_layer, n_layers):
-        post = posterior_llrs[:, :, layer_index]
-        base_loss = base_loss_fn(post, expected_recoveries, dual)
-        llr_reg = syndrome_loss_regularizer(post) * torch.tanh(
-            torch.tensor(
-                (layer_index + 1) / n_layers,
-                dtype=post.dtype,
-                device=post.device,
-            )
-        )
-        sparse_pen = sparsity_penalty(post)
-        if is_correlated:
-            corr_pen = compute_additional_loss_from_ising_correlations(
-                post,
-                connectivity,
-                correlation_strengths,
-            )
-        else:
-            corr_pen = post.new_zeros(())
-        total_loss = (
-            base_loss
-            + llr_certainty_importance * llr_reg
-            + correlation_importance * corr_pen
-            + sparsity_importance * sparse_pen
-        )
-        per_layer.append(
-            LayerLossBreakdown(
-                base_loss=base_loss,
-                llr_regularizer=llr_reg,
-                correlation_penalty=corr_pen,
-                sparsity_penalty=sparse_pen,
-                total_loss=total_loss,
-            )
-        )
-        if aggregate_inputs is not None:
-            aggregate_inputs[layer_index] = total_loss
+    if active_layer_count == 0:
+        raise ValueError("At least one loss layer must participate in the aggregate loss.")
 
-    losses_per_layer = (
-        aggregate_inputs
-        if aggregate_inputs is not None
-        else torch.stack([layer.total_loss for layer in per_layer])
+    base_losses = _compute_base_losses_per_layer(
+        active_posteriors,
+        expected_recoveries,
+        dual,
+        use_quadratic_residue=use_quadratic_residue,
     )
+    llr_regularizers = _compute_llr_regularizers_per_layer(
+        active_posteriors,
+        start_layer=start_layer,
+        n_layers=n_layers,
+    )
+    sparsity_penalties = _compute_sparsity_penalties_per_layer(active_posteriors)
+    if is_correlated:
+        correlation_penalties = _compute_correlation_penalties_per_layer(
+            active_posteriors,
+            connectivity,
+            correlation_strengths,
+        )
+    else:
+        correlation_penalties = active_posteriors.new_zeros((active_layer_count,))
+
+    total_losses = (
+        base_losses
+        + llr_certainty_importance * llr_regularizers
+        + correlation_importance * correlation_penalties
+        + sparsity_importance * sparsity_penalties
+    )
+
+    per_layer = [
+        LayerLossBreakdown(
+            base_loss=base_losses[layer_offset],
+            llr_regularizer=llr_regularizers[layer_offset],
+            correlation_penalty=correlation_penalties[layer_offset],
+            sparsity_penalty=sparsity_penalties[layer_offset],
+            total_loss=total_losses[layer_offset],
+        )
+        for layer_offset in range(active_layer_count)
+    ]
+
+    if julia_loss_compat:
+        losses_per_layer = posterior_llrs.new_zeros((n_layers,))
+        losses_per_layer[start_layer:] = total_losses
+    else:
+        losses_per_layer = total_losses
     if aggregation == "linear_ramp":
         aggregate_loss = linear_ramp_loss(losses_per_layer)
     elif aggregation == "softmin":
@@ -499,3 +497,75 @@ def _as_float_tensor(
     """Convert an input to the reference tensor's dtype and device."""
 
     return torch.as_tensor(value, dtype=reference.dtype, device=reference.device)
+
+
+def _compute_base_losses_per_layer(
+    posterior_llrs: torch.Tensor,
+    expected_recoveries: torch.Tensor,
+    parity_check_matrix_dual: torch.Tensor,
+    *,
+    use_quadratic_residue: bool,
+) -> torch.Tensor:
+    """Compute the base residue loss for every unfolded layer at once."""
+
+    recoveries = expected_recoveries.to(dtype=posterior_llrs.dtype).unsqueeze(2)
+    e_total_matrix = sigmoid(posterior_llrs) + recoveries
+    commutation_relations = torch.matmul(
+        parity_check_matrix_dual.unsqueeze(0),
+        e_total_matrix.permute(2, 0, 1),
+    )
+    residue_fn = quadratic_residue if use_quadratic_residue else sine_residue
+    return residue_fn(commutation_relations).sum(dim=(1, 2)) / posterior_llrs.shape[1]
+
+
+def _compute_llr_regularizers_per_layer(
+    posterior_llrs: torch.Tensor,
+    *,
+    start_layer: int,
+    n_layers: int,
+) -> torch.Tensor:
+    """Compute the Julia-style confidence regularizer for every layer."""
+
+    layer_indices = torch.arange(
+        start_layer + 1,
+        start_layer + posterior_llrs.shape[2] + 1,
+        device=posterior_llrs.device,
+        dtype=posterior_llrs.dtype,
+    )
+    layer_weights = torch.tanh(layer_indices / n_layers)
+    entropy = binary_entropy_of_sigmoid(posterior_llrs).sum(dim=(0, 1))
+    return entropy * layer_weights
+
+
+def _compute_sparsity_penalties_per_layer(posterior_llrs: torch.Tensor) -> torch.Tensor:
+    """Compute the sparsity penalty for every layer."""
+
+    return sigmoid(posterior_llrs).sum(dim=(0, 1)) / posterior_llrs.shape[1]
+
+
+def _compute_correlation_penalties_per_layer(
+    posterior_llrs: torch.Tensor,
+    connectivity: torch.Tensor | object,
+    correlation_strengths: torch.Tensor | object,
+) -> torch.Tensor:
+    """Compute the CER pairwise penalty for every unfolded layer."""
+
+    connectivity_tensor = torch.as_tensor(
+        connectivity,
+        dtype=torch.long,
+        device=posterior_llrs.device,
+    )
+    if connectivity_tensor.numel() == 0:
+        return posterior_llrs.new_zeros((posterior_llrs.shape[2],))
+
+    strengths = torch.as_tensor(
+        correlation_strengths,
+        dtype=posterior_llrs.dtype,
+        device=posterior_llrs.device,
+    ).reshape(-1, 1, 1)
+    zero_based = connectivity_tensor - 1
+    probs = sigmoid(posterior_llrs)
+    sigma_i = probs.index_select(0, zero_based[:, 0])
+    sigma_j = probs.index_select(0, zero_based[:, 1])
+    pairwise = strengths * (sigma_i - sigma_j) ** 2
+    return pairwise.sum(dim=(0, 1)) / (posterior_llrs.shape[1] * zero_based.shape[0])

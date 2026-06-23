@@ -12,6 +12,8 @@ from correlated_bp_decoder import (
     compute_loss_including_correlations,
     compute_sine_residue_loss_from_llrs,
     linear_ramp_loss,
+    sparsity_penalty,
+    syndrome_loss_regularizer,
 )
 
 
@@ -192,6 +194,83 @@ def test_loss_breakdown_and_aggregate_loss_are_consistent() -> None:
         linear_ramp_loss(layer_totals),
         atol=1e-6,
     )
+
+
+def test_loss_breakdown_matches_manual_per_layer_components() -> None:
+    """Vectorized loss breakdown should match the original per-layer formulas."""
+
+    posterior_llrs = torch.tensor(
+        [
+            [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]],
+            [[-0.3, -0.1, 0.1], [0.2, -0.2, -0.4]],
+        ],
+        dtype=torch.float32,
+    )
+    expected_recoveries = torch.tensor(
+        [
+            [True, False],
+            [False, True],
+        ],
+        dtype=torch.bool,
+    )
+    parity_check_dual = torch.tensor([[1.0, 0.0], [1.0, 1.0]], dtype=torch.float32)
+    connectivity = torch.tensor([[1, 2]], dtype=torch.int64)
+    strengths = torch.tensor([0.2], dtype=torch.float32)
+
+    breakdown = compute_loss_breakdown(
+        posterior_llrs,
+        expected_recoveries,
+        parity_check_dual,
+        connectivity,
+        strengths,
+        is_correlated=True,
+        correlation_importance=0.3,
+        loss_layer_temperature=1.0,
+        llr_certainty_importance=0.1,
+        sparsity_importance=0.05,
+        warmup_loss_layers=0,
+        aggregation="linear_ramp",
+    )
+
+    for layer_index, layer_breakdown in enumerate(breakdown.per_layer):
+        post = posterior_llrs[:, :, layer_index]
+        expected_base = compute_sine_residue_loss_from_llrs(
+            post,
+            expected_recoveries,
+            parity_check_dual,
+        )
+        expected_llr = syndrome_loss_regularizer(post) * torch.tanh(
+            torch.tensor(
+                (layer_index + 1) / posterior_llrs.shape[2],
+                dtype=post.dtype,
+            )
+        )
+        expected_sparse = sparsity_penalty(post)
+        expected_corr = compute_additional_loss_from_ising_correlations(
+            post,
+            connectivity,
+            strengths,
+        )
+        expected_total = (
+            expected_base
+            + 0.1 * expected_llr
+            + 0.3 * expected_corr
+            + 0.05 * expected_sparse
+        )
+
+        assert torch.isclose(layer_breakdown.base_loss, expected_base, atol=1e-6)
+        assert torch.isclose(layer_breakdown.llr_regularizer, expected_llr, atol=1e-6)
+        assert torch.isclose(
+            layer_breakdown.correlation_penalty,
+            expected_corr,
+            atol=1e-6,
+        )
+        assert torch.isclose(
+            layer_breakdown.sparsity_penalty,
+            expected_sparse,
+            atol=1e-6,
+        )
+        assert torch.isclose(layer_breakdown.total_loss, expected_total, atol=1e-6)
 
 
 def test_julia_compat_loss_preserves_global_layer_indexing() -> None:

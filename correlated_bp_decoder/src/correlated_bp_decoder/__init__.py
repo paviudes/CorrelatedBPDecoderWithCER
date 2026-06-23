@@ -6,6 +6,7 @@ from .devices import (
     describe_torch_runtime,
     mps_available,
     mps_built,
+    maybe_compile_torch_module,
     resolve_torch_device,
     synchronize_torch_device,
 )
@@ -131,6 +132,7 @@ __all__ = [
     "load_trained_weights",
     "mps_available",
     "mps_built",
+    "maybe_compile_torch_module",
     "neuralbp_test_predictions",
     "parse_cer_data",
     "predict_and_check_neuralbp",
