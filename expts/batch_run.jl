@@ -17,6 +17,7 @@ function generate_parallel_commands(
     ncpus::Int=10,
     max_nodes::Int=10,
     wall_time::String="4:00:00",
+    email_address::String="pavithran.sridhar@gmail.com",
     cluster_backend::String="Google_VM", # "SLURM" or "Google_VM"
     skip_testing::Bool=false
 )
@@ -49,6 +50,7 @@ function generate_parallel_commands(
         ncpus=ncpus,
         max_nodes=max_nodes,
         wall_time=wall_time,
+        email_address=email_address,
         cluster_backend=cluster_backend,
         skip_testing=skip_testing,
     )
@@ -68,6 +70,7 @@ function generate_parallel_commands(
     ncpus::Int=10,
     max_nodes::Int=10,
     wall_time::String="4:00:00",
+    email_address::String="pavithran.sridhar@gmail.com",
     cluster_backend::String="Google_VM", # "SLURM" or "Google_VM"
     skip_testing::Bool=false
 )
@@ -106,7 +109,7 @@ function generate_parallel_commands(
     if lowercase(cluster_backend) == "google_vm"
         run_on_Google_VM(commands_file, output_file, n_cpus_to_use)
     elseif lowercase(cluster_backend) == "slurm"
-        run_on_SLURM(commands_file, n_simulations; n_cpus=n_cpus_to_use, max_nodes=max_nodes, wall_time=wall_time)
+        run_on_SLURM(commands_file, n_simulations; n_cpus=n_cpus_to_use, max_nodes=max_nodes, wall_time=wall_time, email_address=email_address)
     else
         # Meant for local execution.
         println("Run simulations with:")
@@ -114,7 +117,7 @@ function generate_parallel_commands(
     end
 end
 
-function run_on_SLURM(commands_file::String, n_commands::Int; n_cpus::Int=10, max_nodes::Int=10, wall_time::String="4:00:00")
+function run_on_SLURM(commands_file::String, n_commands::Int; n_cpus::Int=10, max_nodes::Int=10, wall_time::String="4:00:00", email_address::String="pavithran.sridhar@gmail.com")
     """
     Run the commands in `commands_file` in parallel on a SLURM cluster.
     The SLURM job script will be named `run_<timestamp>.slurm` and will be saved in the same directory as `commands_file`.
@@ -133,20 +136,20 @@ function run_on_SLURM(commands_file::String, n_commands::Int; n_cpus::Int=10, ma
     n_nodes = min(n_nodes_needed, max_nodes)
     commands_per_node = ceil(Int, n_commands / n_nodes)
 
+    jobname = "nbp_$(timestamp)"
     slurm_script_lines = [
         "#!/bin/bash",
         "#SBATCH --account=def-jemerson",
-        "#SBATCH --job-name=nbp_$(timestamp)",
+        "#SBATCH --job-name=$(jobname)",
         "#SBATCH --output=$(output_file)",
         "#SBATCH --error=$(error_file)",
         "#SBATCH --array=0-$(n_nodes-1)",
         "#SBATCH --ntasks=1",
         "#SBATCH --cpus-per-task=$(n_cpus)",
         "#SBATCH --time=$(wall_time)",
-        "#SBATCH --partition=compute",
         "",
         "#SBATCH --mail-type=ALL",
-        "#SBATCH --mail-user=pavithran.sridhar@gmail.com",
+        "#SBATCH --mail-user=$(email_address)",
         "",
         "echo \"Running SLURM_ARRAY_TASK_ID=\${SLURM_ARRAY_TASK_ID}\"",
         "",
@@ -165,11 +168,33 @@ function run_on_SLURM(commands_file::String, n_commands::Int; n_cpus::Int=10, ma
         "# Disable GPU usage since the cluster nodes we have access to do not have GPUs.",
         "export USE_GPU=\"0\"",
         "",
+        "######################################################################",
+        "# Thread safety and Precompilation",
+        "######################################################################",
+        "# Force 1 thread per process to avoid oversubscription",
+        "export JULIA_NUM_THREADS=1",
+        "export OPENBLAS_NUM_THREADS=1",
+        "export OMP_NUM_THREADS=1",
+        "",
+        "# Precompile serially on the compute node's hardware",
+        "julia --project=./../ -e 'using Pkg; Pkg.precompile()'",
+        "######################################################################",
+        "",
         "# Edit permissions for the file containing the commands to ensure it is readable by the job",
         "chmod +x $(commands_dir)/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt",
         "",
-        "# Run commands in parallel",
-        "parallel --jobs $(n_cpus) --results $(commands_dir)/logs/node_\${SLURM_ARRAY_TASK_ID} < $(commands_dir)/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt"
+        "######################################################################",
+        "# Local I/O Routing",
+        "######################################################################",
+        "# Create log directory in fast local storage",
+        "mkdir -p \$SLURM_TMPDIR/logs/node_\${SLURM_ARRAY_TASK_ID}",
+        "",
+        "# Run commands in parallel writing to local storage instead of network storage",
+        "parallel --jobs $(n_cpus) --results \$SLURM_TMPDIR/logs/node_\${SLURM_ARRAY_TASK_ID} < $(commands_dir)/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt",
+        "",
+        "# Move logs back to the shared project directory at the very end",
+        "cp -r \$SLURM_TMPDIR/logs/node_\${SLURM_ARRAY_TASK_ID} $(commands_dir)/logs/",
+        "######################################################################"
     ]
 
     # Write the SLURM job script
@@ -177,10 +202,12 @@ function run_on_SLURM(commands_file::String, n_commands::Int; n_cpus::Int=10, ma
         println(io, join(slurm_script_lines, "\n"))
     end
     println("\n=== Job Details ===")
+    println("  Job name         : $jobname")
     println("  Total commands   : $n_commands")
     println("  CPUs per node    : $n_cpus")
     println("  Nodes in use     : $n_nodes")
     println("  Commands per node: $commands_per_node")
+    println("  Wall time        : $wall_time")
     println("\n=== Output Files ===")
     println("  Commands file    : $commands_file")
     println("  SLURM script     : $slurm_script_file")
@@ -279,6 +306,7 @@ function main_test()
         ncpus=6,
         max_nodes=1,
         wall_time="1:00:00",
+        email_address="pavithran.sridhar@gmail.com",
         cluster_backend="SLURM",
         skip_testing=true
     )
@@ -293,6 +321,7 @@ function main(;
     n_hidden_layers::Int=200,
     n_cpus::Int=64,
     wall_time::String="1:00:00",
+    email_address::String="pavithran.sridhar@gmail.com",
     max_nodes::Int=1
 )
     """
@@ -322,6 +351,7 @@ function main(;
             ncpus = n_cpus,
             max_nodes = max_nodes,
             wall_time = wall_time,
+            email_address = email_address,
             cluster_backend = "SLURM" # "SLURM" or "Google_VM" or "local"
         )
     end
@@ -360,7 +390,12 @@ if abspath(PROGRAM_FILE) == @__FILE__
             default = 64
         "--wall_time"
             help = "Wall time for the SLURM job."
+            arg_type = String
             default = "1:00:00"
+        "--email"
+            help = "Email address for SLURM job notifications."
+            arg_type = String
+            default = "pavithran.sridhar@gmail.com"
         "--max_nodes"
             help = "Maximum number of nodes to use for the SLURM job."
             arg_type = Int
@@ -383,6 +418,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
         n_hidden_layers = parsed_args["n_hidden_layers"],
         n_cpus = parsed_args["n_cpus"],
         wall_time = parsed_args["wall_time"],
+        email_address = parsed_args["email"],
         max_nodes = parsed_args["max_nodes"]
     )
 
