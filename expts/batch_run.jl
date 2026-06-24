@@ -175,6 +175,8 @@ function run_on_SLURM(commands_file::String, n_commands::Int; n_cpus::Int=10, ma
         "export JULIA_NUM_THREADS=1",
         "export OPENBLAS_NUM_THREADS=1",
         "export OMP_NUM_THREADS=1",
+        "export MKL_NUM_THREADS=1",
+        "export BLAS_NUM_THREADS=1",
         "",
         "# Precompile serially on the compute node's hardware",
         "julia --project=./../ -e 'using Pkg; Pkg.precompile()'",
