@@ -1,5 +1,6 @@
 using Dates
 using Printf
+using ArgParse
 using LinearAlgebra
 
 function generate_parallel_commands(
@@ -23,16 +24,16 @@ function generate_parallel_commands(
     Generate shell commands for parallel execution of neural BP experiments.
     """
     train_files = [
-        "train_ballistic_p_$(p)_q_$(q)_s_1.txt"
-        for p in pvals for q in qvals for _ in 1:n_samples
+        "train_p_$(p)_q_$(q)_s_$(samp).txt"
+        for p in pvals for q in qvals for samp in 1:n_samples
     ]
     test_files = [
-        "test_ballistic_p_$(p)_q_$(q)_s_$(samp).txt"
+        "test_p_$(p)_q_$(q)_s_$(samp).txt"
         for p in pvals for q in qvals for samp in 1:n_samples
     ]
     cer_files = [
-        "correlated_weights_p_$(p)_q_$(q)_s_1.txt"
-        for p in pvals for q in qvals for _ in 1:n_samples
+        "correlated_weights_p_$(p)_q_$(q)_s_$(samp).txt"
+        for p in pvals for q in qvals for samp in 1:n_samples
     ]
     hyperparams_files = [hyperparams_file for _ in 1:length(cer_files)]
     generate_parallel_commands(
@@ -97,8 +98,6 @@ function generate_parallel_commands(
 
     n_params = length(cer_files)
 
-    println("$(n_params) commands written to: $commands_file\n")
-
     # Calculate the number of simulations and determine how many CPUs to use for parallel execution.
     n_simulations = n_params
     n_cpus_to_use = min(ncpus, n_simulations)
@@ -133,11 +132,6 @@ function run_on_SLURM(commands_file::String, n_commands::Int; n_cpus::Int=10, ma
     n_nodes_needed = ceil(Int, n_commands / n_cpus)
     n_nodes = min(n_nodes_needed, max_nodes)
     commands_per_node = ceil(Int, n_commands / n_nodes)
-
-    println("Total commands: $n_commands")
-    println("CPUs per node: $n_cpus")
-    println("Using nodes: $n_nodes")
-    println("Commands per node: $commands_per_node")
 
     slurm_script_lines = [
         "#!/bin/bash",
@@ -182,9 +176,16 @@ function run_on_SLURM(commands_file::String, n_commands::Int; n_cpus::Int=10, ma
     open(slurm_script_file, "w") do io
         println(io, join(slurm_script_lines, "\n"))
     end
-    println("SLURM job script written to: $slurm_script_file\n")
-    println("Run with:")
-    println("sbatch $slurm_script_file\n")
+    println("\n=== Job Details ===")
+    println("  Total commands   : $n_commands")
+    println("  CPUs per node    : $n_cpus")
+    println("  Nodes in use     : $n_nodes")
+    println("  Commands per node: $commands_per_node")
+    println("\n=== Output Files ===")
+    println("  Commands file    : $commands_file")
+    println("  SLURM script     : $slurm_script_file")
+    println("\n=== Submission ===")
+    println("  sbatch $slurm_script_file\n")
 end
 
 function run_on_Google_VM(commands_file::String, output_file::String, n_cpus::Int=10)
@@ -283,32 +284,108 @@ function main_test()
     )
 end
 
-function main()
+function main(;
+    dirnames::AbstractVector{<:String}=["72q_BB_p_0.010_std_0.01_q_0.000_std_0.00_data"],
+    p_vals::AbstractVector{<:Real}=[0.01],
+    qvals::AbstractVector{<:Real}=[0.001],
+    n_samples::Int=64,
+    hyperparams_file::String="hyperparams_epochs_10.toml",
+    n_hidden_layers::Int=200,
+    n_cpus::Int=64,
+    wall_time::String="1:00:00",
+    max_nodes::Int=1
+)
     """
     This function generates commands for running simulations over a range of error parameters.
     
-    Data set for plots in APS: aps_7q_Hamm_code_data
+    Note:
+    Data set for plots in APS:
+    dirname: aps_7q_Hamm_code_data
     p: 0.001:0.001:0.005
     q: 0.3:0.04:0.66
     """
-    dirname = "90q_BB_p_0.010_q_0.001_std_0.01_data_single_training"
-    generate_parallel_commands(
-        [0.01], # set of p values
-        [0.001], # set of q values
-        64; # number of samples per (p, q) pair. For optimal usage of the machine, please set this to be a multiple of the number of CPUs available.
-        codename = dirname,
-        # Hyperparameters for the Neural BP model
-        n_hidden_layers = 200,
-        hyperparams_file = "hyperparams_epochs_10.toml",
-        # File paths and project settings for running the commands
-        julia_project = "./../",
-        commands_file = "./../data/$(dirname)/cluster/commands.txt",
-        output_file = "./../data/$(dirname)/logs/simulation_results.log",
-        skip_testing = true, # If true, only generate commands for training the model, and skip testing.
-        # Cluster settings.
-        ncpus = 64,
-        max_nodes = 1,
-        wall_time = "1:00:00",
-        cluster_backend = "SLURM" # "SLURM" or "Google_VM" or "local"
+    for dirname in dirnames
+        generate_parallel_commands(
+            p_vals, # set of p values
+            qvals, # set of q values
+            n_samples; # number of samples per (p, q) pair. For optimal usage of the machine, please set this to be a multiple of the number of CPUs available.
+            codename = dirname,
+            # Hyperparameters for the Neural BP model
+            n_hidden_layers = n_hidden_layers,
+            hyperparams_file = hyperparams_file,
+            # File paths and project settings for running the commands
+            julia_project = "./../",
+            commands_file = "./../data/$(dirname)/cluster/commands.txt",
+            output_file = "./../data/$(dirname)/logs/simulation_results.log",
+            skip_testing = true, # If true, only generate commands for training the model, and skip testing.
+            # Cluster settings.
+            ncpus = n_cpus,
+            max_nodes = max_nodes,
+            wall_time = wall_time,
+            cluster_backend = "SLURM" # "SLURM" or "Google_VM" or "local"
+        )
+    end
+end
+
+if abspath(PROGRAM_FILE) == @__FILE__
+    # Use ArgParse to parse command line arguments for the main function.
+    settings = ArgParseSettings()
+    @add_arg_table settings begin
+        "--dirnames"
+            help = "List of directory names for different simulation settings."
+            nargs = '+'
+            default = ["72q_BB_p_0.010_std_0.01_q_0.000_std_0.00_data"]
+        "--p_vals"
+            help = "List of p values for the simulations."
+            nargs = '+'
+            default = [0.01]
+        "--qvals"
+            help = "List of q values for the simulations."
+            nargs = '+'
+            default = [0.001]
+        "--n_samples"
+            help = "Number of samples per (p, q) pair."
+            arg_type = Int
+            default = 64
+        "--hyperparams_file"
+            help = "Path to the hyperparameters file."
+            default = "hyperparams_epochs_10.toml"
+        "--n_hidden_layers"
+            help = "Number of hidden layers in the neural BP model."
+            arg_type = Int
+            default = 200
+        "--n_cpus"
+            help = "Number of CPUs to use for parallel execution."
+            arg_type = Int
+            default = 64
+        "--wall_time"
+            help = "Wall time for the SLURM job."
+            default = "1:00:00"
+        "--max_nodes"
+            help = "Maximum number of nodes to use for the SLURM job."
+            arg_type = Int
+            default = 1
+    end
+
+    # Parse the command line arguments and call the main function with the parsed arguments.
+    parsed_args = parse_args(settings)
+    dirnames = String.(parsed_args["dirnames"])
+    p_vals = [parse(Float64, p) for p in parsed_args["p_vals"]]
+    qvals = [parse(Float64, q) for q in parsed_args["qvals"]]
+
+    # Call the main function with the parsed arguments.
+    main(;
+        dirnames = dirnames,
+        p_vals = p_vals,
+        qvals = qvals,
+        n_samples = parsed_args["n_samples"],
+        hyperparams_file = parsed_args["hyperparams_file"],
+        n_hidden_layers = parsed_args["n_hidden_layers"],
+        n_cpus = parsed_args["n_cpus"],
+        wall_time = parsed_args["wall_time"],
+        max_nodes = parsed_args["max_nodes"]
     )
+
+    # Example usage (from Shell in the `expts` directory):
+    # julia --project="./../" batch_run.jl --dirnames 72q_BB_p_0.010_std_0.01_q_0.000_std_0.00_data --p_vals 0.01 --qvals 0.001 --n_samples 64 --hyperparams_file hyperparams_epochs_10.toml --n_hidden_layers 200 --n_cpus 64 --wall_time 1:00:00 --max_nodes 1
 end
