@@ -126,6 +126,11 @@ function run_on_SLURM(commands_file::String, n_commands::Int; n_cpus::Int=10, ma
     """
     timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")
     commands_dir = dirname(commands_file)
+    # Create the logs directory if it doesn't exist.
+    logs_dir = joinpath(commands_dir, "logs")
+    if !isdir(logs_dir)
+        mkpath(logs_dir)
+    end
     
     slurm_script_file = joinpath(commands_dir, "run_$(timestamp).sh")
     output_file = joinpath(commands_dir, "nbp_$(timestamp).out")
@@ -192,10 +197,8 @@ function run_on_SLURM(commands_file::String, n_commands::Int; n_cpus::Int=10, ma
         "mkdir -p \$SLURM_TMPDIR/logs/node_\${SLURM_ARRAY_TASK_ID}",
         "",
         "# Run commands in parallel writing to local storage instead of network storage",
-        "parallel --jobs $(n_cpus) --results \$SLURM_TMPDIR/logs/node_\${SLURM_ARRAY_TASK_ID} < $(commands_dir)/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt",
+        "parallel --jobs $(n_cpus) --results $(logs_dir)/node_\${SLURM_ARRAY_TASK_ID} < $(commands_dir)/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt",
         "",
-        "# Move logs back to the shared project directory at the very end",
-        "cp -r \$SLURM_TMPDIR/logs/node_\${SLURM_ARRAY_TASK_ID} $(commands_dir)/logs/",
         "######################################################################"
     ]
 
