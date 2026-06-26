@@ -44,7 +44,7 @@ function generate_parallel_commands(
         cer_files,
         train_files,
         test_files,
-        codename=codename;
+        codename;
         # Hyperparameters for the Neural BP model
         n_hidden_layers=n_hidden_layers,
         hyperparams_files=hyperparams_files,
@@ -68,7 +68,7 @@ function generate_parallel_commands(
     cer_files::AbstractVector{<:String},
     train_files::AbstractVector{<:String},
     test_files::AbstractVector{<:String},
-    codename::String="aps";
+    codename::String;
     # Hyperparameters for the Neural BP model
     n_hidden_layers::Int=100,
     hyperparams_files::AbstractVector{<:String}=["default_hyperparams.toml"],
@@ -88,7 +88,7 @@ function generate_parallel_commands(
     """
     Generate shell commands for parallel execution of neural BP experiments.
     """
-    commands_dir = joinpath(working_dir, "cluster")
+    commands_dir = joinpath(working_dir, codename, "cluster")
     if !isdir(commands_dir)
         mkpath(commands_dir)
     end
@@ -153,18 +153,16 @@ using Dates
 
 function run_on_SLURM(
     commands_file::String,
-    n_commands::Int,
-    codename::String;
+    n_commands::Int;
     n_cpus::Int=10,
     max_nodes::Int=10,
     wall_time::String="4:00:00",
     email_address::String="pavithran.sridhar@gmail.com",
     working_dir::String=joinpath(@__DIR__, ".."),
+    codename::String="aps"
 )
     """
     Run the commands in `commands_file` in parallel on a SLURM cluster.
-    Utilizes targeted directory mirroring to $SLURM_TMPDIR to isolate 
-    the specific `codename` folder and bypass network I/O bottlenecks.
     """
     timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")
     
@@ -412,7 +410,7 @@ function main(;
             p_vals, # set of p values
             qvals, # set of q values
             n_samples, # number of samples per (p, q) pair. For optimal usage of the machine, please set this to be a multiple of the number of CPUs available.
-            codename = codename;
+            codename;
             # Hyperparameters for the Neural BP model
             n_hidden_layers = n_hidden_layers,
             hyperparams_file = hyperparams_file,
@@ -426,7 +424,7 @@ function main(;
             max_nodes = max_nodes,
             wall_time = wall_time,
             email_address = email_address,
-            cluster_backend = "SLURM" # "SLURM" or "Google_VM" or "local"
+            cluster_backend = "SLURM", # "SLURM" or "Google_VM" or "local"
             # Flags for ommiting testing or training
             skip_testing = true
         )
@@ -505,5 +503,5 @@ if abspath(PROGRAM_FILE) == @__FILE__
     )
 
     # Example usage (from Shell in the `expts` directory):
-    # julia --project="./../" batch_run.jl --dirnames 72q_BB_p_0.010_std_0.01_q_0.000_std_0.00_data --p_vals 0.01 --qvals 0.001 --n_samples 64 --hyperparams_file hyperparams_epochs_10.toml --n_hidden_layers 200 --n_cpus 64 --wall_time 1:00:00 --max_nodes 1
+    # julia --project="./../" batch_run.jl --working_dir "./../data" --dirnames 72q_BB_p_0.010_std_0.01_q_0.000_std_0.00_data --p_vals 0.01 --qvals 0.001 --n_samples 64 --hyperparams_file hyperparams_epochs_10.toml --n_hidden_layers 50 --n_cpus 64 --wall_time 1:00:00 --email pavithran.sridhar@gmail.com --max_nodes 1
 end
