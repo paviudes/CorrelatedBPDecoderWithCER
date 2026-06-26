@@ -129,13 +129,13 @@ function generate_parallel_commands(
     elseif lowercase(cluster_backend) == "slurm"
         run_on_SLURM(
             commands_file_path,
-            n_simulations;
+            n_simulations,
+            codename;
             n_cpus        = n_cpus_to_use,
             max_nodes     = max_nodes,
             wall_time     = wall_time,
             email_address = email_address,
-            working_dir   = "$(working_dir)",
-            codename      = "$(codename)"
+            working_dir   = "$(working_dir)"
         )
     else
         # Meant for local execution.
@@ -165,8 +165,6 @@ function run_on_SLURM(
 )
     """
     Run the commands in `commands_file` in parallel on a SLURM cluster.
-    Utilizes targeted directory mirroring to $SLURM_TMPDIR to isolate 
-    the specific `codename` folder and bypass network I/O bottlenecks.
     """
     timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")
     
