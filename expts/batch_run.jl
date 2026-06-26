@@ -98,6 +98,7 @@ function generate_parallel_commands(
         for (cer_file, train_file, test_file, hyperparams_file) in zip(cer_files, train_files, test_files, hyperparams_files)
 
             cmd = """julia --project="$(julia_project)" neural_bp_experiments.jl \
+                --workdir $(working_dir) \
                 --codename $(codename) \
                 --n_hidden_layers $(n_hidden_layers) \
                 --hyperparams $(hyperparams_file) \
@@ -133,7 +134,8 @@ function generate_parallel_commands(
             max_nodes     = max_nodes,
             wall_time     = wall_time,
             email_address = email_address,
-            working_dir   = working_dir,
+            working_dir   = "$(working_dir)",
+            codename      = "$(codename)"
         )
     else
         # Meant for local execution.
@@ -147,9 +149,12 @@ function generate_parallel_commands(
     end
 end
 
+using Dates
+
 function run_on_SLURM(
     commands_file::String,
-    n_commands::Int;
+    n_commands::Int,
+    codename::String;
     n_cpus::Int=10,
     max_nodes::Int=10,
     wall_time::String="4:00:00",
@@ -158,10 +163,14 @@ function run_on_SLURM(
 )
     """
     Run the commands in `commands_file` in parallel on a SLURM cluster.
-    Utilizes local compute node storage ($SLURM_TMPDIR) to bypass network I/O bottlenecks.
+    Utilizes targeted directory mirroring to $SLURM_TMPDIR to isolate 
+    the specific `codename` folder and bypass network I/O bottlenecks.
     """
     timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")
-    commands_dir = joinpath(working_dir, "cluster")
+    
+    # Target the specific codename directory for all cluster outputs
+    target_dir = joinpath(working_dir, codename)
+    commands_dir = joinpath(target_dir, "cluster")
 
     # Create the logs directory if it doesn't exist.
     logs_dir = joinpath(commands_dir, "logs")
@@ -199,7 +208,7 @@ function run_on_SLURM(
         "START=\$((SLURM_ARRAY_TASK_ID * $(commands_per_node) + 1))",
         "END=\$((START + $(commands_per_node) - 1))",
         "",
-        "# Extract commands for this node",
+        "# Extract commands for this node and write them to the network target directory",
         "sed -n \"\${START},\${END}p\" $(commands_file) > $(commands_dir)/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt",
         "",
         "# Load necessary modules and set up environment",
@@ -222,39 +231,38 @@ function run_on_SLURM(
         "export JULIA_NUM_PRECOMPILE_TASKS=1",
         "",
         "# Precompile serially on the isolated local disk",
-        "julia --project=./../ -e 'using Pkg; Pkg.precompile()'",
+        "julia --project=$(target_dir) -e 'using Pkg; Pkg.precompile()'",
         "",
         "######################################################################",
-        "# 1. STAGE IN: Extract TAR directly to Fast Local Storage",
+        "# 1. STAGE IN: Mirror Targeted Project Folder to Fast Local Storage",
         "######################################################################",
-        "LOCAL_WORK_DIR=\"\$SLURM_TMPDIR/job_data\"",
+        "LOCAL_WORK_DIR=\"\$SLURM_TMPDIR/$(codename)\"",
         "mkdir -p \$LOCAL_WORK_DIR",
         "",
-        "echo \"Extracting data.tar to \$SLURM_TMPDIR...\"",
-        "# Streams the network tarball directly into extracted files on local NVMe",
-        "tar -xf $(working_dir)/data.tar -C \$LOCAL_WORK_DIR",
-        "",
-        "# Dynamically replace the hardcoded network path with the fast local path",
-        "sed -i \"s|--workdir ./../data|--workdir \$LOCAL_WORK_DIR/data|g\" $(commands_dir)/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt",
-        "",
-        "chmod +x $(commands_dir)/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt",
+        "echo \"Mirroring $(codename) directory to \$SLURM_TMPDIR...\"",
+        "# rsync -a preserves structure. We strictly copy the codename folder contents.",
+        "rsync -a $(target_dir)/ \$LOCAL_WORK_DIR/",
         "",
         "######################################################################",
         "# 2. COMPUTE",
         "######################################################################",
-        "LOCAL_LOGS=\"\$SLURM_TMPDIR/logs/node_\${SLURM_ARRAY_TASK_ID}\"",
+        "LOCAL_LOGS=\"\$LOCAL_WORK_DIR/cluster/logs/node_\${SLURM_ARRAY_TASK_ID}\"",
         "mkdir -p \$LOCAL_LOGS",
         "",
+        "# Move INTO the local NVMe drive's expts folder",
+        "# This ensures your script's relative paths flawlessly resolve to the local drive",
+        "cd \$LOCAL_WORK_DIR/expts",
+        "",
         "echo \"Running parallel computations locally...\"",
-        "parallel --jobs $(n_cpus) --results \$LOCAL_LOGS < $(commands_dir)/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt",
+        "# Because we rsynced the codename folder, the commands_chunk exists on the local drive",
+        "parallel --jobs $(n_cpus) --results \$LOCAL_LOGS < ../cluster/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt",
         "",
         "######################################################################",
         "# 3. STAGE OUT: Save Results via Rsync",
         "######################################################################",
         "echo \"Computation finished. Staging results back to network storage...\"",
-        "# rsync -au strictly transfers new or modified files, ignoring original training data",
-        "rsync -au \$LOCAL_WORK_DIR/data/ $(working_dir)/data/",
-        "rsync -a \$LOCAL_LOGS/ $(logs_dir)/node_\${SLURM_ARRAY_TASK_ID}/",
+        "# rsync -au strictly transfers newly generated or modified files.",
+        "rsync -au \$LOCAL_WORK_DIR/ $(target_dir)/",
         "",
         "echo \"Job completed and data safely transferred.\""
     ]
@@ -263,8 +271,10 @@ function run_on_SLURM(
     open(slurm_script_file, "w") do io
         println(io, join(slurm_script_lines, "\n"))
     end
+    
     println("\n=== Job Details ===")
     println("  Job name         : $jobname")
+    println("  Target codename  : $codename")
     println("  Total commands   : $n_commands")
     println("  CPUs per node    : $n_cpus")
     println("  Nodes in use     : $n_nodes")
@@ -376,7 +386,7 @@ function main_test()
 end
 
 function main(;
-    dirnames::AbstractVector{<:String}=["72q_BB_p_0.010_std_0.01_q_0.000_std_0.00_data"],
+    codenames::AbstractVector{<:String}=["72q_BB_p_0.010_std_0.01_q_0.000_std_0.00_data"],
     p_vals::AbstractVector{<:Real}=[0.01],
     qvals::AbstractVector{<:Real}=[0.001],
     n_samples::Int=64,
@@ -385,7 +395,8 @@ function main(;
     n_cpus::Int=64,
     wall_time::String="1:00:00",
     email_address::String="pavithran.sridhar@gmail.com",
-    max_nodes::Int=1
+    max_nodes::Int=1,
+    data_dir::String="./../data"
 )
     """
     This function generates commands for running simulations over a range of error parameters.
@@ -396,12 +407,12 @@ function main(;
     p: 0.001:0.001:0.005
     q: 0.3:0.04:0.66
     """
-    for dirname in dirnames
+    for codename in codenames
         generate_parallel_commands(
             p_vals, # set of p values
             qvals, # set of q values
             n_samples, # number of samples per (p, q) pair. For optimal usage of the machine, please set this to be a multiple of the number of CPUs available.
-            codename = dirname;
+            codename = codename;
             # Hyperparameters for the Neural BP model
             n_hidden_layers = n_hidden_layers,
             hyperparams_file = hyperparams_file,
@@ -409,7 +420,7 @@ function main(;
             julia_project = "./../",
             commands_file = "commands.txt",
             output_file = "simulation_results.log",
-            working_dir = "./../data/$(dirname)",
+            working_dir = "$(data_dir)",
             # Cluster settings.
             ncpus = n_cpus,
             max_nodes = max_nodes,
@@ -426,6 +437,10 @@ if abspath(PROGRAM_FILE) == @__FILE__
     # Use ArgParse to parse command line arguments for the main function.
     settings = ArgParseSettings()
     @add_arg_table settings begin
+        "--working_dir"
+            help = "Working directory for the simulations."
+            arg_type = String
+            default = "./../data"
         "--dirnames"
             help = "List of directory names for different simulation settings."
             nargs = '+'
@@ -444,6 +459,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
             default = 64
         "--hyperparams_file"
             help = "Path to the hyperparameters file."
+            arg_type = String
             default = "hyperparams_epochs_10.toml"
         "--n_hidden_layers"
             help = "Number of hidden layers in the neural BP model."
@@ -475,7 +491,8 @@ if abspath(PROGRAM_FILE) == @__FILE__
 
     # Call the main function with the parsed arguments.
     main(;
-        dirnames = dirnames,
+        data_dir = parsed_args["working_dir"],
+        codenames = dirnames,
         p_vals = p_vals,
         qvals = qvals,
         n_samples = parsed_args["n_samples"],

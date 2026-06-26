@@ -140,7 +140,7 @@ function parse_command_line_args_BP(;prefix="./../data")::Dict{String, Any}
 	return args_dict
 end
 
-function parse_command_line_args_NN(;prefix::String="./../data")::Dict{String, Any}
+function parse_command_line_args_NN()::Dict{String, Any}
 	"""
 	Parse command-line arguments for Neural BP experiments and return them as a dictionary using `ArgParse`.
 	# Compulsory line arguments
@@ -202,7 +202,7 @@ function parse_command_line_args_NN(;prefix::String="./../data")::Dict{String, A
 		"--hyperparams"
 			help = "JSON file containing the hyperparameters for training the Neural BP model. If not provided, default hyperparameters will be used."
 			arg_type = String
-			default = "$(prefix)/models/hyperparams.json"
+			default = "hyperparams.json"
 		"--train"
 			help = "Name of the file used for training the Neural BP model."
 			arg_type = String

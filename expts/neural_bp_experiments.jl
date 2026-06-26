@@ -196,7 +196,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     end
 
     # Parse command-line arguments
-    args_dict = parse_command_line_args_NN(;prefix="./../data")
+    args_dict = parse_command_line_args_NN()
 
     # Extract arguments
     work_dir = args_dict["workdir"]
