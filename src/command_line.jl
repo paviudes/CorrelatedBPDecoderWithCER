@@ -179,6 +179,10 @@ function parse_command_line_args_NN(;prefix::String="./../data")::Dict{String, A
 	settings = ArgParseSettings()
 	
 	@add_arg_table! settings begin
+		"--workdir"
+			help = "Working directory where the code and data are located."
+			arg_type = String
+			default = "./../data"
 		"--codename"
 			help = "Name of a directory containing the parity-check matrices and the logical operators."
 			arg_type = String

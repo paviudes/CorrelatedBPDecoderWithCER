@@ -6,20 +6,23 @@ using LinearAlgebra
 function generate_parallel_commands(
     pvals::AbstractVector{<:Real},
     qvals::AbstractVector{<:Real},
-    n_samples::Int;
-    codename::String="aps",
+    n_samples::Int,
+    codename::String="aps";
     # Hyperparameters for the Neural BP model
     n_hidden_layers::Int=100,
     hyperparams_file::String="default_hyperparams.toml",
+    # File paths and project settings for running the commands
     julia_project::String="./../",
     commands_file::String="commands.txt",
     output_file::String="simulation_results.log",
+    working_dir::String=joinpath(@__DIR__, ".."),
+    # Cluster settings.
     ncpus::Int=10,
     max_nodes::Int=10,
     wall_time::String="4:00:00",
     email_address::String="pavithran.sridhar@gmail.com",
     cluster_backend::String="Google_VM", # "SLURM" or "Google_VM"
-    skip_testing::Bool=false
+    skip_testing::Bool=false,
 )
     """
     Generate shell commands for parallel execution of neural BP experiments.
@@ -40,18 +43,23 @@ function generate_parallel_commands(
     generate_parallel_commands(
         cer_files,
         train_files,
-        test_files;
-        codename=codename,
+        test_files,
+        codename=codename;
+        # Hyperparameters for the Neural BP model
         n_hidden_layers=n_hidden_layers,
         hyperparams_files=hyperparams_files,
         julia_project=julia_project,
+        # File paths and project settings for running the commands
         commands_file=commands_file,
         output_file=output_file,
+        working_dir=working_dir,
+        # Cluster settings.
         ncpus=ncpus,
         max_nodes=max_nodes,
         wall_time=wall_time,
         email_address=email_address,
         cluster_backend=cluster_backend,
+        # Flags for ommiting testing or training
         skip_testing=skip_testing,
     )
 end
@@ -59,25 +67,34 @@ end
 function generate_parallel_commands(
     cer_files::AbstractVector{<:String},
     train_files::AbstractVector{<:String},
-    test_files::AbstractVector{<:String};
-    codename::String="aps",
+    test_files::AbstractVector{<:String},
+    codename::String="aps";
     # Hyperparameters for the Neural BP model
     n_hidden_layers::Int=100,
     hyperparams_files::AbstractVector{<:String}=["default_hyperparams.toml"],
     julia_project::String="./../",
     commands_file::String="commands.txt",
     output_file::String="simulation_results.log",
+    working_dir::String=joinpath(@__DIR__, ".."),
+    # Cluster settings.
     ncpus::Int=10,
     max_nodes::Int=10,
     wall_time::String="4:00:00",
     email_address::String="pavithran.sridhar@gmail.com",
     cluster_backend::String="Google_VM", # "SLURM" or "Google_VM"
+    # Flags for ommiting testing or training
     skip_testing::Bool=false
 )
     """
     Generate shell commands for parallel execution of neural BP experiments.
     """
-    open(commands_file, "w") do io
+    commands_dir = joinpath(working_dir, "cluster")
+    if !isdir(commands_dir)
+        mkpath(commands_dir)
+    end
+
+    commands_file_path = joinpath(commands_dir, commands_file)
+    open(commands_file_path, "w") do io
         for (cer_file, train_file, test_file, hyperparams_file) in zip(cer_files, train_files, test_files, hyperparams_files)
 
             cmd = """julia --project="$(julia_project)" neural_bp_experiments.jl \
@@ -107,25 +124,45 @@ function generate_parallel_commands(
 
     # Write a shell script to run the commands in `commands_file` in parallel, save results to `output_file`, and halt the Google Cloud VM when done.
     if lowercase(cluster_backend) == "google_vm"
-        run_on_Google_VM(commands_file, output_file, n_cpus_to_use)
+        run_on_Google_VM(commands_file_path, output_file, n_cpus_to_use)
     elseif lowercase(cluster_backend) == "slurm"
-        run_on_SLURM(commands_file, n_simulations; n_cpus=n_cpus_to_use, max_nodes=max_nodes, wall_time=wall_time, email_address=email_address)
+        run_on_SLURM(
+            commands_file_path,
+            n_simulations;
+            n_cpus        = n_cpus_to_use,
+            max_nodes     = max_nodes,
+            wall_time     = wall_time,
+            email_address = email_address,
+            working_dir   = working_dir,
+        )
     else
         # Meant for local execution.
         println("Run simulations with:")
-        println("parallel --bar --keep-order --jobs $(n_cpus_to_use) --results $(output_file) :::: $(commands_file)\n")
+        println(
+            "parallel --bar --keep-order" *
+            " --jobs $(n_cpus_to_use)" *
+            " --results $(output_file)" *
+            " :::: $(commands_file_path)\n"
+        )
     end
 end
 
-function run_on_SLURM(commands_file::String, n_commands::Int; n_cpus::Int=10, max_nodes::Int=10, wall_time::String="4:00:00", email_address::String="pavithran.sridhar@gmail.com")
+function run_on_SLURM(
+    commands_file::String,
+    n_commands::Int;
+    n_cpus::Int=10,
+    max_nodes::Int=10,
+    wall_time::String="4:00:00",
+    email_address::String="pavithran.sridhar@gmail.com",
+    working_dir::String=joinpath(@__DIR__, ".."),
+)
     """
     Run the commands in `commands_file` in parallel on a SLURM cluster.
-    The SLURM job script will be named `run_<timestamp>.slurm` and will be saved in the same directory as `commands_file`.
-    If there are more commands than CPUs, we want to use multiple nodes in a job array to run the commands in parallel.
-    However, we don't want to use more than max_nodes nodes, so we will calculate the number of nodes to use based on the number of commands and the number of CPUs per node.
+    Utilizes local compute node storage ($SLURM_TMPDIR) to bypass network I/O bottlenecks.
     """
     timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")
-    commands_dir = dirname(commands_file)
+    commands_dir = joinpath(working_dir, "cluster")
+
     # Create the logs directory if it doesn't exist.
     logs_dir = joinpath(commands_dir, "logs")
     if !isdir(logs_dir)
@@ -166,40 +203,60 @@ function run_on_SLURM(commands_file::String, n_commands::Int; n_cpus::Int=10, ma
         "sed -n \"\${START},\${END}p\" $(commands_file) > $(commands_dir)/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt",
         "",
         "# Load necessary modules and set up environment",
-        "module load julia/1.12.5", # The default version on Narval and Trillium is 1.12.
+        "module load julia/1.12.5",
         "cp -r ~/.julia \$SLURM_TMPDIR/",
         "export JULIA_DEPOT_PATH=\"\$SLURM_TMPDIR/.julia\"",
         "",
-        "# Disable GPU usage since the cluster nodes we have access to do not have GPUs.",
+        "# Disable GPU usage",
         "export USE_GPU=\"0\"",
         "",
         "######################################################################",
-        "# Thread safety and Precompilation",
+        "# Thread Safety & Precompilation",
         "######################################################################",
-        "# Force 1 thread per process to avoid oversubscription",
+        "# Force 1 thread per process to avoid CPU thrashing with GNU parallel",
         "export JULIA_NUM_THREADS=1",
         "export OPENBLAS_NUM_THREADS=1",
         "export OMP_NUM_THREADS=1",
         "export MKL_NUM_THREADS=1",
         "export BLAS_NUM_THREADS=1",
+        "export JULIA_NUM_PRECOMPILE_TASKS=1",
         "",
-        "# Precompile serially on the compute node's hardware",
+        "# Precompile serially on the isolated local disk",
         "julia --project=./../ -e 'using Pkg; Pkg.precompile()'",
-        "######################################################################",
         "",
-        "# Edit permissions for the file containing the commands to ensure it is readable by the job",
+        "######################################################################",
+        "# 1. STAGE IN: Extract TAR directly to Fast Local Storage",
+        "######################################################################",
+        "LOCAL_WORK_DIR=\"\$SLURM_TMPDIR/job_data\"",
+        "mkdir -p \$LOCAL_WORK_DIR",
+        "",
+        "echo \"Extracting data.tar to \$SLURM_TMPDIR...\"",
+        "# Streams the network tarball directly into extracted files on local NVMe",
+        "tar -xf $(working_dir)/data.tar -C \$LOCAL_WORK_DIR",
+        "",
+        "# Dynamically replace the hardcoded network path with the fast local path",
+        "sed -i \"s|--workdir ./../data|--workdir \$LOCAL_WORK_DIR/data|g\" $(commands_dir)/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt",
+        "",
         "chmod +x $(commands_dir)/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt",
         "",
         "######################################################################",
-        "# Local I/O Routing",
+        "# 2. COMPUTE",
         "######################################################################",
-        "# Create log directory in fast local storage",
-        "mkdir -p \$SLURM_TMPDIR/logs/node_\${SLURM_ARRAY_TASK_ID}",
+        "LOCAL_LOGS=\"\$SLURM_TMPDIR/logs/node_\${SLURM_ARRAY_TASK_ID}\"",
+        "mkdir -p \$LOCAL_LOGS",
         "",
-        "# Run commands in parallel writing to local storage instead of network storage",
-        "parallel --jobs $(n_cpus) --results $(logs_dir)/node_\${SLURM_ARRAY_TASK_ID} < $(commands_dir)/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt",
+        "echo \"Running parallel computations locally...\"",
+        "parallel --jobs $(n_cpus) --results \$LOCAL_LOGS < $(commands_dir)/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt",
         "",
-        "######################################################################"
+        "######################################################################",
+        "# 3. STAGE OUT: Save Results via Rsync",
+        "######################################################################",
+        "echo \"Computation finished. Staging results back to network storage...\"",
+        "# rsync -au strictly transfers new or modified files, ignoring original training data",
+        "rsync -au \$LOCAL_WORK_DIR/data/ $(working_dir)/data/",
+        "rsync -a \$LOCAL_LOGS/ $(logs_dir)/node_\${SLURM_ARRAY_TASK_ID}/",
+        "",
+        "echo \"Job completed and data safely transferred.\""
     ]
 
     # Write the SLURM job script
@@ -219,6 +276,7 @@ function run_on_SLURM(commands_file::String, n_commands::Int; n_cpus::Int=10, ma
     println("\n=== Submission ===")
     println("  sbatch $slurm_script_file\n")
 end
+
 
 function run_on_Google_VM(commands_file::String, output_file::String, n_cpus::Int=10)
     """
@@ -342,22 +400,24 @@ function main(;
         generate_parallel_commands(
             p_vals, # set of p values
             qvals, # set of q values
-            n_samples; # number of samples per (p, q) pair. For optimal usage of the machine, please set this to be a multiple of the number of CPUs available.
-            codename = dirname,
+            n_samples, # number of samples per (p, q) pair. For optimal usage of the machine, please set this to be a multiple of the number of CPUs available.
+            codename = dirname;
             # Hyperparameters for the Neural BP model
             n_hidden_layers = n_hidden_layers,
             hyperparams_file = hyperparams_file,
             # File paths and project settings for running the commands
             julia_project = "./../",
-            commands_file = "./../data/$(dirname)/cluster/commands.txt",
-            output_file = "./../data/$(dirname)/logs/simulation_results.log",
-            skip_testing = true, # If true, only generate commands for training the model, and skip testing.
+            commands_file = "commands.txt",
+            output_file = "simulation_results.log",
+            working_dir = "./../data/$(dirname)",
             # Cluster settings.
             ncpus = n_cpus,
             max_nodes = max_nodes,
             wall_time = wall_time,
             email_address = email_address,
             cluster_backend = "SLURM" # "SLURM" or "Google_VM" or "local"
+            # Flags for ommiting testing or training
+            skip_testing = true
         )
     end
 end
