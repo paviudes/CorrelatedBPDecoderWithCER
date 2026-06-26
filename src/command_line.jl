@@ -144,6 +144,8 @@ function parse_command_line_args_NN()::Dict{String, Any}
 	"""
 	Parse command-line arguments for Neural BP experiments and return them as a dictionary using `ArgParse`.
 	# Compulsory line arguments
+		- `-- workdir::String`:  
+		Working directory where the code and data are located. Default is `./../data`.
 		- `-- codename::String`:  
 		Name of a directory containing the parity-check matrices and the logical operators.
 		The directory should contain the following files:

@@ -183,7 +183,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
 
     Example run command:
     ```sh
-    julia --project="./../" neural_bp_experiments.jl --codename hamming --n_hidden_layers 5 --correlation_strengths_file correlation_strengths.txt --train training_errors.txt --test testing_errors.txt --hyperparams default_hyperparams.json
+    julia --project="./../" neural_bp_experiments.jl --workdir ./../data --codename hamming --n_hidden_layers 5 --correlation_strengths_file correlation_strengths.txt --train training_errors.txt --test testing_errors.txt --hyperparams default_hyperparams.json
     ```
     """
 
@@ -191,7 +191,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     if length(ARGS) == 0
         println("No command-line arguments provided. Please provide the necessary arguments to run the experiment.")
         println("Example run command:")
-        println("julia --project=\"./../\" neural_bp_experiments.jl --codename hamming --n_hidden_layers 5 --correlation_strengths_file correlation_strengths.txt --train training_errors.txt --test testing_errors.txt --hyperparams default_hyperparams.json")
+        println("julia --project=\"./../\" neural_bp_experiments.jl --workdir ./../data --codename hamming --n_hidden_layers 5 --correlation_strengths_file correlation_strengths.txt --train training_errors.txt --test testing_errors.txt --hyperparams default_hyperparams.json")
         exit(1)
     end
 
