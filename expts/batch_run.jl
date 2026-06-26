@@ -18,6 +18,7 @@ function generate_parallel_commands(
     working_dir::String=joinpath(@__DIR__, ".."),
     # Cluster settings.
     ncpus::Int=10,
+    mem_per_cpu::String="4G",
     max_nodes::Int=10,
     wall_time::String="4:00:00",
     email_address::String="pavithran.sridhar@gmail.com",
@@ -55,6 +56,7 @@ function generate_parallel_commands(
         working_dir=working_dir,
         # Cluster settings.
         ncpus=ncpus,
+        mem_per_cpu=mem_per_cpu,
         max_nodes=max_nodes,
         wall_time=wall_time,
         email_address=email_address,
@@ -78,6 +80,7 @@ function generate_parallel_commands(
     working_dir::String=joinpath(@__DIR__, ".."),
     # Cluster settings.
     ncpus::Int=10,
+    mem_per_cpu::String="4G",
     max_nodes::Int=10,
     wall_time::String="4:00:00",
     email_address::String="pavithran.sridhar@gmail.com",
@@ -132,6 +135,7 @@ function generate_parallel_commands(
             n_simulations,
             codename;
             n_cpus        = n_cpus_to_use,
+            mem_per_cpu   = mem_per_cpu,
             max_nodes     = max_nodes,
             wall_time     = wall_time,
             email_address = email_address,
@@ -158,6 +162,7 @@ function run_on_SLURM(
     n_commands::Int,
     codename::String;
     n_cpus::Int=10,
+    mem_per_cpu::String="4G",
     max_nodes::Int=10,
     wall_time::String="4:00:00",
     email_address::String="pavithran.sridhar@gmail.com",
@@ -197,12 +202,21 @@ function run_on_SLURM(
         "#SBATCH --array=0-$(n_nodes-1)",
         "#SBATCH --ntasks=1",
         "#SBATCH --cpus-per-task=$(n_cpus)",
+        "#SBATCH --mem-per-cpu=$(mem_per_cpu)",
         "#SBATCH --time=$(wall_time)",
         "",
         "#SBATCH --mail-type=ALL",
         "#SBATCH --mail-user=$(email_address)",
         "",
         "echo \"Running SLURM_ARRAY_TASK_ID=\${SLURM_ARRAY_TASK_ID}\"",
+        "",
+        "# Record exact start date and epoch time",
+        "START_TIME_SEC=\$(date +%s)",
+        "echo \"=========================================\"",
+        "echo \"Job started at: \$(date)\"",
+        "echo \"=========================================\"",
+        "",
+        "# Determine line range for this task",
         "",
         "# Determine line range for this task",
         "START=\$((SLURM_ARRAY_TASK_ID * $(commands_per_node) + 1))",
@@ -267,7 +281,23 @@ function run_on_SLURM(
         "# rsync -au strictly transfers newly generated or modified files.",
         "rsync -au \$LOCAL_WORK_DIR/ $(target_dir)/",
         "",
-        "echo \"Job completed and data safely transferred.\""
+        "echo \"Job completed and data safely transferred.\"",
+        "",
+        "######################################################################",
+        "# 4. Log the time taken for the job to complete and the completed date and time.",
+        "######################################################################",
+        "END_TIME_SEC=\$(date +%s)",
+        "DURATION_SEC=\$((END_TIME_SEC - START_TIME_SEC))",
+        "",
+        "HOURS=\$((DURATION_SEC / 3600))",
+        "MINUTES=\$(((DURATION_SEC % 3600) / 60))",
+        "SECONDS=\$((DURATION_SEC % 60))",
+        "",
+        "echo \"\"",
+        "echo \"=========================================\"",
+        "echo \"Job finished at: \$(date)\"",
+        "echo \"Total job execution time: \${HOURS}h \${MINUTES}m \${SECONDS}s\"",
+        "echo \"=========================================\""
     ]
 
     # Write the SLURM job script
@@ -396,6 +426,7 @@ function main(;
     hyperparams_file::String="hyperparams_epochs_10.toml",
     n_hidden_layers::Int=200,
     n_cpus::Int=64,
+    mem_per_cpu::String="4G",
     wall_time::String="1:00:00",
     email_address::String="pavithran.sridhar@gmail.com",
     max_nodes::Int=1,
@@ -426,6 +457,7 @@ function main(;
             working_dir = "$(data_dir)",
             # Cluster settings.
             ncpus = n_cpus,
+            mem_per_cpu = mem_per_cpu,
             max_nodes = max_nodes,
             wall_time = wall_time,
             email_address = email_address,
@@ -472,6 +504,10 @@ if abspath(PROGRAM_FILE) == @__FILE__
             help = "Number of CPUs to use for parallel execution."
             arg_type = Int
             default = 64
+        "--mem_per_cpu"
+            help = "Memory per CPU for the SLURM job."
+            arg_type = String
+            default = "4G"
         "--wall_time"
             help = "Wall time for the SLURM job."
             arg_type = String
@@ -502,11 +538,12 @@ if abspath(PROGRAM_FILE) == @__FILE__
         hyperparams_file = parsed_args["hyperparams_file"],
         n_hidden_layers = parsed_args["n_hidden_layers"],
         n_cpus = parsed_args["n_cpus"],
+        mem_per_cpu = parsed_args["mem_per_cpu"],
         wall_time = parsed_args["wall_time"],
         email_address = parsed_args["email"],
         max_nodes = parsed_args["max_nodes"]
     )
 
     # Example usage (from Shell in the `expts` directory):
-    # julia --project="./../" batch_run.jl --working_dir "./../data" --dirnames 72q_BB_p_0.010_std_0.01_q_0.000_std_0.00_data --p_vals 0.01 --qvals 0.001 --n_samples 64 --hyperparams_file hyperparams_epochs_10.toml --n_hidden_layers 50 --n_cpus 64 --wall_time 1:00:00 --email pavithran.sridhar@gmail.com --max_nodes 1
+    # julia --project="./../" batch_run.jl --working_dir "./../data" --dirnames 72q_BB_p_0.010_std_0.01_q_0.000_std_0.00_data --p_vals 0.01 --qvals 0.001 --n_samples 64 --hyperparams_file hyperparams_epochs_10.toml --n_hidden_layers 50 --n_cpus 64 --mem_per_cpu 4G --wall_time 1:00:00 --email pavithran.sridhar@gmail.com --max_nodes 1
 end
