@@ -151,18 +151,22 @@ end
 
 using Dates
 
+using Dates
+
 function run_on_SLURM(
     commands_file::String,
-    n_commands::Int;
+    n_commands::Int,
+    codename::String;
     n_cpus::Int=10,
     max_nodes::Int=10,
     wall_time::String="4:00:00",
     email_address::String="pavithran.sridhar@gmail.com",
     working_dir::String=joinpath(@__DIR__, ".."),
-    codename::String="aps"
 )
     """
     Run the commands in `commands_file` in parallel on a SLURM cluster.
+    Utilizes targeted directory mirroring to $SLURM_TMPDIR to isolate 
+    the specific `codename` folder and bypass network I/O bottlenecks.
     """
     timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")
     
@@ -241,19 +245,22 @@ function run_on_SLURM(
         "# rsync -a preserves structure. We strictly copy the codename folder contents.",
         "rsync -a $(target_dir)/ \$LOCAL_WORK_DIR/",
         "",
+        "# Dynamically replace whatever string follows --workdir with the fast local path.",
+        "# The regex [^ ]* matches any sequence of characters until a space is hit.",
+        "sed -i \"s|--workdir [^ ]*|--workdir \$SLURM_TMPDIR|g\" \$LOCAL_WORK_DIR/cluster/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt",
+        "",
         "######################################################################",
         "# 2. COMPUTE",
         "######################################################################",
         "LOCAL_LOGS=\"\$LOCAL_WORK_DIR/cluster/logs/node_\${SLURM_ARRAY_TASK_ID}\"",
         "mkdir -p \$LOCAL_LOGS",
         "",
-        "# Move INTO the local NVMe drive's expts folder",
-        "# This ensures your script's relative paths flawlessly resolve to the local drive",
-        "cd \$LOCAL_WORK_DIR/expts",
+        "# Anchor execution to the exact directory where you ran 'sbatch' (your network expts folder)",
+        "cd \$SLURM_SUBMIT_DIR",
         "",
-        "echo \"Running parallel computations locally...\"",
-        "# Because we rsynced the codename folder, the commands_chunk exists on the local drive",
-        "parallel --jobs $(n_cpus) --results \$LOCAL_LOGS < ../cluster/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt",
+        "echo \"Running parallel computations...\"",
+        "# Run GNU parallel using the freshly modified local commands chunk",
+        "parallel --jobs $(n_cpus) --results \$LOCAL_LOGS < \$LOCAL_WORK_DIR/cluster/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt",
         "",
         "######################################################################",
         "# 3. STAGE OUT: Save Results via Rsync",
