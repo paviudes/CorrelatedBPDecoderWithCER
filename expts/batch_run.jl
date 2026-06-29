@@ -153,10 +153,6 @@ function generate_parallel_commands(
     end
 end
 
-using Dates
-
-using Dates
-
 function run_on_SLURM(
     commands_file::String,
     n_commands::Int,
@@ -217,8 +213,6 @@ function run_on_SLURM(
         "echo \"=========================================\"",
         "",
         "# Determine line range for this task",
-        "",
-        "# Determine line range for this task",
         "START=\$((SLURM_ARRAY_TASK_ID * $(commands_per_node) + 1))",
         "END=\$((START + $(commands_per_node) - 1))",
         "",
@@ -244,8 +238,10 @@ function run_on_SLURM(
         "export BLAS_NUM_THREADS=1",
         "export JULIA_NUM_PRECOMPILE_TASKS=1",
         "",
-        "# Precompile serially on the isolated local disk",
-        "julia --project=$(target_dir) -e 'using Pkg; Pkg.precompile()'",
+        "# Safely instantiate and precompile on the local drive before launching parallel workers",
+        "julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'",
+        "# Disable concurrent auto-precompilation on the compute nodes to avoid deadlocks",
+        "export JULIA_PKG_PRECOMPILE_AUTO=0",
         "",
         "######################################################################",
         "# 1. STAGE IN: Mirror Targeted Project Folder to Fast Local Storage",
@@ -310,6 +306,7 @@ function run_on_SLURM(
     println("  Target codename  : $codename")
     println("  Total commands   : $n_commands")
     println("  CPUs per node    : $n_cpus")
+    println("  Mem per CPU      : $mem_per_cpu")
     println("  Nodes in use     : $n_nodes")
     println("  Commands per node: $commands_per_node")
     println("  Wall time        : $wall_time")
@@ -319,7 +316,6 @@ function run_on_SLURM(
     println("\n=== Submission ===")
     println("  sbatch $slurm_script_file\n")
 end
-
 
 function run_on_Google_VM(commands_file::String, output_file::String, n_cpus::Int=10)
     """
@@ -545,5 +541,5 @@ if abspath(PROGRAM_FILE) == @__FILE__
     )
 
     # Example usage (from Shell in the `expts` directory):
-    # julia --project="./../" batch_run.jl --working_dir "./../data" --dirnames 72q_BB_p_0.010_std_0.01_q_0.000_std_0.00_data --p_vals 0.01 --qvals 0.001 --n_samples 64 --hyperparams_file hyperparams_epochs_10.toml --n_hidden_layers 50 --n_cpus 64 --mem_per_cpu 4G --wall_time 1:00:00 --email pavithran.sridhar@gmail.com --max_nodes 1
+    # julia --project="./../" batch_run.jl --working_dir "./../data" --dirnames 72q_BB_p_0.010_std_0.01_q_0.000_std_0.00_data --p_vals 0.01 --qvals 0.001 --n_samples 64 --hyperparams_file hyperparams_epochs_10.toml --n_hidden_layers 50 --n_cpus 64 --mem_per_cpu 4G --wall_time 3:00:00 --email pavithran.sridhar@gmail.com --max_nodes 1
 end
