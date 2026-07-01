@@ -8,7 +8,6 @@ module CorrelatedBPDecoderWithCER
 using LinearAlgebra     # Matrix operations, decompositions, linear algebra functions
 using SparseArrays      # Sparse matrix representations for efficiency
 using Base.Threads      # Multi-threading for parallel computations
-BLAS.set_num_threads(Threads.nthreads()) # Set BLAS to use the same number of threads as Julia
 using Random            # Random number generation for error sampling and initialization
 using JSON              # Reading/writing JSON configuration and data files
 using TOML              # TOML file parsing for configuration management
@@ -18,16 +17,40 @@ using ProgressMeter     # Progress bars for training and other long operations
 using ArgParse          # Command-line argument parsing for flexible execution
 using Printf            # Formatted printing for error model parameters
 
+# Set BLAS to use the same number of threads as Julia
+BLAS.set_num_threads(Threads.nthreads())
 
-# GPU acceleration (conditionally loaded based on environment variable)
+# GPU acceleration (conditionally loaded based on environment variables)
+#
+# Two env vars control the GPU path:
+#   USE_GPU       = "1" to enable any GPU code path. Anything else disables it.
+#   GPU_BACKEND   = "metal" (default, Apple Silicon) or "cuda" (NVIDIA, HPC).
+#
+# Only one backend is loaded per Julia session — choose at startup with:
+#   export USE_GPU="1" GPU_BACKEND="cuda"     # Linux HPC with NVIDIA GPUs
+#   export USE_GPU="1" GPU_BACKEND="metal"    # macOS / Apple Silicon (default)
+#   export USE_GPU="0"                      # CPU only; falls back to forward_pass_with_weights
 const USE_GPU = get(ENV, "USE_GPU", "0") == "1"
+const GPU_BACKEND = lowercase(get(ENV, "GPU_BACKEND", "metal"))
 @static if USE_GPU
-    @eval begin
-        import Metal
-        const METAL_LOADED = true
+    if GPU_BACKEND == "cuda"
+        @eval begin
+            import CUDA
+            const METAL_LOADED = false
+            const CUDA_LOADED  = true
+        end
+    elseif GPU_BACKEND == "metal"
+        @eval begin
+            import Metal
+            const METAL_LOADED = true
+            const CUDA_LOADED  = false
+        end
+    else
+        error("Unknown GPU_BACKEND=\"$(GPU_BACKEND)\". Must be \"metal\" or \"cuda\".")
     end
 else
     const METAL_LOADED = false
+    const CUDA_LOADED  = false
 end
 
 # Data manipulation and analysis
@@ -58,7 +81,7 @@ include("tanner_graph.jl")
 export TannerGraph, print_tanner_graph, QuantumCode, measure_syndrome, print_code_info
 
 # Configuration constants
-export USE_GPU, METAL_LOADED
+export USE_GPU, GPU_BACKEND, METAL_LOADED, CUDA_LOADED
 
 # Quantum error correction codes
 include("hypergraph_product_code.jl")
@@ -98,7 +121,7 @@ export BPSettings, print_bp_settings, belief_propagation_decoder,
 
 # Command line interface
 include("command_line.jl")
-export parse_command_line_args_BP, parse_command_line_args_NN, print_arguments, generate_runs, parse_hyper_parameters
+export parse_command_line_args_BP, parse_command_line_args_NN, print_arguments, generate_runs, parse_hyper_parameters, disable_retrain_in_hyperparams
 
 # Neural belief propagation
 include("neuralbase.jl")

@@ -356,3 +356,30 @@ function parse_hyper_parameters(hyperparams_file::String=""; prefix::String="./.
         return default_hyperparams
     end
 end
+
+function disable_retrain_in_hyperparams(hyperparams_file::String)
+	"""
+	Stream-edit the TOML file at `hyperparams_file` to flip `retrain = true` to
+	`retrain = false`, in place. Uses `sed` so comments, blank lines, key ordering,
+	and TOML formatting are preserved exactly — only the literal `true` token
+	following `retrain =` is replaced.
+
+	The regex anchors on whole lines (`^...\$`) and requires `true` to be followed
+	either by end-of-line, whitespace, or a `#` comment, so it won't touch
+	values like `truecolor` or quoted strings `"true"`. Lines that already have
+	`retrain = false` (or no `retrain` key) are passed through unchanged.
+
+	`sed -E` (extended regexes) is supported on both BSD sed (macOS) and GNU sed
+	(Linux clusters). We pipe through a fresh buffer instead of using `sed -i`
+	because BSD and GNU disagree on the in-place flag's syntax.
+	"""
+	if !isfile(hyperparams_file)
+		error("Hyperparams file not found: $(hyperparams_file)")
+	end
+
+	sed_expr = raw"s|^([[:space:]]*retrain[[:space:]]*=[[:space:]]*)true([[:space:]]*(#.*)?)$|\1false\2|"
+	new_contents = read(`sed -E $(sed_expr) $(hyperparams_file)`, String)
+	write(hyperparams_file, new_contents)
+
+	return hyperparams_file
+end

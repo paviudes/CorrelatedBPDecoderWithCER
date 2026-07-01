@@ -12,26 +12,19 @@
 # matrices are densified (Metal has no usable sparse linalg); for the ~12-edge
 # Tanner graphs of small codes this is essentially free.
 #
-# Usage:
-#   include("src/forward_gpu.jl")
-#   using .NeuralBPGPU
-#   posteriors = NeuralBPGPU.forward_pass_gpu(bpnn, initial_llrs_batch, syndromes_batch)
-#
-# Inputs (CPU):
-#   bpnn::NachmaniNeuralBP
-#   initial_llrs_batch :: Matrix{Float32},       (n_bits × n_samples)
-#   syndromes_batch    :: BitMatrix,             (n_checks × n_samples)
-# Output (CPU):
-#   posteriors :: Array{Float32, 3},             (n_bits × n_samples × n_layers)
 # ----------------------------------------------------------------------------
 
 # ============================================================================
-# BACKEND — conditionally defined based on USE_GPU environment variable
-#   Apple Silicon (M-series): ArrayT = Metal.MtlArray (when USE_GPU=1)
-#   CPU fallback:             ArrayT = Array (when USE_GPU=0)
+# BACKEND — conditionally defined based on USE_GPU / GPU_BACKEND env vars
+#   Apple Silicon (M-series): ArrayT = Metal.MtlArray (USE_GPU=1, GPU_BACKEND=metal)
+#   NVIDIA (HPC):             ArrayT = CUDA.CuArray   (USE_GPU=1, GPU_BACKEND=cuda)
+#   CPU fallback:             ArrayT = Array          (USE_GPU=0)
 # ============================================================================
 @static if CorrelatedBPDecoderWithCER.USE_GPU && CorrelatedBPDecoderWithCER.METAL_LOADED
     const ArrayT = CorrelatedBPDecoderWithCER.Metal.MtlArray
+    const GPU_AVAILABLE = true
+elseif CorrelatedBPDecoderWithCER.USE_GPU && CorrelatedBPDecoderWithCER.CUDA_LOADED
+    const ArrayT = CorrelatedBPDecoderWithCER.CUDA.CuArray
     const GPU_AVAILABLE = true
 else
     const ArrayT = Array
@@ -266,7 +259,7 @@ function forward_pass_gpu(
     syndromes_batch::BitMatrix;
     chunk_size::Int = 0,
 )
-    n_samples = size(initial_llrs_batch, 2)
+    n_samples = size(initial_llrs_batch::AbstractMatrix{Float32}, 2)
     n_bits    = bpnn.base.code_n_bits
     n_layers  = bpnn.base.n_layers
 
@@ -278,6 +271,10 @@ function forward_pass_gpu(
         budget_bytes = try
             if GPU_AVAILABLE && CorrelatedBPDecoderWithCER.METAL_LOADED
                 Int(CorrelatedBPDecoderWithCER.Metal.device().maxBufferLength) ÷ 4
+            elseif GPU_AVAILABLE && CorrelatedBPDecoderWithCER.CUDA_LOADED
+                # CUDA.available_memory() returns free VRAM in bytes on the current device.
+                # Use 1/4 of free memory so per-layer intermediates and weights still fit.
+                Int(CorrelatedBPDecoderWithCER.CUDA.available_memory()) ÷ 4
             else
                 Int(2^30)   # 1 GB fallback for CPU
             end
