@@ -127,7 +127,7 @@ function neuralbp_test_predictions(bpnn::NeuralBP, test_errors_file::String)::Bi
     test_errors = convert.(Bool, readdlm(test_errors_file, Int))
     test_syndromes = convert.(Bool, mod.(bpnn.base.parity_check_matrix * test_errors, 2))
     # start = time()
-    is_correct = predict_and_check_neuralbp(bpnn, test_syndromes, test_errors; batch_size=4096)
+    is_correct = predict_and_check_neuralbp(bpnn, test_syndromes, test_errors; batch_size=16384)
     # runtime = time() - start
     # println("[", round(runtime, digits=2), "s] elapsed. Predicted recoveries computed and verified.")
     return is_correct

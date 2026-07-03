@@ -87,15 +87,15 @@ function run_locally(
             "# --- Runtime GPU detection ---",
             "# Metal on Apple Silicon, CUDA on Linux + nvidia-smi, else CPU.",
             "GPU_BACKEND=\"\"",
-            "USE_GPU=0",
+            "USE_GPU=\"0\"",
             "N_GPUS=0",
             "if [[ \"\$(uname -s)\" == \"Darwin\" && \"\$(uname -m)\" == \"arm64\" ]]; then",
-            "    USE_GPU=1",
+            "    USE_GPU=\"1\"",
             "    GPU_BACKEND=\"metal\"",
             "    N_GPUS=1",
             "    echo \"[gpu] detected Apple Silicon; USE_GPU=1 GPU_BACKEND=metal\"",
             "elif command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then",
-            "    USE_GPU=1",
+            "    USE_GPU=\"1\"",
             "    GPU_BACKEND=\"cuda\"",
             "    N_GPUS=\$(nvidia-smi -L | wc -l | tr -d ' ')",
             "    echo \"[gpu] detected \$N_GPUS NVIDIA GPU(s); USE_GPU=1 GPU_BACKEND=cuda\"",
@@ -137,25 +137,70 @@ function run_locally(
         "",
     ]
 
-    # Choose the parallel invocation. In test mode + CUDA we set CUDA_VISIBLE_DEVICES
-    # per slot (single quotes defer $((...)) expansion until parallel substitutes {%}).
-    # In test mode + Metal there's only one device, so no per-slot binding is needed.
-    # In train mode we just fan out.
-    parallel_cmd_train = "parallel --bar --jobs \$JOBS --results $(logs_dir) < $(commands_file)"
-    parallel_cmd_test  = "if [ \"\$GPU_BACKEND\" = \"cuda\" ]; then\n" *
-                         "    parallel --bar --jobs \$JOBS --results $(logs_dir) 'CUDA_VISIBLE_DEVICES=\$(({%} - 1)) {}' :::: $(commands_file)\n" *
-                         "else\n" *
-                         "    parallel --bar --jobs \$JOBS --results $(logs_dir) < $(commands_file)\n" *
-                         "fi"
+    # Execution block. Branch at RUN time (not generation time) so the same
+    # script works both when JOBS collapses to 1 (Apple Silicon Metal, or any
+    # single-GPU / single-core machine) and when JOBS > 1 (multi-GPU Linux box).
+    #
+    # JOBS == 1  → sequential via bash. Skips GNU parallel entirely (no
+    #              --results bookkeeping, no launch overhead), and flips
+    #              `--quiet true` → `--quiet false` in each command line so
+    #              Julia's progress bar prints live to the terminal instead
+    #              of getting hidden in a parallel results file.
+    # JOBS  > 1  → GNU parallel. In test mode + CUDA we set CUDA_VISIBLE_DEVICES
+    #              per slot (single quotes defer \$((...)) evaluation until
+    #              parallel substitutes {%}). In Metal there's only one device,
+    #              so no per-slot binding is needed.
+    seq_block = [
+        "    # Sequential path — one command at a time, live stdout, --quiet=false.",
+        "    total=\$(wc -l < $(commands_file) | tr -d ' ')",
+        "    line_num=0",
+        "    while IFS= read -r cmd; do",
+        "        line_num=\$((line_num + 1))",
+        "        # Enable progress output for the one command we're about to run.",
+        "        cmd_verbose=\"\${cmd/--quiet true/--quiet false}\"",
+        "        echo \"\"",
+        "        echo \"=============== [\$line_num/\$total] ===============\"",
+        "        echo \"\$ \$cmd_verbose\"",
+        "        echo \"====================================================\"",
+        "        eval \"\$cmd_verbose\"",
+        "    done < $(commands_file)",
+    ]
+    parallel_test_cuda = [
+        "    # `bash -c {}` is required: parallel shell-quotes {} before substitution,",
+        "    # so without bash -c the shell tries to exec the whole julia command as a",
+        "    # single filename and errors with \"No such file or directory\". bash -c",
+        "    # re-parses the quoted string as a shell command line.",
+        "    parallel --bar --jobs \$JOBS --results $(logs_dir) 'CUDA_VISIBLE_DEVICES=\$(({%} - 1)) bash -c {}' :::: $(commands_file)",
+    ]
+    parallel_generic = [
+        "    parallel --bar --jobs \$JOBS --results $(logs_dir) < $(commands_file)",
+    ]
+
+    exec_block = vcat(
+        ["if [ \"\$JOBS\" -eq 1 ]; then"],
+        seq_block,
+        (is_test_mode ?
+            vcat(["elif [ \"\$GPU_BACKEND\" = \"cuda\" ]; then"], parallel_test_cuda) :
+            String[]),
+        ["else"],
+        parallel_generic,
+        ["fi"],
+    )
 
     logs_dir_line = "mkdir -p $(logs_dir)  # ensure logs dir exists"
-    body = [
-        logs_dir_line,
-        "",
-        "echo \"[run] launching \$JOBS parallel worker(s)...\"",
-        is_test_mode ? parallel_cmd_test : parallel_cmd_train,
-        "",
-    ]
+    body = vcat(
+        [
+            logs_dir_line,
+            "",
+            "if [ \"\$JOBS\" -eq 1 ]; then",
+            "    echo \"[run] JOBS=1 — running commands sequentially in bash (--quiet false).\"",
+            "else",
+            "    echo \"[run] JOBS=\$JOBS — launching GNU parallel workers.\"",
+            "fi",
+        ],
+        exec_block,
+        [""],
+    )
 
     footer = [
         "END_TIME_SEC=\$(date +%s)",
