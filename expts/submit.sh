@@ -108,6 +108,11 @@ n_gpus_per_node  = 1
 gpu_type         = ""
 # Cluster's CUDA module name (used only on SLURM test mode).
 cuda_module      = "cuda"
+# Memory per GPU (test mode only, e.g. "16G"). When non-empty this OVERRIDES
+# mem_per_cpu — SLURM disallows both --mem-per-gpu and --mem-per-cpu at once.
+# Alliance Canada docs list --mem-per-gpu as a supported GPU directive.
+# Leave empty ("") to keep using mem_per_cpu instead.
+mem_per_gpu      = ""
 
 EOF
 

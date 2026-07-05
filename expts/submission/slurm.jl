@@ -28,6 +28,7 @@ function run_on_SLURM(
     n_gpus_per_node::Int=1,      # only used when mode == :test
     gpu_type::String="",         # Alliance model specifier: "h100", "a100", "l40s", "h200", "mi300a", "v100", "" (any)
     cuda_module::String="cuda",  # cluster's CUDA module name (e.g. "cuda/12")
+    mem_per_gpu::String="",      # SLURM `--mem-per-gpu` (test mode only). Empty ⇒ use `--mem-per-cpu` instead.
 )
     """
     Run the commands in `commands_file` in parallel on a SLURM cluster.
@@ -76,6 +77,16 @@ function run_on_SLURM(
     jobname = "$(script_prefix)_$(timestamp)"
 
     # --- SBATCH header (mode-dependent) ---
+    # Memory directive: SLURM's `--mem-per-gpu`, `--mem-per-cpu`, `--mem`, and
+    # `--mem-per-node` are mutually exclusive — specifying two causes the job to
+    # be rejected or behave unpredictably. When the caller provides `mem_per_gpu`
+    # AND we're in test mode (so GPUs are actually requested), we emit
+    # `--mem-per-gpu` INSTEAD of `--mem-per-cpu`. Alliance Canada docs list
+    # `--mem-per-gpu` as a supported GPU-resource directive.
+    use_mem_per_gpu = is_test_mode && !isempty(mem_per_gpu)
+    mem_directive = use_mem_per_gpu ? "#SBATCH --mem-per-gpu=$(mem_per_gpu)" :
+                                      "#SBATCH --mem-per-cpu=$(mem_per_cpu)"
+
     sbatch_header = [
         "#!/bin/bash",
         "#SBATCH --account=$(account)",
@@ -85,7 +96,7 @@ function run_on_SLURM(
         "#SBATCH --array=0-$(n_nodes-1)",
         "#SBATCH --ntasks=1",
         "#SBATCH --cpus-per-task=$(n_cpus)",
-        "#SBATCH --mem-per-cpu=$(mem_per_cpu)",
+        mem_directive,
         "#SBATCH --time=$(wall_time)",
     ]
     if is_test_mode
@@ -100,6 +111,12 @@ function run_on_SLURM(
                     Alliance Canada may reject the job or assign an arbitrary GPU.
                     Pass e.g. gpu_type=\"h100\", \"a100\", \"l40s\", or \"h200\"."""
         end
+    elseif !isempty(mem_per_gpu)
+        # Non-test mode ignores mem_per_gpu since no GPU is requested. Flag it
+        # so the user notices the value is being ignored rather than applied.
+        @warn """`mem_per_gpu` = $(repr(mem_per_gpu)) is ignored outside test mode
+                (train mode requests no GPU, so `--mem-per-gpu` is meaningless).
+                Using `--mem-per-cpu=$(mem_per_cpu)` instead."""
     end
     append!(sbatch_header, [
         "",
@@ -302,7 +319,11 @@ function run_on_SLURM(
         println("  GPUs per node    : $n_gpus_per_node")
         println("  CUDA module      : $cuda_module")
     end
-    println("  Mem per CPU      : $mem_per_cpu")
+    if use_mem_per_gpu
+        println("  Mem per GPU      : $mem_per_gpu  (overrides mem_per_cpu in test mode)")
+    else
+        println("  Mem per CPU      : $mem_per_cpu")
+    end
     println("  Nodes in use     : $n_nodes")
     println("  Commands per node: $commands_per_node")
     println("  Jobs per node    : $jobs_per_node")

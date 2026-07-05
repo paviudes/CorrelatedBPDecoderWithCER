@@ -45,6 +45,7 @@ function generate_parallel_commands(
     n_gpus_per_node::Int=1,
     gpu_type::String="",
     cuda_module::String="cuda",
+    mem_per_gpu::String="",   # SLURM `--mem-per-gpu` (test mode only). Empty ⇒ use `--mem-per-cpu`.
 )
     """
     Grid form: build cer/train/test filenames from `pvals × qvals × 1:n_samples`
@@ -87,6 +88,7 @@ function generate_parallel_commands(
         n_gpus_per_node   = n_gpus_per_node,
         gpu_type          = gpu_type,
         cuda_module       = cuda_module,
+        mem_per_gpu       = mem_per_gpu,
     )
 end
 
@@ -113,6 +115,7 @@ function generate_parallel_commands(
     n_gpus_per_node::Int=1,
     gpu_type::String="",
     cuda_module::String="cuda",
+    mem_per_gpu::String="",   # SLURM `--mem-per-gpu` (test mode only). Empty ⇒ use `--mem-per-cpu`.
 )
     """
     Explicit-list form: write commands.txt (one julia neural_bp_experiments.jl
@@ -168,6 +171,7 @@ function generate_parallel_commands(
             n_gpus_per_node = n_gpus_per_node,
             gpu_type        = gpu_type,
             cuda_module     = cuda_module,
+            mem_per_gpu     = mem_per_gpu,
         )
     elseif backend == "local"
         # Generate a runnable train_local_<ts>.sh or test_local_<ts>.sh (per mode)

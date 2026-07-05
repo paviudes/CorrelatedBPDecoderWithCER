@@ -63,6 +63,7 @@ function generate_batch_runs(;
     n_gpus_per_node::Int=1,
     gpu_type::String="",
     cuda_module::String="cuda",
+    mem_per_gpu::String="",   # SLURM --mem-per-gpu (test mode only). Empty ⇒ use --mem-per-cpu instead.
 )
     """
     Generate a submission script for the given codenames, pvals, and qvals.
@@ -98,6 +99,7 @@ function generate_batch_runs(;
             n_gpus_per_node  = n_gpus_per_node,
             gpu_type         = gpu_type,
             cuda_module      = cuda_module,
+            mem_per_gpu      = mem_per_gpu,
         )
     end
 end
@@ -232,6 +234,12 @@ if abspath(PROGRAM_FILE) == @__FILE__
             help = "Name of the CUDA module to load in SLURM test mode (e.g. cuda, cuda/12.2)."
             arg_type = String
             default = "cuda"
+        "--mem_per_gpu"
+            help = "SLURM --mem-per-gpu memory allocation (test mode only, e.g. \"16G\"). " *
+                   "When set, overrides --mem-per-cpu (SLURM disallows both at once). " *
+                   "Empty (default) = use --mem-per-cpu instead."
+            arg_type = String
+            default = ""
     end
 
     parsed_args = parse_args(settings)
@@ -267,6 +275,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
         n_gpus_per_node  = parsed_args["n_gpus_per_node"],
         gpu_type         = parsed_args["gpu_type"],
         cuda_module      = parsed_args["cuda_module"],
+        mem_per_gpu      = parsed_args["mem_per_gpu"],
     )
 
     # Example usage (from Shell in the `expts` directory):
