@@ -105,14 +105,14 @@ n_gpus_per_node  = 1
 # Alliance Canada model specifier. Empty means "any" — the docs warn this may
 # cause SLURM to reject the job. Valid values from the docs table:
 #   "h100", "a100", "l40s", "h200", "mi300a", "v100"
-gpu_type         = ""
+gpu_type         = "a100"
 # Cluster's CUDA module name (used only on SLURM test mode).
 cuda_module      = "cuda"
 # Memory per GPU (test mode only, e.g. "16G"). When non-empty this OVERRIDES
 # mem_per_cpu — SLURM disallows both --mem-per-gpu and --mem-per-cpu at once.
 # Alliance Canada docs list --mem-per-gpu as a supported GPU directive.
 # Leave empty ("") to keep using mem_per_cpu instead.
-mem_per_gpu      = ""
+mem_per_gpu      = "4G"
 
 EOF
 

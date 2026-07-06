@@ -26,10 +26,36 @@ using ArgParse
 using LinearAlgebra
 using TOML
 
-# `disable_retrain_in_hyperparams` (sed-based TOML editor) is exported from
-# src/command_line.jl. Used by generate_batch_runs() when --test is passed so the test job
-# loads the trained weights instead of retraining.
-using CorrelatedBPDecoderWithCER
+# NOTE: we deliberately do NOT `using CorrelatedBPDecoderWithCER` here. That
+# package pulls in Enzyme + Flux + Zygote + DataFrames + Plots — great for
+# training/testing, catastrophic for a submission-side driver that runs on an
+# HPC login node where precompile invalidation triggers `lld` SIGBUS under
+# the login node's resource throttling.
+#
+# The only symbol we'd get from the package is `disable_retrain_in_hyperparams`
+# (see src/command_line.jl for the canonical copy). We reproduce it inline
+# below — it's a tiny sed shell-out, worth duplicating to keep this driver
+# loadable from anywhere with just TOML + ArgParse + Dates.
+
+"""
+    disable_retrain_in_hyperparams(hyperparams_file::String)
+
+Stream-edit the TOML at `hyperparams_file` to flip `retrain = true` to
+`retrain = false`, preserving comments and key ordering. Uses `sed -E` so
+it works on both BSD sed (macOS) and GNU sed (Linux clusters).
+
+Kept in sync with `src/command_line.jl`'s canonical copy — if you change one,
+change the other.
+"""
+function disable_retrain_in_hyperparams(hyperparams_file::String)
+    if !isfile(hyperparams_file)
+        error("Hyperparams file not found: $(hyperparams_file)")
+    end
+    sed_expr = raw"s|^([[:space:]]*retrain[[:space:]]*=[[:space:]]*)true([[:space:]]*(#.*)?)$|\1false\2|"
+    new_contents = read(`sed -E $(sed_expr) $(hyperparams_file)`, String)
+    write(hyperparams_file, new_contents)
+    return hyperparams_file
+end
 
 # The four extracted modules live in the submission/ subfolder.
 include("submission/slurm.jl")
