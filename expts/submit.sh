@@ -130,7 +130,7 @@ account          = "def-jemerson"
 # Size per test-mode invocation. For train mode (test=false, no GPU), you can
 # safely go up to 32–48 cores with 4G–8G/core on a CPU node.
 n_cpus           = 1
-mem_per_cpu      = "15G"
+mem_per_cpu      = "16G"
 
 wall_time        = "1:00:00"
 max_nodes        = 1
