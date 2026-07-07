@@ -118,8 +118,8 @@ function run_locally(
     else
         [
             "# --- Train mode is CPU-only ---",
-            "export USE_GPU=\"0\"",
-            "export GPU_BACKEND=\"\"",
+            "export USE_GPU=0",
+            "export GPU_BACKEND=",
             "JOBS=$(n_cpus)",
             "",
         ]

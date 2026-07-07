@@ -11,6 +11,17 @@
 # $EDITOR set), the script skips the editor step and just tells you the file
 # path and the command to run manually.
 #
+# HPC resource-ratio caveat (VERY important — this is how you avoid waiting
+# forever in the queue). Every Alliance Canada cluster has a bundle ratio
+# tying together GPU count, CPU cores, and memory. Requests that exceed the
+# ratio get charged for the "missing" resource and drop down the priority
+# stack. Bundle sizes are in Table "Ratios in bundles" at:
+#     https://docs.alliancecan.ca/wiki/Allocations_and_compute_scheduling#Ratios_in_bundles
+# The TOML this script writes has defaults sized for a Narval A100 MIG 1g.5gb
+# instance (1 core, 15 GB) — most abundant, near-zero queue wait, perfect for
+# small tests. See the annotated comments in the TOML for how to size up if
+# you actually need a whole A100 or a full CPU node for training.
+#
 # Usage:
 #     bash submit.sh                    # write TOML, edit, run
 #     bash submit.sh --no-edit          # write TOML, print command, don't edit
@@ -87,10 +98,40 @@ n_hidden_layers  = 200
 # "Google_VM" Google Cloud VM with auto-shutdown after the job finishes
 cluster_backend  = "SLURM"
 
+# ----------------------------------------------------------------------------
+# HPC RESOURCE SIZING
+# ----------------------------------------------------------------------------
+# Every Alliance cluster has a "bundle ratio" tying GPU count, CPU cores, and
+# memory together. Requests that exceed the ratio get charged as if you were
+# holding the extra resources → the scheduler treats you as a high-usage
+# consumer and drops your priority.
+#
+# Table: https://docs.alliancecan.ca/wiki/Allocations_and_compute_scheduling#Ratios_in_bundles
+#
+# Narval A100 bundle sizes (per GPU / MIG instance):
+#   Model            Fraction   Recommended per-GPU        Availability
+#   a100             100%       12 cores, 124 GB           scarce, long wait
+#   a100_3g.20gb     50%         6 cores,  62 GB           moderate
+#   a100_2g.10gb     28%         3 cores,  31 GB           abundant
+#   a100_1g.5gb      14%         1 core,   15 GB           MOST abundant, near-zero wait
+#
+# CPU-only nodes (train mode) don't share the GPU bundle rule but do have
+# their own core-per-RGU ratio. Narval CPU nodes have 48 cores each; typical
+# training jobs use 32–48 cores per node with 4 GB/core.
+#
+# The defaults below are sized for the smallest MIG A100 instance — great for
+# small tests (72q decoder etc.) with minimal queue wait. If you need bigger,
+# bump n_cpus, mem_per_cpu, and gpu_type TOGETHER to stay inside the bundle.
+# ----------------------------------------------------------------------------
+
 # --- HPC resources (ignored on non-SLURM backends) ---
 account          = "def-jemerson"
-n_cpus           = 64
-mem_per_cpu      = "4092M"
+
+# Size per test-mode invocation. For train mode (test=false, no GPU), you can
+# safely go up to 32–48 cores with 4G–8G/core on a CPU node.
+n_cpus           = 1
+mem_per_cpu      = "15G"
+
 wall_time        = "1:00:00"
 max_nodes        = 1
 email            = "pavithran.sridhar@gmail.com"
@@ -102,17 +143,25 @@ test             = false
 
 # --- GPU knobs (used when test = true) ---
 n_gpus_per_node  = 1
-# Alliance Canada model specifier. Empty means "any" — the docs warn this may
-# cause SLURM to reject the job. Valid values from the docs table:
-#   "h100", "a100", "l40s", "h200", "mi300a", "v100"
-gpu_type         = "a100"
+
+# Alliance Canada GPU model specifier. Pick a MIG instance for small tests
+# (near-zero queue wait); pick "a100" only if you actually need the full GPU.
+# The 72q/90q/144q BB decoders comfortably fit in a 1g.5gb MIG.
+#   Narval:  "a100_1g.5gb"  (default, MIG 14%),  "a100_2g.10gb"  (MIG 28%),
+#            "a100_3g.20gb" (MIG 50%),           "a100"          (whole GPU)
+#   Fir/Nibi/Rorqual/Trillium:  "h100" and its "h100_*g.*gb" MIG variants
+# See the ratios table linked in the header comment above.
+gpu_type         = "a100_1g.5gb"
+
 # Cluster's CUDA module name (used only on SLURM test mode).
 cuda_module      = "cuda"
+
 # Memory per GPU (test mode only, e.g. "16G"). When non-empty this OVERRIDES
 # mem_per_cpu — SLURM disallows both --mem-per-gpu and --mem-per-cpu at once.
-# Alliance Canada docs list --mem-per-gpu as a supported GPU directive.
-# Leave empty ("") to keep using mem_per_cpu instead.
-mem_per_gpu      = "4G"
+# For MIG instances it's usually simpler to set mem_per_cpu = "<bundle mem>"
+# and leave this empty. Only use mem_per_gpu when you request multiple GPUs
+# per node and want the memory scaled per-GPU rather than per-CPU.
+mem_per_gpu      = ""
 
 EOF
 

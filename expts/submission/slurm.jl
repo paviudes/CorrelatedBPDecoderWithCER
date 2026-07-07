@@ -133,13 +133,13 @@ function run_on_SLURM(
     gpu_env_lines = if is_test_mode
         [
             "# Enable CUDA backend in CorrelatedBPDecoderWithCER",
-            "export USE_GPU=\"1\"",
-            "export GPU_BACKEND=\"cuda\"",
+            "export USE_GPU=1",
+            "export GPU_BACKEND=cuda",
         ]
     else
         [
             "# Disable GPU usage",
-            "export USE_GPU=\"0\"",
+            "export USE_GPU=0",
         ]
     end
 
@@ -169,8 +169,14 @@ function run_on_SLURM(
 
     cuda_sanity_lines = is_test_mode ? [
         "",
-        "# Quick CUDA sanity check — fails loudly if CUDA.jl can't see a GPU.",
-        "julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using CUDA; @assert CUDA.functional(); println(\"CUDA OK: \", CUDA.name(CUDA.device()))'",
+        "# --- CUDA visibility diagnostics (surface in .out for postmortems) ---",
+        "# CUDA_Runtime_jll is configured via LocalPreferences.toml at the project",
+        "# root to use the system CUDA (local_toolkit=true) — no artifact download",
+        "# attempted. That's why `module load cuda` above must precede julia.",
+        "echo \"[cuda] CUDA_VISIBLE_DEVICES=\${CUDA_VISIBLE_DEVICES:-<unset>}\"",
+        "echo \"[cuda] nvcc version:\"",
+        "nvcc --version 2>&1 | tail -1 | sed 's/^/[cuda]   /'",
+        "julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using CUDA; @assert CUDA.functional(); println(\"CUDA OK: \", CUDA.name(CUDA.device()), \" (runtime v\", CUDA.runtime_version(), \")\")'",
     ] : String[]
 
     slurm_script_lines = vcat(
@@ -197,14 +203,22 @@ function run_on_SLURM(
         module_load_lines,
         [
             "# Copy the depot into node-local storage so precompilation and package",
-            "# loading are fast. Source is the first entry of the caller's",
-            "# JULIA_DEPOT_PATH (which sbatch inherits), falling back to \$HOME/.julia",
-            "# for setups that haven't moved the depot yet. This works whether the",
-            "# depot lives on /home, /scratch, or anywhere else.",
-            "SOURCE_DEPOT=\"\${JULIA_DEPOT_PATH%%:*}\"",
-            "SOURCE_DEPOT=\"\${SOURCE_DEPOT:-\$HOME/.julia}\"",
-            "cp -r \"\$SOURCE_DEPOT\" \"\$SLURM_TMPDIR/\"",
-            "export JULIA_DEPOT_PATH=\"\$SLURM_TMPDIR/\$(basename \"\$SOURCE_DEPOT\")\"",
+            "# Depot policy: use \$SCRATCH/.julia (or the caller's JULIA_DEPOT_PATH)",
+            "# DIRECTLY — no copy to \$SLURM_TMPDIR. Two reasons:",
+            "#   1. Skipping the cp saves 1-3 min of job startup for a full depot.",
+            "#   2. Any .ji files newly baked during this job (e.g. after a Julia or",
+            "#      CUDA module version bump) persist to \$SCRATCH so the next job",
+            "#      doesn't repeat the work. \$SLURM_TMPDIR would wipe them.",
+            "# Julia's own file-lock (mkpidlock) protects against concurrent-job",
+            "# precompile races on the shared depot.",
+            "if [ -n \"\$JULIA_DEPOT_PATH\" ]; then",
+            "    :  # respect what the caller (login-shell .bashrc) already set",
+            "elif [ -n \"\$SCRATCH\" ] && [ -d \"\$SCRATCH/.julia\" ]; then",
+            "    export JULIA_DEPOT_PATH=\"\$SCRATCH/.julia\"",
+            "else",
+            "    export JULIA_DEPOT_PATH=\"\$HOME/.julia\"",
+            "fi",
+            "echo \"[depot] JULIA_DEPOT_PATH=\$JULIA_DEPOT_PATH\"",
             "",
         ],
         gpu_env_lines,
@@ -261,11 +275,17 @@ function run_on_SLURM(
             "# Canada docs: \"Packing single-GPU jobs within one SLURM job\") so",
             "# concurrent jobs don't fight over GPU 0. {%} is parallel's slot index",
             "# (1..n_gpus_per_node); single quotes defer \$((...)) evaluation.",
-            "# `bash -c {}` is required: GNU parallel shell-quotes {} before",
-            "# substitution, so without `bash -c` the shell tries to exec the whole",
-            "# julia command line as a single filename and errors with \"No such file",
-            "# or directory\". `bash -c '<quoted-cmd>'` re-parses it as a shell command.",
-            is_test_mode ?
+            "# `bash -c {}` is required in the multi-GPU case: GNU parallel shell-quotes",
+            "# {} before substitution, so without `bash -c` the shell would try to exec",
+            "# the whole julia command line as a single filename and fail with \"No such",
+            "# file or directory\". `bash -c '<quoted-cmd>'` re-parses it as a shell command.",
+            "# CAVEAT — MIG instances: we only override CUDA_VISIBLE_DEVICES when",
+            "# `n_gpus_per_node > 1`. For a MIG allocation SLURM exposes the partition",
+            "# via a UUID (MIG-GPU-...), and overriding that with an integer index like",
+            "# \"0\" hides the MIG partition from the CUDA runtime — the julia process",
+            "# then silently falls back to CPU. So for `n_gpus_per_node == 1` (whether",
+            "# whole GPU or MIG), we trust whatever SLURM put in CUDA_VISIBLE_DEVICES.",
+            is_test_mode && n_gpus_per_node > 1 ?
                 "parallel --jobs $(jobs_per_node) --results \$LOCAL_LOGS 'CUDA_VISIBLE_DEVICES=\$(({%} - 1)) bash -c {}' :::: \$LOCAL_WORK_DIR/cluster/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt" :
                 "parallel --jobs $(jobs_per_node) --results \$LOCAL_LOGS < \$LOCAL_WORK_DIR/cluster/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt",
             "",
