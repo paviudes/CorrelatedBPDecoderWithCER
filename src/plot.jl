@@ -1,6 +1,40 @@
+# ============================================================================
+# plot.jl — analysis-only plotting helpers
+# ============================================================================
+#
+# This file is intentionally NOT `include`d by the CorrelatedBPDecoderWithCER
+# module. Plots.jl + StatsPlots.jl are heavyweight (~1 GB of precompiled
+# artifacts, several GB of RAM per Julia process) and only needed when you're
+# reading result CSVs and generating figures on your Mac — the cluster path
+# (`neural_bp_experiments.jl` invoked with `--train ... --test ...`) never
+# touches these functions.
+#
+# Usage from a REPL on your Mac (Plots + StatsPlots must be installed in a
+# reachable env — either the active project or the global `@v1.12` stack):
+#
+#     julia> using CorrelatedBPDecoderWithCER
+#     julia> include(joinpath(pkgdir(CorrelatedBPDecoderWithCER), "src", "plot.jl"))
+#     julia> plot_statistics_for_ballistic_error_model(df, ps, qs)
+#
+# Install Plots + StatsPlots globally once:
+#
+#     julia> using Pkg
+#     julia> Pkg.activate()                # activates @v1.12
+#     julia> Pkg.add(["Plots", "StatsPlots"])
+#
+# After that any project you activate can `using Plots` via the LOAD_PATH
+# fallback into @v1.12.
+# ============================================================================
+
+using DataFrames
+using Statistics
+using Plots
+using Plots.PlotMeasures
+using StatsPlots
+
 function plot_statistics_for_ballistic_error_model(
-    stats_dataframe::DataFrame, 
-    per_qubit_error_probs::AbstractVector{Float64}, 
+    stats_dataframe::DataFrame,
+    per_qubit_error_probs::AbstractVector{Float64},
     neighbour_error_probs::AbstractVector{Float64}; 
     prefix::String="./../plots", 
     data_to_compare::Union{DataFrame, Nothing}=nothing

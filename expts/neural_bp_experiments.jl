@@ -93,6 +93,22 @@ end
 function collect_results()
     """
     Collect results from the Neural BP experiments and save them to a CSV file.
+
+    NOTE: this is an ANALYSIS-ONLY entry point. It calls plotting helpers
+    (`plot_statistics_for_ballistic_error_model`, `plot_performance_spread`)
+    that live in the sister package `PlotsForBPDecoder/`. That package
+    depends on Plots + StatsPlots, which are intentionally NOT dependencies
+    of CorrelatedBPDecoderWithCER (to keep the cluster path lean).
+
+    Run this function from a Julia session with the PlotsForBPDecoder project
+    activated so the exports are in scope:
+
+        julia --project=PlotsForBPDecoder
+        julia> using PlotsForBPDecoder
+        julia> include("expts/neural_bp_experiments.jl")
+        julia> collect_results()
+
+    Never call this function from a cluster job.
     """
     #=
     codename = "aps_7q_Hamm_code_data"

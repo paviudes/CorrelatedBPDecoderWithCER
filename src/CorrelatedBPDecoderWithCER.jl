@@ -58,16 +58,22 @@ using DataFrames        # Tabular data structures for decoder statistics
 using Statistics        # Statistical functions for analyzing decoder performance
 
 # Visualization
-using Plots              # Plotting decoder performance and error rates
-using Plots.PlotMeasures # For adding margins around the plot area
-using StatsPlots         # Additional plotting recipes for statistical visualizations
+# NOTE: Plots.jl / StatsPlots.jl are intentionally NOT dependencies of this
+# module. They're heavyweight (~1 GB of precompile) and only used by the
+# analysis-only helpers in src/plot.jl, which the cluster path never touches.
+# When you want to plot on your Mac: `include(joinpath(pkgdir(
+# CorrelatedBPDecoderWithCER), "src", "plot.jl"))` from a session that has
+# Plots + StatsPlots available (install them in your @v1.12 global env).
 
 # Machine learning framework
-using Flux              # Neural network framework for neural belief propagation
-using Functors          # Making neural network parameters trainable
-using Optimisers        # Optimization algorithms for training neural networks
-using Zygote            # Automatic differentiation for gradient computation
-using Enzyme            # Alternative AD for potentially faster gradient computation
+# NOTE: we intentionally do NOT depend on Flux or Zygote. Enzyme is the sole
+# autodiff engine, and Optimisers.jl + Functors.jl together provide everything
+# we need for parameter iteration/updates. Removing Flux+Zygote cuts precompile
+# time significantly and shrinks the loaded-module RAM footprint per worker
+# (which was OOM-killing MIG jobs at 15 GB).
+using Functors          # @functor, for making struct fields trainable
+using Optimisers        # OptimiserChain(ClipGrad, Adam/AdamW) etc.
+using Enzyme            # Reverse-mode AD
 
 # Base method extensions
 import Base: eltype, length, sort!
@@ -100,9 +106,8 @@ export DecoderStatistics, collect_decoder_statistics, save_decoder_dataframe,
        check_valid_fields_DecoderStatistics, record_decoder_statistics, 
        extract_collected_data, collect_decoder_statistics_for_ballistic_data, collect_standard_decoder_statistics_for_ballistic_data
 
-# Visualization and plotting
-include("plot.jl")
-export plot_statistics_for_ballistic_error_model, plot_performance_spread
+# Visualization and plotting are intentionally NOT part of this module — see
+# the note under "Visualization" above and the header of src/plot.jl.
 
 # Classical error correction codes
 include("hamming.jl")

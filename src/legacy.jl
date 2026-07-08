@@ -398,7 +398,12 @@ function (bpnn::NachmaniNeuralBP)(
         base.nb_neurons_per_layer
     )
 
-    posterior_llrs = Zygote.Buffer(zeros(Float32, base.code_n_bits, n_batches, base.n_layers))
+    # NOTE: previously this was `Zygote.Buffer(zeros(...))` so Zygote could track
+    # mutations through this array during reverse-mode AD. Since this legacy
+    # forward_pass is a plain forward evaluator (never used inside an AD path
+    # — Enzyme is the AD engine, and it operates on the newer *_with_weights!
+    # kernels in forward_pass_weights.jl), a regular Array works.
+    posterior_llrs = zeros(Float32, base.code_n_bits, n_batches, base.n_layers)
 
     for layer in 1:base.n_layers
         compute_layer!(

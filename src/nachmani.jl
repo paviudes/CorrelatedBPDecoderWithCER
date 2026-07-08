@@ -1,4 +1,3 @@
-import Zygote: gradient, Params
 using Functors: @functor
 
 struct NachmaniNeuralBP <: NeuralBP

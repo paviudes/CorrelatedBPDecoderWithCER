@@ -1,4 +1,3 @@
-import Zygote: gradient, Params
 using Functors: @functor
 
 abstract type NeuralBP end
@@ -320,14 +319,10 @@ end
 # Make NeuralBP work with Functors by only making the weight matrices children
 @functor NachmaniNeuralBP (weights_v2c_c2v, weights_c2v_v2c, weights_c2v_readout)
 
-# Explicitly tell the Flux framework that the weights are the trainable parameters.
-function Flux.trainable(model::NeuralBP)
-    return (
-        weights_v2c_c2v = model.weights_v2c_c2v,
-        weights_c2v_v2c = model.weights_c2v_v2c,
-        weights_c2v_readout = model.weights_c2v_readout
-    )
-end
+# NOTE: previously defined a `Flux.trainable(::NeuralBP)` method extension here.
+# Removed with the Flux dependency — nothing in the training loop calls it
+# (we go through Optimisers.jl + Functors.@functor above, which already knows
+# which fields are trainable from the @functor declaration).
 
 function (bpnn::StandardNeuralBP)(initial_llrs_batch::AbstractMatrix{<:Real}, syndromes_batch::BitMatrix)
     """
