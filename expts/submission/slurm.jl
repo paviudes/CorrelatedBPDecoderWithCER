@@ -175,6 +175,37 @@ function run_on_SLURM(
         ]
     end
 
+    # (A) Force-recompile CUDA_Runtime_jll on this compute node BEFORE the
+    # regular Pkg.precompile() step. Why:
+    #   * The shared depot at $JULIA_DEPOT_PATH is used across nodes and jobs.
+    #   * If a previous job died mid-precompile OR precompiled CUDA_Runtime_jll
+    #     in an environment where the NVIDIA driver wasn't visible to the
+    #     precompile subprocess (e.g. login node, or a compute node where the
+    #     subprocess had a stripped env), the depot ends up with a .ji that
+    #     hard-codes "no runtime available".
+    #   * Pkg.precompile() below would treat that .ji as up-to-date (source
+    #     hash matches) and never rebuild it — so CUDA.functional() would
+    #     return false at runtime, even though nvidia-smi on this node shows
+    #     working GPUs. This is precisely how we lost job 64946651.
+    #   * Base.compilecache() ignores cache validity and rebuilds unconditionally.
+    # Cost: ~10-70s per test-mode job start, one-time.
+    cuda_prep_lines = is_test_mode ? [
+        "",
+        "######################################################################",
+        "# CUDA_Runtime_jll cache refresh (mitigates stale-depot failures)",
+        "######################################################################",
+        "echo \"[cuda] force-recompiling CUDA_Runtime_jll on \$(hostname)...\"",
+        "if ! julia --project=\$SLURM_SUBMIT_DIR/.. -e 'pkg = Base.PkgId(Base.UUID(\"76a88914-d11a-5bdc-97e0-2f5a05c973a2\"), \"CUDA_Runtime_jll\"); Base.compilecache(pkg); println(\"[cuda] CUDA_Runtime_jll recompiled.\")'; then",
+        "    echo \"[cuda] Base.compilecache(CUDA_Runtime_jll) failed — depot is unhealthy. Aborting job to save wall time.\" >&2",
+        "    exit 1",
+        "fi",
+    ] : String[]
+
+    # (B) CUDA visibility + strict sanity check. If CUDA.functional() returns
+    # false we hard-exit BEFORE parallel launches, so the remaining wall time
+    # isn't burned running 64 doomed julia invocations. The heredoc dumps a
+    # diagnostic block into .err so postmortems don't require reading the
+    # SLURM script — the recovery steps are visible in the failure log itself.
     cuda_sanity_lines = is_test_mode ? [
         "",
         "# --- CUDA visibility diagnostics (surface in .out for postmortems) ---",
@@ -184,7 +215,28 @@ function run_on_SLURM(
         "echo \"[cuda] CUDA_VISIBLE_DEVICES=\${CUDA_VISIBLE_DEVICES:-<unset>}\"",
         "echo \"[cuda] nvcc version:\"",
         "nvcc --version 2>&1 | tail -1 | sed 's/^/[cuda]   /'",
-        "julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using CUDA; @assert CUDA.functional(); println(\"CUDA OK: \", CUDA.name(CUDA.device()), \" (runtime v\", CUDA.runtime_version(), \")\")'",
+        "if ! julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using CUDA; @assert CUDA.functional(); println(\"CUDA OK: \", CUDA.name(CUDA.device()), \" (runtime v\", CUDA.runtime_version(), \")\")'; then",
+        "    cat >&2 <<EOF",
+        "",
+        "===============================================================",
+        "[cuda] SANITY CHECK FAILED on \$(hostname).",
+        "[cuda] CUDA.functional() returned false EVEN AFTER the force-recompile",
+        "[cuda] of CUDA_Runtime_jll above. Likely causes, in order of likelihood:",
+        "[cuda]   1. LocalPreferences.toml at the project root is missing or",
+        "[cuda]      does not contain [CUDA_Runtime_jll] local_toolkit = true.",
+        "[cuda]      Check with:  cat \$SLURM_SUBMIT_DIR/../LocalPreferences.toml",
+        "[cuda]   2. 'module load cuda' didn't populate CUDA_HOME / LD_LIBRARY_PATH.",
+        "[cuda]      Check with:  echo \\\$CUDA_HOME  ;  which nvcc",
+        "[cuda]   3. Driver / runtime version mismatch on this node.",
+        "[cuda] Manual recovery (from a compute node via salloc):",
+        "[cuda]     rm -rf \$JULIA_DEPOT_PATH/compiled/v1.12/CUDA*",
+        "[cuda]     julia --project=. -e 'using Pkg; Pkg.precompile()'",
+        "[cuda]     julia --project=. -e 'using CUDA; @assert CUDA.functional()'",
+        "[cuda] Aborting to save the remaining wall time — no parallel commands launched.",
+        "===============================================================",
+        "EOF",
+        "    exit 1",
+        "fi",
     ] : String[]
 
     slurm_script_lines = vcat(
@@ -237,6 +289,11 @@ function run_on_SLURM(
             "######################################################################",
         ],
         thread_lines,
+        # Force-recompile CUDA_Runtime_jll (test mode only) BEFORE the generic
+        # Pkg.precompile() step, so any stale .ji from a previous session gets
+        # discarded rather than reused. See the `cuda_prep_lines` definition
+        # above for the full rationale. In train mode this expands to nothing.
+        cuda_prep_lines,
         [
             "",
             "# Safely instantiate and precompile on the local drive before launching parallel workers",
@@ -320,22 +377,39 @@ function run_on_SLURM(
             "cd \$SLURM_SUBMIT_DIR",
             "",
             "echo \"Running parallel computations...\"",
-            "# In test mode we set CUDA_VISIBLE_DEVICES per parallel-slot (Alliance",
-            "# Canada docs: \"Packing single-GPU jobs within one SLURM job\") so",
-            "# concurrent jobs don't fight over GPU 0. {%} is parallel's slot index",
-            "# (1..n_gpus_per_node); single quotes defer \$((...)) evaluation.",
-            "# `bash -c {}` is required in the multi-GPU case: GNU parallel shell-quotes",
-            "# {} before substitution, so without `bash -c` the shell would try to exec",
-            "# the whole julia command line as a single filename and fail with \"No such",
-            "# file or directory\". `bash -c '<quoted-cmd>'` re-parses it as a shell command.",
-            "# CAVEAT — MIG instances: we only override CUDA_VISIBLE_DEVICES when",
-            "# `n_gpus_per_node > 1`. For a MIG allocation SLURM exposes the partition",
-            "# via a UUID (MIG-GPU-...), and overriding that with an integer index like",
-            "# \"0\" hides the MIG partition from the CUDA runtime — the julia process",
-            "# then silently falls back to CPU. So for `n_gpus_per_node == 1` (whether",
-            "# whole GPU or MIG), we trust whatever SLURM put in CUDA_VISIBLE_DEVICES.",
+            "# In test mode with n_gpus_per_node > 1 we set CUDA_VISIBLE_DEVICES",
+            "# per parallel-slot so concurrent workers don't fight over the same",
+            "# GPU. See Alliance Canada docs: \"Packing single-GPU jobs within one",
+            "# SLURM job\". Two subtleties are baked into the override below —",
+            "#",
+            "# 1. MIG-safe slicing (was a bug pre-2026-07-09).  SLURM exposes an",
+            "#    allocation of N MIG partitions as CUDA_VISIBLE_DEVICES=\"MIG-uuid1,",
+            "#    MIG-uuid2,...\".  Overriding that with an integer index like \"0\"",
+            "#    hides the allocated MIG partition from the CUDA runtime, and the",
+            "#    julia process silently falls back to CPU — no error, wall time",
+            "#    burned.  We instead capture SLURM's original list into",
+            "#    SLURM_CUDA_VISIBLE_DEVICES and hand each worker its own field",
+            "#    from that list via `cut -d, -f{%}`.  This works for BOTH cases:",
+            "#      * whole GPUs: SLURM gives \"0,1\" → worker 1 gets \"0\", worker 2 gets \"1\"",
+            "#      * MIG:        SLURM gives \"MIG-a,MIG-b\" → worker 1 gets \"MIG-a\", worker 2 gets \"MIG-b\"",
+            "#",
+            "# 2. Shell-quoting via `bash -c {}`.  GNU parallel shell-quotes {}",
+            "#    before substitution, so without `bash -c` the shell would try",
+            "#    to exec the whole julia command line as a single filename and",
+            "#    fail with \"No such file or directory\".  `bash -c '<quoted-cmd>'`",
+            "#    re-parses it as a shell command.",
+            "#",
+            "# For n_gpus_per_node == 1 (whether whole GPU or MIG), we don't",
+            "# override — SLURM's single CUDA_VISIBLE_DEVICES value is already",
+            "# correct for the one julia process we're going to spawn.",
             is_test_mode && n_gpus_per_node > 1 ?
-                "parallel --jobs $(jobs_per_node) --results \$LOCAL_LOGS 'CUDA_VISIBLE_DEVICES=\$(({%} - 1)) bash -c {}' :::: \$LOCAL_WORK_DIR/cluster/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt" :
+                "export SLURM_CUDA_VISIBLE_DEVICES=\"\$CUDA_VISIBLE_DEVICES\"" :
+                "",
+            is_test_mode && n_gpus_per_node > 1 ?
+                "echo \"[cuda] per-slot slicing from SLURM_CUDA_VISIBLE_DEVICES=\$SLURM_CUDA_VISIBLE_DEVICES\"" :
+                "",
+            is_test_mode && n_gpus_per_node > 1 ?
+                "parallel --jobs $(jobs_per_node) --results \$LOCAL_LOGS 'CUDA_VISIBLE_DEVICES=\$(echo \"\$SLURM_CUDA_VISIBLE_DEVICES\" | cut -d, -f{%}) bash -c {}' :::: \$LOCAL_WORK_DIR/cluster/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt" :
                 "parallel --jobs $(jobs_per_node) --results \$LOCAL_LOGS < \$LOCAL_WORK_DIR/cluster/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt",
             "",
             "# NOTE: stage-out is NOT done inline here.  The `stage_out` bash",
