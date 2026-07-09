@@ -19,6 +19,29 @@
 # `include`d by batch_run.jl, which also `include`s the three backend files.
 # ============================================================================
 
+using Printf
+
+"""
+    fmt_probs(prob1::Float64, prob2::Float64) -> String
+
+Canonical filename tag for a `(per_qubit_prob, neighbour_prob)` pair. Both
+fields are zero-padded to the *maximum* decimal count of the pair, so
+`fmt_probs(0.01, 0.001) == "p_0.010_q_0.001"`.
+
+Kept in sync with the canonical copy at `src/utils.jl` of the main package.
+Duplicated here — rather than imported — so this file stays loadable on
+submission hosts (Alliance Canada login nodes) that we deliberately shield
+from `using CorrelatedBPDecoderWithCER` because of the heavy precompile.
+See the comment in `batch_run.jl` above `disable_retrain_in_hyperparams`
+for the same rationale applied to that helper.
+"""
+function fmt_probs(prob1::Float64, prob2::Float64)::String
+    ndig = max(length(split(string(prob1), ".")[end]),
+               length(split(string(prob2), ".")[end]))
+    fmt = Printf.Format("%.$(ndig)f")
+    return "p_$(Printf.format(fmt, prob1))_q_$(Printf.format(fmt, prob2))"
+end
+
 function generate_parallel_commands(
     pvals::AbstractVector{<:Real},
     qvals::AbstractVector{<:Real},
@@ -50,17 +73,21 @@ function generate_parallel_commands(
     """
     Grid form: build cer/train/test filenames from `pvals × qvals × 1:n_samples`
     then delegate to the explicit-list form.
+
+    Filenames go through `fmt_probs` (padded, max-decimals form) rather than
+    plain Julia string interpolation, so e.g. (p=0.01, q=0.001) produces
+    `..._p_0.010_q_0.001_...` — the same tag every plotting/loading path uses.
     """
     train_files = [
-        "train_p_$(p)_q_$(q)_s_$(samp).txt"
+        "train_$(fmt_probs(Float64(p), Float64(q)))_s_$(samp).txt"
         for p in pvals for q in qvals for samp in 1:n_samples
     ]
     test_files = [
-        "test_p_$(p)_q_$(q)_s_$(samp).txt"
+        "test_$(fmt_probs(Float64(p), Float64(q)))_s_$(samp).txt"
         for p in pvals for q in qvals for samp in 1:n_samples
     ]
     cer_files = [
-        "correlated_weights_p_$(p)_q_$(q)_s_$(samp).txt"
+        "correlated_weights_$(fmt_probs(Float64(p), Float64(q)))_s_$(samp).txt"
         for p in pvals for q in qvals for samp in 1:n_samples
     ]
     hyperparams_files = [hyperparams_file for _ in 1:length(cer_files)]

@@ -98,27 +98,38 @@ function collect_decoder_statistics(simulation_output_file::String)::DataFrame
     return stats_dataframe
 end
 
-function collect_decoder_statistics_for_ballistic_data(per_qubit_error_probs::AbstractVector{<:Real}, neighbour_error_probs::AbstractVector{<:Real}, num_samples_per_error_rate::Int, n_layers::Int, n_epochs::Int; prefix::String="./../data")::DataFrame
+function collect_decoder_statistics_correlated(per_qubit_error_probs::AbstractVector{<:Real}, neighbour_error_probs::AbstractVector{<:Real}, num_samples_per_error_rate::Int, n_layers::Int, n_epochs::Int; prefix::String="./../data")::DataFrame
     """
-    Collect decoder statistics for the ballistic error model data.
-    We have one file summarizing the result for each simulation run, whose name is
-        simulation_results_test_ballistic_p_<p>_q_<q>_s_<s>_nlayers_<n_layers>_epochs_<n_epochs>_trained_using_<training_file>.csv
-    where
-        - <p> is the per-qubit error probability
-        - <q> is the neighbour error probability
-        - <s> is the number of samples per error rate
-        - <n_layers> is the number of layers in the Neural BP model (denoted as n_iterations_BP in `DecoderStatistics`)
-        - <n_epochs> is the number of epochs for training the Neural BP model (denoted as rounds_per_iteration_BP in `DecoderStatistics`)
-        - <training_file> is the name of the file used for training the Neural BP model (without path and extension): train_ballistic_p_0.001_q_0.3_s_1
-    In each of these files we have a DataFrame of the type `DecoderStatistics` with the statistics for that simulation run.
-    We will collect all these statistics into a single DataFrame and return it.
+    Collect Neural BP decoder statistics for the correlated (Ballistic) error
+    model. There's one file per simulation run, produced by
+    `neural_bp_experiments.jl` and named by the same convention it builds
+    (see line ~272 of that file):
+
+        simulation_results_test_<pq_tag>_s_<s>_nlayers_<n_layers>_epochs_<n_epochs>_trained_using_train_<pq_tag>_s_<s>.csv
+
+    where `<pq_tag>` is `fmt_probs(p, q)` — the canonical
+    max-decimals-padded formatter — so e.g. `p_0.010_q_0.001`. The
+    `ballistic_` infix that used to sit here (and in older test/train
+    filenames) was dropped when the file-naming convention was unified;
+    an on-disk rename script is available at
+    `expts/scripts/rename_to_padded_pq.py` if you need to bring legacy
+    result CSVs into the new form.
+
+    Arguments:
+      - `per_qubit_error_probs`, `neighbour_error_probs`, `num_samples_per_error_rate`
+        — the grid we iterate over to reconstruct the expected filenames.
+      - `n_layers`, `n_epochs` — pulled from the hyperparams TOML at
+        submission time; must match what was passed to
+        `neural_bp_experiments.jl`.
+      - `prefix` — root path of the codename directory (contains `results/`).
     """
     # precompute the number of entries: this is the number of combinations of per_qubit_error_probs, neighbour_error_probs and num_samples_per_error_rate for which we have data files.
     num_files = 0
     missing_files = String[]
     for p in per_qubit_error_probs, q in neighbour_error_probs, s in 1:num_samples_per_error_rate
-        training_file = "train_ballistic_p_$(p)_q_$(q)_s_$(s)"
-        results_file = "$(prefix)/results/simulation_results_test_ballistic_p_$(p)_q_$(q)_s_$(s)_nlayers_$(n_layers)_epochs_$(n_epochs)_trained_using_$(training_file).csv"
+        pq_tag = fmt_probs(Float64(p), Float64(q))
+        training_file = "train_$(pq_tag)_s_$(s)"
+        results_file = "$(prefix)/results/simulation_results_test_$(pq_tag)_s_$(s)_nlayers_$(n_layers)_epochs_$(n_epochs)_trained_using_$(training_file).csv"
         if isfile(results_file)
             num_files += 1
         else
@@ -144,8 +155,9 @@ function collect_decoder_statistics_for_ballistic_data(per_qubit_error_probs::Ab
     )
     file_index = 1
     for p in per_qubit_error_probs, q in neighbour_error_probs, s in 1:num_samples_per_error_rate
-        training_file = "train_ballistic_p_$(p)_q_$(q)_s_$(s)"
-        results_file = "$(prefix)/results/simulation_results_test_ballistic_p_$(p)_q_$(q)_s_$(s)_nlayers_$(n_layers)_epochs_$(n_epochs)_trained_using_$(training_file).csv"
+        pq_tag = fmt_probs(Float64(p), Float64(q))
+        training_file = "train_$(pq_tag)_s_$(s)"
+        results_file = "$(prefix)/results/simulation_results_test_$(pq_tag)_s_$(s)_nlayers_$(n_layers)_epochs_$(n_epochs)_trained_using_$(training_file).csv"
         if isfile(results_file)
             stats_dataframe = CSV.read(results_file, DataFrame)
             # Fill the dataframe fields
@@ -166,27 +178,34 @@ function collect_decoder_statistics_for_ballistic_data(per_qubit_error_probs::Ab
     return all_stats
 end
 
-function collect_standard_decoder_statistics_for_ballistic_data(prefix::String="./../data", ntrials::Int=100000; standard_BP_output_file::String="standard_bp_failure_rates.txt")::DataFrame
+function collect_standard_decoder_statistics_correlated(prefix::String="./../data", ntrials::Int=100000; standard_BP_output_file::String="standard_bp_failure_rates.txt")::DataFrame
     """
-    Collect decoder statistics for the ballistic error model data for the standard BP decoder (i.e., not the Neural BP decoder).
-    We have one file summarizing the result for each simulation run, whose name is results/standard_BP_failure_rates.txt.
-    This file contains one line for each combination of per_qubit_error_probs, neighbour_error_probs and num_samples_per_error_rate, where
-    each line is formatted as follows.
-    <per_qubit_error_prob> <neighbour_error_prob> <sample> <total number of failures>
+    Collect standard BP-OSD decoder statistics for the correlated (Ballistic)
+    error model. Unlike the Neural BP twin above, standard-decoder results
+    are ALREADY aggregated into a single file — `results/<standard_BP_output_file>`
+    — with one row per `(per_qubit_prob, neighbour_prob, sample)` triple:
 
-    We will read this file and collect the statistics into a DataFrame and return it.
-    The DataFrame will have the following columns:
-    algo::String (set to "SumProduct")
-    error_model_name::String (set to "ExplicitErrorModel")
-    error_model_parameters_description::String (set to "./../data/$(dirname)/testing_data/test_ballistic_p_<per_qubit_error_prob>_q_<neighbour_error_prob>_s_<sample>.txt")
-    num_samples_per_error_rate::Int (set to ntrials)
-    n_iterations_BP::Int # denotes n_layers in Neural Network BP (set to 0, since we don't have this data for the standard BP decoder)
-    rounds_per_BP::Int # denotes n_epochs in Neural Network BP (set to 0, since we don't have this data for the standard BP decoder)
-    weight_soft_constraint::Float64 # denotes correlation_strength for Neural Network BP (set to 0.0, since we don't have this data for the standard BP decoder)
-    num_failures::Int (set to the total number of failures read from the file)
-    average_logical_error_rate::Float64 (set to num_failures / ntrials)
-    std_logical_error_rate::Float64 (computed using compute_std_assuming_bernoulli with μ = num_failures / ntrials and n = ntrials)
-    runtime::Float64 (set to 0.0, since we don't have runtime data for the standard BP decoder)
+        <per_qubit_error_prob> <neighbour_error_prob> <sample> <total number of failures>
+
+    We parse it into a DataFrame with the same shape as
+    `collect_decoder_statistics_correlated`'s output so downstream code
+    (plots, comparisons) can consume both interchangeably.
+
+    The `error_model_parameters_description` field is synthesised to look
+    like a testing-data filename — kept in sync with the canonical
+    `fmt_probs` naming used everywhere else in the pipeline — because the
+    plotting code filters DataFrame rows by `occursin(fmt_probs(p, q), ...)`
+    against this field.
+
+    Returned columns:
+      algo                              — "SumProduct"
+      error_model_name                  — "ExplicitErrorModel"
+      error_model_parameters_description — "\$(prefix)/testing_data/test_<pq_tag>_s_<sample>.txt"
+      num_samples_per_error_rate        — ntrials
+      n_iterations_BP, rounds_per_BP, weight_soft_constraint, runtime — 0
+      num_failures                      — parsed from the file
+      average_logical_error_rate        — num_failures / ntrials
+      std_logical_error_rate            — Bernoulli std at μ = LER, n = ntrials
     """
     results_file = "$(prefix)/results/$(standard_BP_output_file)"
     if !isfile(results_file)
@@ -226,10 +245,17 @@ function collect_standard_decoder_statistics_for_ballistic_data(prefix::String="
             neighbour_error_prob = split_line[2]
             sample = split_line[3]
             num_failures = parse(Int, split_line[4])
+            # Build the same `p_<X>_q_<Y>` tag that the neural-BP path and the
+            # plotting code use, so DataFrames from both decoders can be
+            # filtered/joined with the same `occursin(fmt_probs(p, q), ...)`
+            # predicate. Parse the raw strings to Float64 first so
+            # `fmt_probs`'s max-decimals-padding runs on numbers, not text.
+            pq_tag = fmt_probs(parse(Float64, per_qubit_error_prob),
+                               parse(Float64, neighbour_error_prob))
             # Fill the DataFrame row with the corresponding values
             stats_dataframe[line_index, :algo] = "SumProduct"
             stats_dataframe[line_index, :error_model_name] = "ExplicitErrorModel"
-            stats_dataframe[line_index, :error_model_parameters_description] = "$(prefix)/testing_data/test_ballistic_p_$(per_qubit_error_prob)_q_$(neighbour_error_prob)_s_$(sample).txt"
+            stats_dataframe[line_index, :error_model_parameters_description] = "$(prefix)/testing_data/test_$(pq_tag)_s_$(sample).txt"
             stats_dataframe[line_index, :num_samples_per_error_rate] = ntrials
             stats_dataframe[line_index, :n_iterations_BP] = 0
             stats_dataframe[line_index, :rounds_per_BP] = 0

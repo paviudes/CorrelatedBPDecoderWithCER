@@ -1,3 +1,28 @@
+"""
+    fmt_probs(prob1::Float64, prob2::Float64) -> String
+
+Format the error-model parameters `per_qubit_error_prob` and
+`neighbour_error_prob` into a string of the form `p_<prob1>_q_<prob2>`.
+Both fields are zero-padded to the *maximum* decimal count of the pair — so
+`fmt_probs(0.01, 0.001) == "p_0.010_q_0.001"`, not `"p_0.01_q_0.001"`.
+
+This is the canonical filename tag for anything that identifies a
+`(per_qubit_prob, neighbour_prob)` pair on disk: training/test datasets,
+correlation-strengths files, trained-weight JSONs, and the
+`error_model_parameters_description` field written into result CSVs.
+
+Kept in the main package (not `PlotsForBPDecoder`) so that
+`expts/submission/batch_commands.jl` — which runs on the cluster and must
+not depend on `Plots.jl` — can format filenames without dragging in the
+whole plotting stack.
+"""
+function fmt_probs(prob1::Float64, prob2::Float64)::String
+    ndig = max(length(split(string(prob1), ".")[end]),
+               length(split(string(prob2), ".")[end]))
+    fmt = Printf.Format("%.$(ndig)f")
+    return "p_$(Printf.format(fmt, prob1))_q_$(Printf.format(fmt, prob2))"
+end
+
 function random_values_around_one(size::Vector{Int}; scale::Float32=0.01f0)::Array{Float32}
     """
     Generate a matrix of random values around 1.0 with specified scale.

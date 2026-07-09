@@ -32,10 +32,11 @@ using Statistics
 using Plots
 using Plots.PlotMeasures
 using StatsPlots
-import Printf
 
-# Shared internal helper used by both plotting functions.
-include("utils.jl")
+# fmt_probs is the canonical (p, q) → filename-tag formatter. It lives in the
+# main package (CorrelatedBPDecoderWithCER/src/utils.jl) so cluster code can
+# reach it without pulling in Plots; here we just re-use the exported symbol.
+using CorrelatedBPDecoderWithCER: fmt_probs
 
 # Ballistic error-rate curves (avg logical error rate vs. q).
 include("error_rate_curves.jl")

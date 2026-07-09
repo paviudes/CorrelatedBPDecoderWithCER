@@ -104,7 +104,7 @@ export ErrorModel, IIDErrorModel, sample_error, print_error_model_info,
 include("postprocessing.jl")
 export DecoderStatistics, collect_decoder_statistics, save_decoder_dataframe, 
        check_valid_fields_DecoderStatistics, record_decoder_statistics, 
-       extract_collected_data, collect_decoder_statistics_for_ballistic_data, collect_standard_decoder_statistics_for_ballistic_data
+       extract_collected_data, collect_decoder_statistics_correlated, collect_standard_decoder_statistics_correlated
 
 # Visualization and plotting are intentionally NOT part of this module — see
 # the note under "Visualization" above and the header of src/plot.jl.
@@ -176,7 +176,7 @@ export predict_neuralbp, check_bp_solutions, predict_and_check_neuralbp, neuralb
 # Utility functions
 include("utils.jl")
 export safe_atanh_exp_signed, safe_atanh_exp_signed!, safe_log_tanh_split, safe_log_tanh_split!, random_values_around_one, compute_std_assuming_bernoulli,
-       debug_log_tanh_split, xor_affine!, sparse_multiply!, sigmoid, binary_entropy, binary_entropy_of_sigmoid
+       debug_log_tanh_split, xor_affine!, sparse_multiply!, sigmoid, binary_entropy, binary_entropy_of_sigmoid, fmt_probs
 
 #===============================================================================
                                END OF MODULE

@@ -17,12 +17,18 @@ end
 
 function extract_parameters_from_description(description::String)::Tuple{Float64, Float64, Int}
     """
-    Extract the error parameters p, q, and sample index from the `error_model_parameters_description` string.
-    The description string is in the format: <prefix>/testing_data/test_ballistic_p_<p>_q_<q_mean>_s_<sample>.txt
-    We want to extract the values of p, q_mean, and sample from this string.
+    Extract the error parameters p, q, and sample index from the
+    `error_model_parameters_description` string.  The description looks
+    like `<prefix>/testing_data/test_<pq_tag>_s_<sample>.txt`, where
+    `<pq_tag>` is `fmt_probs(p, q)` — canonically `p_0.010_q_0.001`.
+
+    The regex tolerates any decimal count in either p or q so that
+    old-style filenames like `test_p_0.01_q_0.001_s_1.txt` (fewer
+    decimals) still parse; but new filenames written by the pipeline
+    will always be zero-padded to the max of the two.
     """
     filename = basename(description)
-    m = match(r"test_ballistic_p_(\d+\.\d+)_q_(\d+\.\d+)_s_(\d+)\.txt", filename)
+    m = match(r"test_p_(\d+\.\d+)_q_(\d+\.\d+)_s_(\d+)\.txt", filename)
     if m !== nothing
         p = parse(Float64, m.captures[1])
         q = parse(Float64, m.captures[2])
@@ -40,8 +46,8 @@ function identify_best_performing_samples(neuralbp_results::DataFrame, standardb
     """
     # Create a new dataframe that contains the error parameters, sample index, and the neural BP and standard decoder logical error rates.
     # The `error_model_parameters_description` column contains a string description of the error parameters in the format
-    # <prefix>/testing_data/test_ballistic_p_<p>_q_<q_mean>_s_<sample>.txt
-    # So we just want to extract the basename of the file: test_ballistic_p_<p>_q_<q>_s_<sample>.txt and then extract the values of p, q, and sample from this string.
+    # <prefix>/testing_data/test_<pq_tag>_s_<sample>.txt   where <pq_tag> is fmt_probs(p, q), e.g. `p_0.010_q_0.001`.
+    # So we just want to extract the basename of the file: test_<pq_tag>_s_<sample>.txt and then extract the values of p, q, and sample from this string.
     compare_results = DataFrame(
         p = zeros(Float64, nrow(neuralbp_results)),
         q = zeros(Float64, nrow(neuralbp_results)),
@@ -132,17 +138,17 @@ function collect_results()
     end
 
     # Collect results for the Neural BP decoder. If the results file already exists, load it instead of re-computing.
-    output_csv_file_neural = "$(prefix)/results/decoder_statistics_ballistic.csv"
+    output_csv_file_neural = "$(prefix)/results/decoder_statistics_correlated.csv"
     if (isfile(output_csv_file_neural))
         # Load the dataframe from the existing CSV file
         neuralbp_results = CSV.read(output_csv_file_neural, DataFrame)
     else
-        neuralbp_results = collect_decoder_statistics_for_ballistic_data(
-            per_qubit_error_probs, 
-            neighbour_error_probs, 
-            n_samples, 
-            n_hidden_layers, 
-            n_epochs; 
+        neuralbp_results = collect_decoder_statistics_correlated(
+            per_qubit_error_probs,
+            neighbour_error_probs,
+            n_samples,
+            n_hidden_layers,
+            n_epochs;
             prefix=prefix
         )
         save_decoder_dataframe(neuralbp_results, output_csv_file_neural)
@@ -150,13 +156,13 @@ function collect_results()
     end
 
     # Collect results for the standard decoder. If the results file already exists, load it instead of re-computing.
-    output_csv_file_standard = "$(prefix)/results/standard_decoder_statistics_ballistic.csv"
+    output_csv_file_standard = "$(prefix)/results/standard_decoder_statistics_correlated.csv"
     if (isfile(output_csv_file_standard))
         # Load the dataframe from the existing CSV file
         standardbp_results = CSV.read(output_csv_file_standard, DataFrame)
     else
-        standardbp_results = collect_standard_decoder_statistics_for_ballistic_data(
-            prefix; 
+        standardbp_results = collect_standard_decoder_statistics_correlated(
+            prefix;
             standard_BP_output_file="72q_BB_BP+OSD_failure_rates_OSD_E_order_2.txt"
         )
         save_decoder_dataframe(standardbp_results, output_csv_file_standard)

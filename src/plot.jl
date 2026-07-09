@@ -240,13 +240,8 @@ function plot_performance_spread(
     savefig(plt, "$(prefix)/performance_spread_violin_plot.pdf")
 end
 
-function fmt_probs(prob1::Float64, prob2::Float64)::String
-    """
-    Format the error model parameters `per_qubit_error_prob` and `neighbour_error_prob` to a string of the form `p_<per_qubit_error_prob>_q_<neighbour_error_prob>`, where the number of decimal places is determined by the maximum number of decimal places in either `prob1` or `prob2`.
-    """
-    ndig = max(length(split(string(prob1), ".")[end]),
-               length(split(string(prob2), ".")[end]))
-    fmt = Printf.Format("%.$(ndig)f")
-    prob_string = "p_$(Printf.format(fmt, prob1))_q_$(Printf.format(fmt, prob2))"
-    return prob_string
-end
+# fmt_probs used above lives in src/utils.jl and is re-exported from the top
+# of the CorrelatedBPDecoderWithCER module — so `using CorrelatedBPDecoderWithCER`
+# in the REPL, followed by `include(".../src/plot.jl")`, gives these functions
+# access to it. (This file is intentionally NOT `include`d by the module — see
+# the header — so it doesn't participate in `export` chains directly.)
