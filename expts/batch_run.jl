@@ -73,6 +73,10 @@ function generate_batch_runs(;
     pvals::AbstractVector{<:Real}=[0.01],
     qvals::AbstractVector{<:Real}=[0.001],
     n_samples::Int=64,
+    # Error model selecting the filename convention (case-insensitive):
+    #   "Ising"   → two-parameter correlated model, uses both pvals and qvals.
+    #   "Circuit" → single-parameter circuit-level model, uses pvals only.
+    error_model::String="Ising",
     hyperparams_file::String="hyperparams_epochs_10.toml",
     n_hidden_layers::Int=200,
     # --- cluster args ---
@@ -98,6 +102,15 @@ function generate_batch_runs(;
     mode = test ? :test : :train
     skip_testing = !test    # in train mode we omit --test from the constructed commands
 
+    # Normalise the error-model selector once (case-insensitive per the CLI/TOML
+    # contract) and fail loudly on anything we don't recognise, rather than
+    # silently defaulting to one model and generating the wrong filenames.
+    em = lowercase(error_model)
+    if em ∉ ("ising", "circuit")
+        error("Unknown error_model=\"$(error_model)\". Must be \"Ising\" or \"Circuit\" " *
+              "(case-insensitive).")
+    end
+
     for codename in codenames
         if test
             hp_path = joinpath(data_dir, codename, "models", hyperparams_file)
@@ -105,8 +118,10 @@ function generate_batch_runs(;
             disable_retrain_in_hyperparams(hp_path)
         end
 
-        generate_parallel_commands(
-            pvals, qvals, n_samples, codename;
+        # Shared keyword args — identical for both models. Only the positional
+        # parameter grid differs (Ising: p×q, Circuit: p only), so we build the
+        # kwargs once and splat them into whichever grid form we dispatch to.
+        common_kwargs = (
             n_hidden_layers  = n_hidden_layers,
             hyperparams_file = hyperparams_file,
             julia_project    = "./../",
@@ -127,6 +142,16 @@ function generate_batch_runs(;
             cuda_module      = cuda_module,
             mem_per_gpu      = mem_per_gpu,
         )
+
+        if em == "ising"
+            generate_parallel_commands_Ising(
+                pvals, qvals, n_samples, codename; common_kwargs...
+            )
+        else # "circuit" — qvals deliberately unused
+            generate_parallel_commands_Circuit(
+                pvals, n_samples, codename; common_kwargs...
+            )
+        end
     end
 end
 
@@ -149,6 +174,43 @@ function _is_flag_passed(flag_name::String)
         end
     end
     return false
+end
+
+function _expand_numeric_spec(spec)::Vector{Float64}
+    """
+    Turn a p/q specification into a Float64 vector, accepting:
+      - a number                        -> [x]
+      - a plain numeric string "0.01"   -> [0.01]
+      - a Julia-style range STRING      -> collect(start:step:stop) (or start:stop)
+        e.g. "0.0001:0.0002:0.0009" -> [0.0001, 0.0003, 0.0005, 0.0007, 0.0009]
+      - a vector mixing any of the above (flattened),
+        e.g. [0.001, "0.01:0.01:0.05"]
+
+    Bare `a:b:c` is NOT valid TOML, so in the settings file the range must be
+    QUOTED:  pvals = "0.0001:0.0002:0.0009". On the command line `--pvals a:b:c`
+    also works, since nargs='+' delivers each token as a string.
+    """
+    if spec isa Number
+        return [Float64(spec)]
+    elseif spec isa AbstractString
+        s = strip(spec)
+        if occursin(':', s)
+            parts = parse.(Float64, split(s, ':'))
+            if length(parts) == 3
+                return collect(parts[1]:parts[2]:parts[3])
+            elseif length(parts) == 2
+                return collect(parts[1]:parts[2])   # step defaults to 1.0
+            else
+                error("Range shorthand \"$(spec)\" must be start:step:stop or start:stop.")
+            end
+        else
+            return [parse(Float64, s)]
+        end
+    elseif spec isa AbstractVector
+        return isempty(spec) ? Float64[] : reduce(vcat, _expand_numeric_spec.(spec))
+    else
+        error("Cannot interpret $(repr(spec)) as a number, range string, or list.")
+    end
 end
 
 function _overlay_toml!(parsed_args::Dict, toml_path::String)
@@ -207,6 +269,12 @@ if abspath(PROGRAM_FILE) == @__FILE__
             help = "Number of samples per (p, q) pair."
             arg_type = Int
             default = 64
+        "--error_model"
+            help = "Error model / filename convention (case-insensitive): " *
+                   "\"Ising\" (two-parameter correlated, uses p and q) or " *
+                   "\"Circuit\" (single-parameter circuit-level, uses p only)."
+            arg_type = String
+            default = "Ising"
         "--hyperparams_file"
             help = "Path to the hyperparameters file."
             arg_type = String
@@ -277,10 +345,11 @@ if abspath(PROGRAM_FILE) == @__FILE__
     end
 
     dirnames = String.(parsed_args["dirnames"])
-    # TOML numeric values come through as Float64/Int directly; command-line
-    # values come through as strings when nargs='+'. Coerce both to Float64.
-    pvals = [val isa Number ? Float64(val) : parse(Float64, string(val)) for val in parsed_args["pvals"]]
-    qvals = [val isa Number ? Float64(val) : parse(Float64, string(val)) for val in parsed_args["qvals"]]
+    # Coerce p/q specs to Float64 vectors. Values may arrive as TOML numbers/
+    # arrays, command-line strings (nargs='+'), or a QUOTED range shorthand like
+    # "0.0001:0.0002:0.0009" — `_expand_numeric_spec` handles all of these.
+    pvals = _expand_numeric_spec(parsed_args["pvals"])
+    qvals = _expand_numeric_spec(parsed_args["qvals"])
 
     generate_batch_runs(;
         data_dir         = parsed_args["working_dir"],
@@ -288,6 +357,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
         pvals            = pvals,
         qvals            = qvals,
         n_samples        = parsed_args["n_samples"],
+        error_model      = parsed_args["error_model"],
         hyperparams_file = parsed_args["hyperparams_file"],
         n_hidden_layers  = parsed_args["n_hidden_layers"],
         cluster_backend  = parsed_args["cluster_backend"],

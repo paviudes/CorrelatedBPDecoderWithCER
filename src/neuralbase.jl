@@ -232,7 +232,7 @@ struct NeuralBPBase <: NeuralBP
     end
 end
 
-function parse_cer_data(correlation_strengths_file::String)::Tuple{Matrix{Int}, Vector{Float32}, Dict{Int, Float32}}
+function parse_cer_data(correlation_strengths_file::String; verbose::Bool = true)::Tuple{Matrix{Int}, Vector{Float32}, Dict{Int, Float32}}
     """
     Parse the correlation strengths and connectivity from a file.
     Each line of the file should be one of the two formats:
@@ -284,42 +284,114 @@ function parse_cer_data(correlation_strengths_file::String)::Tuple{Matrix{Int}, 
     - single qubit error rates: dictionary where each key is a qubit index and the value is the error rate of that qubit
     """
     min_error_rate::Float32 = 1f-6  # minimum error rate to avoid issues with log(0) in the decoder
+
+    # Graceful no-CER path: if the file is missing, warn and return empty
+    # structures so the caller can proceed without correlation data instead of
+    # crashing on `open`.
+    if !isfile(correlation_strengths_file)
+        verbose && @warn "parse_cer_data: CER file not present at " *
+            "$(correlation_strengths_file); returning empty connectivity + " *
+            "marginals (no correlation data)."
+        return (Matrix{Int}(undef, 0, 2), Vector{Float32}(undef, 0), Dict{Int, Float32}())
+    end
+
     connectivity = Vector{Tuple{Int, Int}}(undef, 0)
     correlation_strengths = Vector{Float32}(undef, 0)
     single_qubit_error_rates = Dict{Int, Float32}()
+
+    # Counters for the end-of-function summary.
+    n_two_qubit_unparsed::Int    = 0   # "(i,j): v"-shaped lines that failed to parse
+    n_single_qubit_unparsed::Int = 0   # "i: v"-shaped lines that failed to parse
+    n_unrecognized::Int          = 0   # non-empty lines matching neither shape
+
+    # Whitespace-insensitive around ',' and ':'. The previous strict extraction
+    # regex `\((\d+), (\d+)\) : ([\d\.]+)` demanded exactly one space after the
+    # comma and around the colon, so files written as e.g. "(2,18): 0.000953"
+    # passed the loose detection but failed extraction and were dropped SILENTLY.
+    # `\s*` everywhere removes that gap; the shape is anchored end-to-end so a
+    # malformed value can't be partially captured (it's flagged instead).
+    #
+    # The value pattern accepts an optional sign, a plain decimal, AND scientific
+    # notation — needed because the weak edges are written in exponential form
+    # (e.g. "(1,4): 1.9e-05", "(13,15): 9e-06").
+    value = raw"[-+]?[\d.]+(?:[eE][-+]?\d+)?"
+    single_qubit_regex::Regex = Regex("^\\s*(\\d+)\\s*:\\s*($value)\\s*\$")
+    two_qubit_regex::Regex    = Regex("^\\s*\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*\\)\\s*:\\s*($value)\\s*\$")
+
     open(correlation_strengths_file, "r") do io
-        for line in eachline(io)
-            # Parse the line to extract the qubits and the correlation strength.
-            # Either
-            # (a): The line is of the form "1 : 0.1"
-            # or
-            # (b): The line is of the form "(1, 29) : 0.005851149427861176"
-            # We can distinguish between these two cases by checking if the line contains a "(*, *)" regex pattern.
-            case_a = occursin(r"^\d+\s*:\s*[\d\.]+", line)
-            case_b = occursin(r"^\(\d+,\s*\d+\)\s*:\s*[\d\.]+", line)
-            if case_a
-                # Case (a)
-                m = match(r"(\d+) : ([\d\.]+)", line)
-                if m !== nothing
-                    qubit = parse(Int, m.captures[1])
-                    error_rate = parse(Float32, m.captures[2])
-                    single_qubit_error_rates[qubit] = max(error_rate, min_error_rate)
-                end
-            elseif case_b
-                # Case (b)
-                m = match(r"\((\d+), (\d+)\) : ([\d\.]+)", line)
+        for raw_line in eachline(io)
+            line = strip(raw_line)
+            isempty(line) && continue
+
+            if startswith(line, "(")
+                # (b): two-qubit "(i, j) : v" line.
+                m = match(two_qubit_regex, line)
                 if m !== nothing
                     qubit1 = parse(Int, m.captures[1])
                     qubit2 = parse(Int, m.captures[2])
                     two_qubit_error_rate = parse(Float32, m.captures[3])
                     push!(connectivity, (qubit1, qubit2))
                     push!(correlation_strengths, max(two_qubit_error_rate, min_error_rate))
+                else
+                    n_two_qubit_unparsed += 1
+                    if verbose
+                        @warn "parse_cer_data: could not parse two-qubit line: $(raw_line)" maxlog = 5
+                    end
+                end
+            elseif occursin(':', line)
+                # (a): single-qubit "i : v" line.
+                m = match(single_qubit_regex, line)
+                if m !== nothing
+                    qubit = parse(Int, m.captures[1])
+                    error_rate = parse(Float32, m.captures[2])
+                    single_qubit_error_rates[qubit] = max(error_rate, min_error_rate)
+                else
+                    n_single_qubit_unparsed += 1
+                    if verbose
+                        @warn "parse_cer_data: could not parse single-qubit line: $(raw_line)" maxlog = 5
+                    end
                 end
             else
-                @warn "Line in correlation strengths file does not match expected format: $line"
+                n_unrecognized += 1
+                if verbose
+                    @warn "parse_cer_data: line matches no expected format, skipped: $(raw_line)" maxlog = 5
+                end
             end
         end
     end
-    connectivity_matrix = hcat([c[1] for c in connectivity], [c[2] for c in connectivity])
+
+    connectivity_matrix::Matrix{Int} = Matrix{Int}(undef, 0, 2)
+    if !isempty(connectivity)
+        connectivity_matrix = hcat([c[1] for c in connectivity], [c[2] for c in connectivity])
+    end
+
+    # Every qubit that appears in an edge needs a single-qubit rate; any that
+    # has no explicit "i : v" line is "not found" and set to the default floor.
+    n_single_qubit_defaulted::Int = 0
+    for (qubit1, qubit2) in connectivity
+        for qubit in (qubit1, qubit2)
+            if !haskey(single_qubit_error_rates, qubit)
+                single_qubit_error_rates[qubit] = min_error_rate
+                n_single_qubit_defaulted += 1
+            end
+        end
+    end
+
+    # ---- End-of-function summary (gated by `verbose`). --------------------
+    if verbose
+        @info "parse_cer_data: parsed $(length(correlation_strengths)) two-qubit " *
+              "marginals and $(length(single_qubit_error_rates)) single-qubit rates " *
+              "from $(correlation_strengths_file)."
+    end
+    if n_two_qubit_unparsed > 0
+        @warn "parse_cer_data: $(n_two_qubit_unparsed) two-qubit marginal(s) were not found (pair-shaped lines that failed to parse)."
+    end
+    if n_single_qubit_defaulted > 0
+        @warn "parse_cer_data: $(n_single_qubit_defaulted) single-qubit marginal(s) were not found and set to the default (min_error_rate = $(min_error_rate))."
+    end
+    if n_single_qubit_unparsed > 0 || n_unrecognized > 0
+        @warn "parse_cer_data: skipped $(n_single_qubit_unparsed) unparseable single-qubit line(s) and $(n_unrecognized) unrecognized line(s)."
+    end
+
     return (connectivity_matrix, correlation_strengths, single_qubit_error_rates)
 end

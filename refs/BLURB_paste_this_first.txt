@@ -1,0 +1,9 @@
+Hi Claude — I'm continuing an existing project (a Neural Network BP decoder for quantum LDPC codes on the Alliance Canada Narval cluster). Before you do anything else, please read the attached HANDOFF.md end-to-end — it covers who I am, the state of the code, the cluster setup, and every gotcha we've already worked around.
+
+Two hard rules I want you to internalise from the start:
+
+1. Do NOT walk, grep, or read anything under CorrelatedBPDecoderWithCER/data/. It's gigabytes of experimental output (training/test datasets, model weights, per-sample CSVs) and reading it just burns tokens without adding context. If a specific file there is genuinely needed for a task, I'll give you the exact path.
+
+2. The two other paragraphs I care most about are §0 (what to skip), §6 (cluster failure modes that are already fixed — please don't reintroduce them), and §9 (how I like to work).
+
+Once you've read the handoff, tell me you've read it and I'll pick up from where the previous session left off. If anything in it looks wrong or contradicts what you observe when you actually look at the code, flag it — the handoff is a snapshot and could have drifted.

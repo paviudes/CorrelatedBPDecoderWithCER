@@ -2,19 +2,33 @@
 # batch_commands.jl — build commands.txt and dispatch to a backend
 # ============================================================================
 #
-# Exposes two overloads of generate_parallel_commands:
+# Exposes grid-form command builders (one per error model) plus a shared
+# explicit-list form:
 #
-#   (1) grid form:      (pvals, qvals, n_samples, codename; ...)
-#         Constructs train/test/CER filenames from the p×q×samples grid, then
-#         delegates to the explicit form.
+#   (1a) grid form, Ising:    generate_parallel_commands_Ising
+#           (pvals, qvals, n_samples, codename; ...)
+#         Two-parameter correlated ("Ising") error model. Constructs
+#         train/test/CER filenames from the p×q×samples grid via `fmt_probs`
+#         (padded "p_..._q_..." tag), then delegates to the explicit form.
 #
-#   (2) explicit form:  (cer_files, train_files, test_files, codename; ...)
+#   (1b) grid form, Circuit:  generate_parallel_commands_Circuit
+#           (pvals, n_samples, codename; ...)
+#         Single-parameter circuit-level depolarizing error model — only `p`
+#         (per circuit-element depolarizing probability) is used; there is no
+#         `q`. Constructs filenames from the p×samples grid via `fmt_prob`
+#         (single-value "p_..." tag), then delegates to the explicit form.
+#
+#   (2) explicit form:  generate_parallel_commands
+#           (cer_files, train_files, test_files, codename; ...)
 #         Writes commands.txt with one julia neural_bp_experiments.jl invocation
 #         per (cer, train, test, hyperparams) tuple. Then dispatches to one of
 #         three backends selected by cluster_backend:
 #           "slurm"     → run_on_SLURM      (slurm.jl)
 #           "google_vm" → run_on_Google_VM  (google_vm.jl)
 #           "local"     → run_locally       (local_runs.jl)
+#
+# batch_run.jl picks the grid form based on its `error_model` setting
+# (case-insensitive: "Ising" or "Circuit").
 #
 # `include`d by batch_run.jl, which also `include`s the three backend files.
 # ============================================================================
@@ -42,7 +56,24 @@ function fmt_probs(prob1::Float64, prob2::Float64)::String
     return "p_$(Printf.format(fmt, prob1))_q_$(Printf.format(fmt, prob2))"
 end
 
-function generate_parallel_commands(
+"""
+    fmt_prob(prob::Float64) -> String
+
+Single-parameter counterpart to `fmt_probs`, for the circuit-level error model
+that has only a per-element depolarizing probability `p` (no neighbour `q`).
+
+There is no second value to pad against, so `p` is rendered with its own
+decimal count — `fmt_prob(0.01) == "p_0.01"`, `fmt_prob(0.001) == "p_0.001"`.
+This is exactly what `fmt_probs` would produce for a lone value, keeping the
+"p_..." portion of the tag identical across the two error models.
+"""
+function fmt_prob(prob::Float64)::String
+    ndig = length(split(string(prob), ".")[end])
+    fmt = Printf.Format("%.$(ndig)f")
+    return "p_$(Printf.format(fmt, prob))"
+end
+
+function generate_parallel_commands_Ising(
     pvals::AbstractVector{<:Real},
     qvals::AbstractVector{<:Real},
     n_samples::Int,
@@ -71,8 +102,8 @@ function generate_parallel_commands(
     mem_per_gpu::String="",   # SLURM `--mem-per-gpu` (test mode only). Empty ⇒ use `--mem-per-cpu`.
 )
     """
-    Grid form: build cer/train/test filenames from `pvals × qvals × 1:n_samples`
-    then delegate to the explicit-list form.
+    Ising (two-parameter correlated) grid form: build cer/train/test filenames
+    from `pvals × qvals × 1:n_samples`, then delegate to the explicit-list form.
 
     Filenames go through `fmt_probs` (padded, max-decimals form) rather than
     plain Julia string interpolation, so e.g. (p=0.01, q=0.001) produces
@@ -89,6 +120,85 @@ function generate_parallel_commands(
     cer_files = [
         "correlated_weights_$(fmt_probs(Float64(p), Float64(q)))_s_$(samp).txt"
         for p in pvals for q in qvals for samp in 1:n_samples
+    ]
+    hyperparams_files = [hyperparams_file for _ in 1:length(cer_files)]
+
+    generate_parallel_commands(
+        cer_files,
+        train_files,
+        test_files,
+        codename;
+        n_hidden_layers   = n_hidden_layers,
+        hyperparams_files = hyperparams_files,
+        julia_project     = julia_project,
+        commands_file     = commands_file,
+        output_file       = output_file,
+        working_dir       = working_dir,
+        ncpus             = ncpus,
+        mem_per_cpu       = mem_per_cpu,
+        max_nodes         = max_nodes,
+        wall_time         = wall_time,
+        email_address     = email_address,
+        cluster_backend   = cluster_backend,
+        skip_testing      = skip_testing,
+        account           = account,
+        mode              = mode,
+        n_gpus_per_node   = n_gpus_per_node,
+        gpu_type          = gpu_type,
+        cuda_module       = cuda_module,
+        mem_per_gpu       = mem_per_gpu,
+    )
+end
+
+function generate_parallel_commands_Circuit(
+    pvals::AbstractVector{<:Real},
+    n_samples::Int,
+    codename::String="aps";
+    # Hyperparameters for the Neural BP model
+    n_hidden_layers::Int=100,
+    hyperparams_file::String="default_hyperparams.toml",
+    # File paths and project settings for running the commands
+    julia_project::String="./../",
+    commands_file::String="commands.txt",
+    output_file::String="simulation_results.log",
+    working_dir::String=joinpath(@__DIR__, ".."),
+    # Cluster settings.
+    ncpus::Int=10,
+    mem_per_cpu::String="4G",
+    max_nodes::Int=10,
+    wall_time::String="4:00:00",
+    email_address::String="pavithran.sridhar@gmail.com",
+    cluster_backend::String="Google_VM", # "SLURM", "local", or "Google_VM"
+    skip_testing::Bool=false,
+    account::String="def-jemerson",
+    mode::Symbol=:train,
+    n_gpus_per_node::Int=1,
+    gpu_type::String="",
+    cuda_module::String="cuda",
+    mem_per_gpu::String="",   # SLURM `--mem-per-gpu` (test mode only). Empty ⇒ use `--mem-per-cpu`.
+)
+    """
+    Circuit (single-parameter) grid form: build cer/train/test filenames from
+    `pvals × 1:n_samples`, then delegate to the explicit-list form.
+
+    The circuit-level error model has a single knob — `p`, the depolarizing
+    probability attached to every circuit element (state prep, measurement,
+    single- and two-qubit gates). There is no neighbour parameter `q`, so
+    filenames carry only the `fmt_prob` single-value tag (e.g. `..._p_0.01_...`)
+    rather than the `fmt_probs` pair tag. `qvals` is intentionally absent from
+    this signature so a caller can't silently pass a `q` that does nothing.
+    """
+    train_files = [
+        "train_$(fmt_prob(Float64(p)))_s_$(samp).txt"
+        for p in pvals for samp in 1:n_samples
+    ]
+    test_files = [
+        "test_$(fmt_prob(Float64(p)))_s_$(samp).txt"
+        for p in pvals for samp in 1:n_samples
+    ]
+    cer_files = [
+        "correlated_weights_$(fmt_prob(Float64(p)))_s_$(samp).txt"
+        for p in pvals for samp in 1:n_samples
     ]
     hyperparams_files = [hyperparams_file for _ in 1:length(cer_files)]
 

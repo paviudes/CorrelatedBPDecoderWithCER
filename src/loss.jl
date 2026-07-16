@@ -103,8 +103,11 @@ end
 
 function compute_additional_loss_from_ising_correlations(
     posterior_llrs::Matrix{Float32},
+    expected_recoveries::BitMatrix,
+    parity_check_matrix_dual::BitMatrix,
     connectivity::Matrix{Int},
-    correlation_strengths::Vector{Float32}
+    correlation_strengths::Vector{Float32},
+    correlation_syndrome_importance::Float32   # gate sharpness β in exp(-β·|s|)
 )::Float32
     """
     We want to add a term to the Loss function that prefers a correlated error instead of an independent error.
@@ -133,6 +136,11 @@ function compute_additional_loss_from_ising_correlations(
 
     """
 
+    # Compute the syndrome of the residual error, which is given by: s = H * e_total, where e_total = e_pred + e_expected.
+    residual_errors = @. sigmoid(posterior_llrs) + expected_recoveries
+    residual_syndromes = parity_check_matrix_dual * residual_errors
+    real_residual_syndrome_weights = sum(sine_residue.(residual_syndromes), dims=1)
+
     n_samples = size(posterior_llrs, 2)
     n_edges   = size(connectivity, 1)
 
@@ -153,10 +161,11 @@ function compute_additional_loss_from_ising_correlations(
 
             loss_from_sample += correlation_strengths[e] * (σ_i - σ_k)^2
         end
-        loss += loss_from_sample
+        loss += exp(-real_residual_syndrome_weights[j] * correlation_syndrome_importance) * loss_from_sample
     end
 
     correlation_penalty = loss / (n_samples * n_edges)
+    # correlation_penalty = loss / (n_samples) # Experimenting with this normalization.
     return correlation_penalty
 end
 
@@ -226,7 +235,8 @@ function compute_loss_including_correlations(
     connectivity::Matrix{Int},
     correlation_strengths::Vector{Float32},
     is_correlated::Bool,
-    correlation_importance::Float32,
+    correlation_syndrome_importance::Float32,   # gate sharpness β in exp(-β·|s|)
+    correlation_weight::Float32,                # overall weight α₄ on the correlation term
     loss_layer_temperature::Float32,
     llr_certainty_importance::Float32,
     sparsity_importance::Float32,
@@ -251,11 +261,18 @@ function compute_loss_including_correlations(
         base_loss   = compute_sine_residue_loss_from_llrs(post, expected_recoveries, parity_check_matrix_dual)
         llr_reg     = syndrome_loss_regularizer(post)
         sparse_pen  = sparsity_penalty(post)
-        corr_pen    = is_correlated ? compute_additional_loss_from_ising_correlations(post, connectivity, correlation_strengths) : 0f0
+        if is_correlated
+            corr_pen = compute_additional_loss_from_ising_correlations(
+                          post, expected_recoveries, parity_check_matrix_dual,
+                          connectivity, correlation_strengths, correlation_syndrome_importance
+                      )
+        else
+            corr_pen = 0f0
+        end
 
         losses_per_layer[layer - warmup_loss_layers] = base_loss +
                                   llr_certainty_importance * llr_reg +
-                                  correlation_importance * corr_pen +
+                                  correlation_weight * corr_pen +
                                   sparsity_importance * sparse_pen
     end
     total_loss = softmin_loss(losses_per_layer, loss_layer_temperature)

@@ -82,15 +82,26 @@ cat > "$SETTINGS_FILE" <<'EOF'
 
 # --- data & experiment ---
 working_dir      = "./../data"
-dirnames         = ["72q_BB_p_0.010_std_0.01_q_0.000_std_0.00_data"]
-pvals            = [0.01]
+dirnames         = ["72q_BB_cycles_1"]
+# pvals / qvals: TOML arrays like [0.001, 0.005], OR a QUOTED Julia range
+# shorthand "start:step:stop", e.g. pvals = "0.0001:0.0002:0.0009". The quotes
+# are required — bare 0.0001:0.0002:0.0009 is not valid TOML. You can also mix:
+# pvals = [0.001, "0.01:0.01:0.05"].
+pvals            = ["0.0001:0.0002:0.0009"]
 qvals            = [0.0]
-n_samples        = 64
+n_samples        = 1
+
+# Error model — selects the filename convention (case-insensitive):
+#   "Ising"   two-parameter correlated model; uses BOTH pvals and qvals.
+#             Filenames carry the padded "p_..._q_..." tag.
+#   "Circuit" single-parameter circuit-level depolarizing model; uses pvals
+#             ONLY (qvals is ignored). Filenames carry just the "p_..." tag.
+error_model      = "Circuit"
 
 # --- Parameters for the neural BP model ---
 # The hyperparams TOML file should be placed in the same directory as the <working_dir>/<dirnames>/<models> folder.
 hyperparams_file = "hyperparams_epochs_10.toml"
-n_hidden_layers  = 200
+n_hidden_layers  = 100
 
 # --- backend selection ---
 # "SLURM"     Alliance Canada / any SLURM cluster
@@ -129,7 +140,7 @@ account          = "def-jemerson"
 
 # Size per test-mode invocation. For train mode (test=false, no GPU), you can
 # safely go up to 32–48 cores with 4G–8G/core on a CPU node.
-n_cpus           = 1
+n_cpus           = 10
 mem_per_cpu      = "16G"
 
 wall_time        = "1:00:00"

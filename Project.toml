@@ -1,4 +1,5 @@
 name = "CorrelatedBPDecoderWithCER"
+uuid = "79c285b1-ed6b-500e-a219-fceca9620707"
 version = "0.1.0"
 
 [deps]

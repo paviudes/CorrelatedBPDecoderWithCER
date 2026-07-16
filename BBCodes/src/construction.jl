@@ -1,8 +1,10 @@
-using LinearAlgebra
-using DelimitedFiles
-
 # ----------------------------------------------------------------------------
-# Bivariate Bicycle (BB) quantum LDPC codes from
+# construction.jl — Bivariate Bicycle (BB) quantum LDPC code construction
+#
+# (Named construction.jl, not bbcodes.jl, to avoid colliding with the module
+# file BBCodes.jl on case-insensitive filesystems.)
+#
+# BB codes from
 #   Bravyi, Cross, Gambetta, Maslov, Rall, Yoder (2024),
 #   "High-threshold and low-overhead fault-tolerant quantum memory."
 #   https://arxiv.org/abs/2308.07915
@@ -16,21 +18,85 @@ using DelimitedFiles
 #   H_Z = [B^T | A^T]  (lm rows × 2lm cols)
 # X-stabilizers act on qubits indexed 1..lm (left block) and lm+1..2lm (right
 # block) according to the 1-entries of each row of H_X; similarly for Z.
+#
+# Included by BBCodes.jl, which provides `using LinearAlgebra` /
+# `using DelimitedFiles` and includes logicals.jl before this file.
 # ----------------------------------------------------------------------------
 
 struct BBCode
     HX::Matrix{Int}
     HZ::Matrix{Int}
+    LX::Matrix{Int}
+    LZ::Matrix{Int}
     n::Int
     k::Int
     d::Int
     l::Int
     m::Int
+    # Encoding for the monomials of the polynomial MUgGa
+    # (x, y) = ∑_(a,b) x^a y^b, where each monomial is represented as a tuple (a, b).
     A_monomials::Vector{Tuple{Int,Int}}
     B_monomials::Vector{Tuple{Int,Int}}
-    function BBCode(HX, HZ, n, k, d, l, m, A_monomials, B_monomials)
-        new(HX, HZ, n, k, d, l, m, A_monomials, B_monomials)
+    function BBCode(HX, HZ, LX, LZ, n, k, d, l, m, A_monomials, B_monomials)
+        new(HX, HZ, LX, LZ, n, k, d, l, m, A_monomials, B_monomials)
     end
+end
+
+# ============================================================================
+# Human-readable polynomial parsing.
+# ============================================================================
+
+function parse_bb_polynomial(poly::AbstractString)::Vector{Tuple{Int,Int}}
+    """
+    Parse a human-readable bivariate polynomial over F_2[x, y] into the list of
+    (a, b) monomial exponents consumed by `bb_code`.
+
+    Accepted syntax (whitespace-insensitive; x/y case-insensitive):
+      - terms are separated by `+`
+      - within a term, factors are joined by `*` or spaces
+      - a factor is one of:  1 , x , y , x^k , y^k   (k a non-negative integer)
+      - the constant term is written as `1`  ->  (0, 0)
+
+    Examples:
+      "x^3 + y + y^2"   -> [(3, 0), (0, 1), (0, 2)]
+      "1 + x^2 + x^7"   -> [(0, 0), (2, 0), (7, 0)]
+      "x^3 y^2 + 1"     -> [(3, 2), (0, 0)]
+
+    Exponents are NOT reduced mod (l, m) here: `bb_code` realises each monomial
+    as a matrix power of a cyclic-shift matrix (S_l^l = I_l), so wraparound like
+    x^9 with l = 6 is handled correctly downstream. Duplicate monomials are kept
+    as-is — they cancel in pairs when `bb_code` reduces the polynomial mod 2.
+    """
+    # Normalise explicit multiplication `*` to a space so a term splits cleanly
+    # into factors on whitespace.
+    cleaned = replace(poly, r"\s*\*\s*" => " ")
+    monomials = Tuple{Int,Int}[]
+    for term in split(cleaned, '+')
+        t = strip(term)
+        isempty(t) && continue          # tolerate stray/leading `+`
+        a = 0
+        b = 0
+        for factor in split(t)          # split the term on whitespace into factors
+            f = strip(factor)
+            isempty(f) && continue
+            if f == "1"
+                continue                # constant factor contributes nothing
+            end
+            fm = match(r"^([xyXY])(?:\^(\d+))?$", f)
+            fm === nothing && error(
+                "Could not parse factor \"$(f)\" in term \"$(t)\" of polynomial " *
+                "\"$(poly)\". Expected one of: 1, x, y, x^k, y^k.")
+            exp = fm.captures[2] === nothing ? 1 : parse(Int, fm.captures[2])
+            if lowercase(fm.captures[1]) == "x"
+                a += exp
+            else
+                b += exp
+            end
+        end
+        push!(monomials, (a, b))
+    end
+    isempty(monomials) && error("Polynomial \"$(poly)\" parsed to zero terms.")
+    return monomials
 end
 
 # ============================================================================
@@ -75,10 +141,10 @@ function _polynomial_matrix(l::Int, m::Int, monomials::Vector{Tuple{Int,Int}})::
         monomial_term = kron(Sla, Smb) # Kronecker product.
         poly_matrix = poly_matrix .+ monomial_term
     end
-    
+
     # Since we are working over F_2, we take the result modulo 2.
     binary_mat = mod.(poly_matrix, 2)
-    
+
     return binary_mat
 end
 
@@ -123,29 +189,40 @@ function bb_code(
         error("CSS condition not satisfied: H_X * H_Z^T ≠ 0 (mod 2).")
     end
 
+    # Compute the logical operators of the code from the stabilizers using the `compute_logical_operators` function from `logicals.jl`.
+    (logical_X_ops_transposed, logical_Z_ops_transposed) = compute_logical_operators(HX', HZ')
+    LX = logical_X_ops_transposed'
+    LZ = logical_Z_ops_transposed'
+
     n_qubits = 2 * l * m
     k_logical = n_qubits - size(HX, 1) - size(HZ, 1)
 
     # Dictionary with the code details.
-    code = BBCode(HX, HZ, n_qubits, k_logical, distance, l, m, A_monomials, B_monomials)
+    code = BBCode(HX, HZ, LX, LZ, n_qubits, k_logical, distance, l, m, A_monomials, B_monomials)
     return code
 end
 
 function save_bb_code(bbc::BBCode; prefix::String="./../code")
     """
-    Save a BB code's two matrices to plain-text files:
-    <prefix>_HX.txt
-    <prefix>_HZ.txt
-    We will save these files in <prefix>/bb_code/, so the full paths will be `<prefix>/bb_code/<prefix>_HX.txt` and `<prefix>/bb_code/<prefix>_HZ.txt`.
-    We will also write the
-    - code parameters (n, k, d) in a file `<prefix>/bb_code/parameters.txt` for reference.
-    - code hyperparameters (l, m, A_monomials, B_monomials) in a file `<prefix>/bb_code/hyperparameters.txt` for reference.
+    Save a BB code to plain-text files inside the directory `<prefix>/`:
+      <prefix>/HX.txt , <prefix>/HZ.txt   — X/Z stabilizer parity-check matrices
+      <prefix>/LX.txt , <prefix>/LZ.txt   — X/Z logical operators
+      <prefix>/parameters.txt             — code parameters (n, k, d)
+      <prefix>/hyperparameters.txt        — construction data (l, m, A, B), with
+                                            the monomials written human-readably
+                                            (e.g. "x^3 y^0")
+
+    `prefix` is created if it does not exist (including any missing parent
+    directories), so you can pass a fresh nested destination folder directly.
     """
-    if !isdir("$(prefix)")
-        mkdir("$(prefix)")
-    end
+    # mkpath (not mkdir) so a nested destination like "a/b/c" that doesn't yet
+    # exist is created in full rather than erroring on a missing parent.
+    isdir(prefix) || mkpath(prefix)
     writedlm("$(prefix)/HX.txt", bbc.HX, ' ')
     writedlm("$(prefix)/HZ.txt", bbc.HZ, ' ')
+    writedlm("$(prefix)/LX.txt", bbc.LX, ' ')
+    writedlm("$(prefix)/LZ.txt", bbc.LZ, ' ')
+
     open("$(prefix)/parameters.txt", "w") do io
         println(io, "n: ", bbc.n)
         println(io, "k: ", bbc.k)
@@ -185,7 +262,7 @@ Notes:
 - Polynomials A and B define the structure used in the construction.
 =# # ============================================================================
 
-function bb_code_72(;prefix::String="./../data/codes/72q_BB_code")
+function bb_code_72_12_6(;prefix::String="./../data/codes/72q_BB_code")
     """
     Construct the [[72, 12, 6]] BB code from Table 3 of https://arxiv.org/abs/2308.07915.
     """
@@ -194,7 +271,7 @@ function bb_code_72(;prefix::String="./../data/codes/72q_BB_code")
     return bbc
 end
 
-function bb_code_90(;prefix::String="./../data/codes/90q_BB_code")
+function bb_code_90_8_10(;prefix::String="./../data/codes/90q_BB_code")
     """
     Construct the [[90, 8, 10]] BB code from Table 3 of https://arxiv.org/abs/2308.07915.
     """
@@ -203,7 +280,7 @@ function bb_code_90(;prefix::String="./../data/codes/90q_BB_code")
     return bbc
 end
 
-function bb_code_108(;prefix::String="./../data/codes/108q_BB_code")
+function bb_code_108_8_10(;prefix::String="./../data/codes/108q_BB_code")
     """
     Construct the [[108, 8, 10]] BB code from Table 3 of https://arxiv.org/abs/2308.07915.
     """
@@ -212,7 +289,7 @@ function bb_code_108(;prefix::String="./../data/codes/108q_BB_code")
     return bbc
 end
 
-function bb_code_144(;prefix::String="./../data/codes/144q_BB_code")
+function bb_code_144_12_12(;prefix::String="./../data/codes/144q_BB_code")
     """
     Construct the [[144, 12, 12]] BB code from Table 3 of https://arxiv.org/abs/2308.07915.
     """
@@ -221,7 +298,7 @@ function bb_code_144(;prefix::String="./../data/codes/144q_BB_code")
     return bbc
 end
 
-function bb_code_288(;prefix::String="./../data/codes/288q_BB_code")
+function bb_code_288_12_18(;prefix::String="./../data/codes/288q_BB_code")
     """
     Construct the [[288, 12, 18]] BB code from Table 3 of https://arxiv.org/abs/2308.07915.
     """
@@ -230,7 +307,7 @@ function bb_code_288(;prefix::String="./../data/codes/288q_BB_code")
     return bbc
 end
 
-function bb_code_360(;prefix::String="./../data/codes/360q_BB_code")
+function bb_code_360_12_24(;prefix::String="./../data/codes/360q_BB_code")
     """
     Construct the [[360, 12, ≤24]] BB code from Table 3 of https://arxiv.org/abs/2308.07915.
     """
@@ -239,11 +316,69 @@ function bb_code_360(;prefix::String="./../data/codes/360q_BB_code")
     return bbc
 end
 
-function bb_code_756(;prefix::String="./../data/codes/756q_BB_code")
+function bb_code_756_16_34(;prefix::String="./../data/codes/756q_BB_code")
     """
     Construct the [[756, 16, ≤34]] BB code from Table 3 of https://arxiv.org/abs/2308.07915.
     """
     bbc = bb_code(21, 18, [(3, 0), (0, 10), (0, 17)], [(0, 5), (3, 0), (19, 0)]; distance=34)
     save_bb_code(bbc; prefix=prefix)
     return bbc
+end
+
+# ============================================================================
+# Preset registry — Table 3 in machine-readable form.
+# ============================================================================
+#
+# `BB_CODE_TABLE` mirrors the ASCII table above so callers (e.g. the shell
+# driver) can display/validate presets programmatically. `BB_CODE_CONSTRUCTORS`
+# maps each label to its constructor above; `bb_code_by_label` dispatches on a
+# label string. Labels are "<n>_<k>_<d>" — matching the function names.
+
+const BB_CODE_TABLE = (
+    (label = "72_12_6",   n = 72,  k = 12, d = 6,  l = 6,  m = 6,  A = "x^3 + y + y^2",     B = "y^3 + x + x^2"),
+    (label = "90_8_10",   n = 90,  k = 8,  d = 10, l = 15, m = 3,  A = "x^9 + y + y^2",     B = "1 + x^2 + x^7"),
+    (label = "108_8_10",  n = 108, k = 8,  d = 10, l = 9,  m = 6,  A = "x^3 + y + y^2",     B = "y^3 + x + x^2"),
+    (label = "144_12_12", n = 144, k = 12, d = 12, l = 12, m = 6,  A = "x^3 + y + y^2",     B = "y^3 + x + x^2"),
+    (label = "288_12_18", n = 288, k = 12, d = 18, l = 12, m = 12, A = "x^3 + y^2 + y^7",   B = "y^3 + x + x^2"),
+    (label = "360_12_24", n = 360, k = 12, d = 24, l = 30, m = 6,  A = "x^9 + y + y^2",     B = "y^3 + x^25 + x^26"),
+    (label = "756_16_34", n = 756, k = 16, d = 34, l = 21, m = 18, A = "x^3 + y^10 + y^17", B = "y^5 + x^3 + x^19"),
+)
+
+const BB_CODE_CONSTRUCTORS = Dict{String,Function}(
+    "72_12_6"   => bb_code_72_12_6,
+    "90_8_10"   => bb_code_90_8_10,
+    "108_8_10"  => bb_code_108_8_10,
+    "144_12_12" => bb_code_144_12_12,
+    "288_12_18" => bb_code_288_12_18,
+    "360_12_24" => bb_code_360_12_24,
+    "756_16_34" => bb_code_756_16_34,
+)
+
+function bb_code_by_label(label::AbstractString; prefix::String)
+    """
+    Build and save a Table-3 preset selected by its "<n>_<k>_<d>" label
+    (e.g. "144_12_12"), writing into `prefix`. Errors listing the valid labels
+    if `label` is unknown.
+    """
+    key = strip(label)
+    haskey(BB_CODE_CONSTRUCTORS, key) || error(
+        "Unknown BB code label \"$(label)\". Valid labels: " *
+        join([row.label for row in BB_CODE_TABLE], ", ") * ".")
+    return BB_CODE_CONSTRUCTORS[key](; prefix=prefix)
+end
+
+function print_bb_code_table(io::IO = stdout)
+    """
+    Print the Table-3 preset registry (labels + (l, m) + polynomials) for
+    quick reference at the REPL or from the shell driver.
+    """
+    println(io, "Available BB code presets (Table 3, arXiv:2308.07915):")
+    println(io, rpad("  label", 14), rpad("[[n,k,d]]", 16), rpad("(l,m)", 10), "A  /  B")
+    for r in BB_CODE_TABLE
+        println(io, rpad("  " * r.label, 14),
+                    rpad("[[$(r.n),$(r.k),$(r.d)]]", 16),
+                    rpad("($(r.l),$(r.m))", 10),
+                    r.A, "  /  ", r.B)
+    end
+    return nothing
 end

@@ -1,0 +1,21 @@
+name = "BBCodes"
+uuid = "5e9d2c7a-3b81-4f6e-9a2d-1c4b7e0f8a63"
+version = "0.1.0"
+
+# Standalone sibling package to CorrelatedBPDecoderWithCER — constructs
+# Bivariate Bicycle (BB) quantum LDPC codes (stabilizers + logicals) from
+# Bravyi et al. 2024 (arXiv:2308.07915) and saves them to disk.
+#
+# NOT dependent on CorrelatedBPDecoderWithCER: code construction is pure linear
+# algebra over F_2, so there's no reason to drag in the heavy decoder stack
+# (Enzyme/CUDA/…) just to generate a parity-check matrix.
+#
+# The library core (the BBCodes module) uses only the standard libraries
+# LinearAlgebra + DelimitedFiles. ArgParse is here solely for the CLI driver
+# expts/build_bb_code.jl, which runs under this project; it's a small pure-Julia
+# package, nothing like the decoder stack we keep out.
+
+[deps]
+ArgParse = "c7e460c6-2fb9-53a9-8c5b-16f535851c63"
+DelimitedFiles = "8bb1440f-4735-579b-a4ab-409b98df4dab"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"

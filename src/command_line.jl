@@ -295,7 +295,8 @@ function parse_hyper_parameters(hyperparams_file::String=""; prefix::String="./.
 		"n_gradient_updates_per_epoch" => 0, # If `online_training` is true, this specifies the number of gradient updates to perform per epoch. If set to 0, it defaults to the number of batches in the training dataset.
         # Annealing schedule for the loss hyperparameters
         "loss_layer_temperature" => "0.1,5.0,0.9,down", # Smooth minimum approximation temperature
-        "correlation_importance" => "0.1,1.0,0.1,down", # Correlation penalty importance
+        "correlation_syndrome_importance" => "0.0,1.0,0.7,up", # Gate sharpness β in exp(-β·|s|): 0 early (correlations guide), →1 late (gate restricts to syndrome-consistent)
+        "correlation_weight" => "1.0,1.0,0.1,down", # Overall weight α₄ on the correlation term (constant 1.0 by default; raise to strengthen)
         "llr_certainty_importance" => "0.001,0.01,0.1,down", # LLR convergence term importance
         "sparsity_importance" => "0.0,0.01,0.5,up", # Sparsity encouragement term importance
 		# Initial conditions: all weights are initialized to Gaussian random values around 1, with a standard deviation of σ = 0.3.
@@ -320,7 +321,7 @@ function parse_hyper_parameters(hyperparams_file::String=""; prefix::String="./.
         end
 		
 		# Parse annealing schedules from strings into structured dictionaries
-        for key in ["loss_layer_temperature", "correlation_importance", "llr_certainty_importance", "sparsity_importance"]
+        for key in ["loss_layer_temperature", "correlation_syndrome_importance", "correlation_weight", "llr_certainty_importance", "sparsity_importance"]
             # Added `isa String` check for safety, in case the TOML file is ever updated to use inline tables
             if haskey(updated_hyperparams, key) && isa(updated_hyperparams[key], String)
                 schedule_parts = split(updated_hyperparams[key], ",")
@@ -343,7 +344,7 @@ function parse_hyper_parameters(hyperparams_file::String=""; prefix::String="./.
         println("Hyperparameters file not provided or does not exist. Using default values.")
 
         # Convert default annealing schedules from strings to structured dictionaries
-        for key in ["loss_layer_temperature", "correlation_importance", "llr_certainty_importance", "sparsity_importance"]
+        for key in ["loss_layer_temperature", "correlation_syndrome_importance", "correlation_weight", "llr_certainty_importance", "sparsity_importance"]
             schedule_parts = split(default_hyperparams[key], ",")
             default_hyperparams[key] = Dict(
                 "min" => parse(Float32, schedule_parts[1]),

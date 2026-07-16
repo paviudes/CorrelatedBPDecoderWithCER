@@ -14,7 +14,7 @@ function load_base_BP_model(parity_check_matrix_file::String, logicals_file::Str
     dual_parity_check_matrix = vcat(parity_check_matrix, logicals)
     # If the `correlation_strengths_file` is provided, parse the correlation strengths and connectivity matrix from the file. Otherwise, use empty values.
     if isfile(correlation_strengths_file)
-        (connectivity_matrix, correlation_strengths, single_qubit_error_rates) = parse_cer_data(correlation_strengths_file)
+        (connectivity_matrix, correlation_strengths, single_qubit_error_rates) = parse_cer_data(correlation_strengths_file; verbose=false)
         initial_llrs = zeros(Float32, n_bits)
         for qubit in 1:n_bits
             if haskey(single_qubit_error_rates, qubit)

@@ -1,4 +1,9 @@
-using LinearAlgebra
+# ============================================================================
+# logicals.jl — compute logical operators of a CSS code from its stabilizers
+# ============================================================================
+# Included by BBCodes.jl (which provides `using LinearAlgebra`). All arithmetic
+# is over F_2.
+# ============================================================================
 
 function row_reduce_mod2(A::Matrix{Int})::Matrix{Int}
     """
@@ -32,7 +37,7 @@ function row_reduce_mod2(A::Matrix{Int})::Matrix{Int}
     # Remove zero rows at the bottom
     nonzero_rows = findall(r -> any(A_reduced[r, :] .== 1), 1:nrows)
     A_reduced = A_reduced[nonzero_rows, :]
-    
+
     return A_reduced
 end
 
@@ -44,7 +49,7 @@ function nullspace_mod2(A::Matrix{Int})::Matrix{Int}
     """
     ncols = size(A, 2)
     A_reduced = row_reduce_mod2(A)
-    
+
     # Identify pivot columns
     pivot_cols = findall(c -> any(A_reduced[:, c] .== 1), 1:ncols)
     free_cols = setdiff(1:ncols, pivot_cols)
@@ -61,7 +66,7 @@ function nullspace_mod2(A::Matrix{Int})::Matrix{Int}
         end
         push!(nullspace_basis, basis_vector)
     end
-    
+
     return hcat(nullspace_basis...)
 end
 
@@ -69,7 +74,7 @@ function compute_logical_operators(stabilizers_X::Matrix{Int}, stabilizers_Z::Ma
     """
     Given the parity-check matrices HX and HZ of a CSS code, compute the logical operators of the code.
     The logical operators can be found by computing the nullspace of the combined parity-check matrix [HX; HZ] and then identifying which of those operators commute with all stabilizers but are not themselves in the stabilizer group.
-    
+
     Given the Null spaces:
     NX := nullspace_mod2(HX)
     NZ := nullspace_mod2(HZ)
@@ -99,7 +104,7 @@ function compute_logical_operators(stabilizers_X::Matrix{Int}, stabilizers_Z::Ma
         end
     end
     logical_Z_operators = hcat(logical_Z_operators...)
-    
+
 
     # Compute the nullspace of HZ to get all operators that commute with the Z-stabilizers, i.e. NX = span(HX | LX)
     normalizers_X = nullspace_mod2(stabilizers_Z)
