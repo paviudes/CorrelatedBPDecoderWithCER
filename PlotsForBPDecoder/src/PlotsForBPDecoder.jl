@@ -33,10 +33,11 @@ using Plots
 using Plots.PlotMeasures
 using StatsPlots
 
-# fmt_probs is the canonical (p, q) → filename-tag formatter. It lives in the
-# main package (CorrelatedBPDecoderWithCER/src/utils.jl) so cluster code can
-# reach it without pulling in Plots; here we just re-use the exported symbol.
-using CorrelatedBPDecoderWithCER: fmt_probs
+# Symbols pulled from the main package. `fmt_probs` is the canonical
+# (p, q) → filename-tag formatter; the collectors/savers are used by collect.jl.
+using CorrelatedBPDecoderWithCER: fmt_probs, collect_decoder_statistics,
+    save_decoder_dataframe, collect_decoder_statistics_correlated,
+    collect_standard_decoder_statistics_correlated
 
 # Ballistic error-rate curves (avg logical error rate vs. q).
 include("error_rate_curves.jl")
@@ -45,5 +46,9 @@ export plot_statistics_for_ballistic_error_model
 # Violin plot of per-sample performance gain (BP-OSD LER / Neural BP LER).
 include("performance_spread.jl")
 export plot_performance_spread
+
+# Result aggregation / analysis entry points (moved from expts/).
+include("collect.jl")
+export postprocess_neuralbp_results, collect_results
 
 end # module

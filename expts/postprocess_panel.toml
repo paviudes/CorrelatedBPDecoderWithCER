@@ -1,0 +1,65 @@
+# ============================================================================
+# postprocess control panel
+# ============================================================================
+# This TOML is the control panel for expts/postprocess.jl. Each [section] is one
+# operation, keyed by an identifier. To run something:
+#
+#   1. Flip its `run = true`.
+#   2. Fill in that section's parameters.
+#   3. From the expts/ directory:
+#        julia --project="./" postprocess.jl                            # run EVERY section with run = true
+#        julia --project="./" postprocess.jl --task=neural_gather       # run just one section
+#        julia --project="./" postprocess.jl --config=other_panel.toml  # run a different panel
+#
+# Lines starting with # are comments. Strings are quoted; booleans are lowercase
+# (true / false); lists are TOML arrays [ "a", "b" ].
+# ============================================================================
+
+# Root data directory. Every section resolves its files relative to
+#   <workdir>/<codename>/results   (inputs and gathered/aggregated outputs)
+#   <workdir>/<codename>/plots      (plot outputs)
+# so filenames below are bare — no paths.
+workdir = "./../data"
+
+
+# ###### Operations on Standard BP-OSD results ###############################
+# Build the aggregated standard-decoder (BP-OSD) DataFrame from a failures file.
+[standard_bposd]
+run = false
+# error_model: "Ising" (rows have p, q, ...) or "Circuit" (p only)
+error_model = "Circuit"
+# codename directory (its results/ subfolder holds the input + output)
+codename = "18q_BB_cycles_1"
+# the standard-BP failures file inside <workdir>/<codename>/results
+file = "18q_BB_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt"
+# output CSV filename, written into <workdir>/<codename>/results
+out = "standard_decoder_statistics.csv"
+
+
+# ###### Operations on Neural BP results #####################################
+## Gather multiple per-simulation output CSVs into a single DataFrame
+[neural_gather]
+run = true
+codename = "18q_BB_cycles_1"
+# per-simulation result CSVs — bare filenames inside <workdir>/<codename>/results
+files = [
+    "simulation_results_test_p_0.0001_s_1_nlayers_100_epochs_10_trained_using_train_p_0.0001_s_1.csv",
+    "simulation_results_test_p_0.0001_s_1_nlayers_100_epochs_10_trained_using_train_p_0.0003_s_1.csv",
+    "simulation_results_test_p_0.0001_s_1_nlayers_100_epochs_10_trained_using_train_p_0.0005_s_1.csv",
+    "simulation_results_test_p_0.0001_s_1_nlayers_100_epochs_10_trained_using_train_p_0.0007_s_1.csv",
+    "simulation_results_test_p_0.0001_s_1_nlayers_100_epochs_10_trained_using_train_p_0.0009_s_1.csv"
+]
+# output CSV filename, written into <workdir>/<codename>/results
+out = "18q_decoder_statistics_NeuralBP.csv"
+
+
+# ###### Plotting ############################################################
+## Plot the standard vs Neural BP results
+[plot_standard_vs_neural]
+run = false
+codename = "<codename>"
+# the neural / standard decoder-statistics CSVs, inside <workdir>/<codename>/results
+neural_csv   = "decoder_statistics_correlated.csv"
+standard_csv = "standard_decoder_statistics.csv"
+# output plot filename, written into <workdir>/<codename>/plots
+plot_file    = "standard_vs_neural.pdf"

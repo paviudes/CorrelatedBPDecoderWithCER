@@ -3,7 +3,7 @@ using DelimitedFiles
 using DataStructures
 using CorrelatedBPDecoderWithCER
 include("ballistic_errors.jl")
-include("explicit_errors.jl")
+include("misc/explicit_errors.jl")  # explicit_errors.jl now lives in expts/misc/
 
 function main(read_from_file::Bool, explicit_error_file::String, ballistic_per_qubit_error_prob::Float64, ballistic_neighbour_error_prob::Float64, num_error_samples::Int, algo::String, n_iterations_BP::Int, rounds_per_BP::Int; llr_convergence_threshold::Float64=1e-6, llr_confidence_threshold::Float64=4.0, weight_soft_constraint::Float64=0.8, debug::Bool=false, verbose::Bool=false, outdir::String="./../data")
 	start_time = time()

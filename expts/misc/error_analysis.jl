@@ -10,7 +10,7 @@ using CorrelatedBPDecoderWithCER    # parse_cer_data (for the CER-analysis wrapp
 # CorrelatedBPDecoderWithCER. Run it under the experiments environment
 # `expts/Project.toml`, which has both plus the other analysis deps:
 #
-#     julia --project=expts expts/error_analysis.jl --analysis correlations
+#     julia --project=expts expts/misc/error_analysis.jl --analysis correlations
 #
 # Do NOT run it with `--project=./../` (the main package deliberately excludes
 # Plots, so plotting won't resolve), and never on a cluster job.

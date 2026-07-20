@@ -428,3 +428,136 @@ function (bpnn::NachmaniNeuralBP)(
 
     return copy(posterior_llrs)
 end
+
+# ============================================================================
+# Legacy result collectors (moved out of postprocessing.jl).
+# `postprocessing.jl` now keeps only the general `collect_decoder_statistics`
+# (multi-file) and the combined `collect_standard_decoder_statistics`. These
+# grid/Ising-specific collectors remain here (still exported) so existing
+# callers such as expts/neural_bp_experiments.jl keep working. `fmt_probs` and
+# `compute_std_assuming_bernoulli` are resolved at call time, so their being
+# defined in other files included later/earlier is fine.
+# ============================================================================
+
+function collect_decoder_statistics_correlated(per_qubit_error_probs::AbstractVector{<:Real}, neighbour_error_probs::AbstractVector{<:Real}, num_samples_per_error_rate::Int, n_layers::Int, n_epochs::Int; prefix::String="./../data")::DataFrame
+    """
+    Collect Neural BP decoder statistics for the correlated (Ballistic) error
+    model. There's one file per simulation run, produced by
+    `neural_bp_experiments.jl` and named by the convention it builds:
+
+        simulation_results_test_<pq_tag>_s_<s>_nlayers_<n_layers>_epochs_<n_epochs>_trained_using_train_<pq_tag>_s_<s>.csv
+
+    where `<pq_tag>` is `fmt_probs(p, q)`. Reconstructs the expected filenames
+    from the p×q×samples grid, reads each, and stacks them into one DataFrame.
+    (Legacy: prefer building the file list and calling `collect_decoder_statistics`.)
+    """
+    num_files = 0
+    missing_files = String[]
+    for p in per_qubit_error_probs, q in neighbour_error_probs, s in 1:num_samples_per_error_rate
+        pq_tag = fmt_probs(Float64(p), Float64(q))
+        training_file = "train_$(pq_tag)_s_$(s)"
+        results_file = "$(prefix)/results/simulation_results_test_$(pq_tag)_s_$(s)_nlayers_$(n_layers)_epochs_$(n_epochs)_trained_using_$(training_file).csv"
+        if isfile(results_file)
+            num_files += 1
+        else
+            push!(missing_files, results_file)
+        end
+    end
+    if (size(missing_files, 1) > 0)
+        @warn ("$(size(missing_files, 1)) files are missing:\n$(missing_files)")
+    end
+
+    all_stats = DataFrame(
+        algo = Vector{String}(undef, num_files),
+        error_model_name = Vector{String}(undef, num_files),
+        error_model_parameters_description = Vector{String}(undef, num_files),
+        num_samples_per_error_rate = Vector{Int}(undef, num_files),
+        n_iterations_BP = Vector{Int}(undef, num_files),
+        rounds_per_BP = Vector{Int}(undef, num_files),
+        weight_soft_constraint = Vector{Float64}(undef, num_files),
+        num_failures = Vector{Int}(undef, num_files),
+        average_logical_error_rate = Vector{Float64}(undef, num_files),
+        std_logical_error_rate = Vector{Float64}(undef, num_files),
+        runtime = Vector{Float64}(undef, num_files)
+    )
+    file_index = 1
+    for p in per_qubit_error_probs, q in neighbour_error_probs, s in 1:num_samples_per_error_rate
+        pq_tag = fmt_probs(Float64(p), Float64(q))
+        training_file = "train_$(pq_tag)_s_$(s)"
+        results_file = "$(prefix)/results/simulation_results_test_$(pq_tag)_s_$(s)_nlayers_$(n_layers)_epochs_$(n_epochs)_trained_using_$(training_file).csv"
+        if isfile(results_file)
+            stats_dataframe = CSV.read(results_file, DataFrame)
+            all_stats[file_index, :algo] = stats_dataframe[1, :algo]
+            all_stats[file_index, :error_model_name] = stats_dataframe[1, :error_model_name]
+            all_stats[file_index, :error_model_parameters_description] = stats_dataframe[1, :error_model_parameters_description]
+            all_stats[file_index, :num_samples_per_error_rate] = stats_dataframe[1, :num_samples_per_error_rate]
+            all_stats[file_index, :n_iterations_BP] = stats_dataframe[1, :n_iterations_BP]
+            all_stats[file_index, :rounds_per_BP] = stats_dataframe[1, :rounds_per_BP]
+            all_stats[file_index, :weight_soft_constraint] = stats_dataframe[1, :weight_soft_constraint]
+            all_stats[file_index, :num_failures] = stats_dataframe[1, :num_failures]
+            all_stats[file_index, :average_logical_error_rate] = stats_dataframe[1, :average_logical_error_rate]
+            all_stats[file_index, :std_logical_error_rate] = compute_std_assuming_bernoulli(all_stats[file_index, :average_logical_error_rate], all_stats[file_index, :num_samples_per_error_rate])
+            all_stats[file_index, :runtime] = stats_dataframe[1, :runtime]
+            file_index += 1
+        end
+    end
+    return all_stats
+end
+
+function collect_standard_decoder_statistics_correlated(prefix::String="./../data", ntrials::Int=100000; standard_BP_output_file::String="standard_bp_failure_rates.txt")::DataFrame
+    """
+    Legacy Ising-only entry point, kept for back-compat with existing callers
+    (e.g. neural_bp_experiments.jl). Delegates to the combined
+    `collect_standard_decoder_statistics(:Ising; ...)` in postprocessing.jl.
+    `ntrials` is accepted for signature compatibility but ignored — the combined
+    collector now reads the trial count from the file.
+    """
+    stats_df = collect_standard_decoder_statistics(:Ising; prefix=prefix, standard_BP_output_file=standard_BP_output_file)
+    return stats_df
+end
+
+# ============================================================================
+# Legacy dataframe-filtering helpers (moved out of postprocessing.jl). Only used
+# by the legacy expts drivers (ballistic_errors.jl, misc/explicit_errors.jl);
+# kept exported so those callers keep working. `check_valid_fields_DecoderStatistics`
+# stays in postprocessing.jl and is resolved at call time.
+# ============================================================================
+
+function check_approximate(col::AbstractVector, val; atol::Float64=1e-8, rtol::Float64=1e-5)::BitVector
+    """
+    Check if the values in the column are approximately equal to the given value `val` using `isapprox` for Real values,
+    or == for String values. Returns a BitVector indicating which elements are approximately equal or equal.
+    """
+    if eltype(col) <: Real && isa(val, Real)
+        matches = isapprox.(col, val; atol=atol, rtol=rtol)
+    elseif eltype(col) <: AbstractString && isa(val, AbstractString)
+        matches = col .== val
+    else
+        # Fallback to == for other types
+        matches = col .== val
+    end
+    return matches
+end
+
+function extract_collected_data(stats_dataframe::DataFrame, select_parameters::Dict{Symbol, AbstractVector{<:Any}}, display_parameters::Vector{Symbol})::DataFrame
+    """
+    Extract data from a dataframe that has a specific set of columns and rows corresponding to the values for the columns.
+    Returns the rows whose `select_parameters` columns match, projected onto `display_parameters`.
+    """
+    valid_parameter_names = check_valid_fields_DecoderStatistics(collect(keys(select_parameters)))
+    valid_parameter_values = Iterators.product(collect([select_parameters[param] for param in valid_parameter_names])...)
+
+    # Each DecoderStatistics field is a Vector, so the per-column element type is
+    # `eltype(fieldtype(...))` (e.g. String for a Vector{String} field).
+    focused_dataframe = DataFrame(
+        [name => eltype(fieldtype(DecoderStatistics, name))[] for name in display_parameters]...
+    )
+    for values in valid_parameter_values
+        filter_condition = reduce((acc, (param, val)) -> acc .& check_approximate(stats_dataframe[!, param], val), zip(valid_parameter_names, values), init=trues(nrow(stats_dataframe)))
+        matching_rows = stats_dataframe[filter_condition, :]
+        if nrow(matching_rows) > 0
+            append!(focused_dataframe, matching_rows[:, display_parameters])
+        end
+    end
+    return focused_dataframe
+end

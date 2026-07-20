@@ -23,6 +23,21 @@ function fmt_probs(prob1::Float64, prob2::Float64)::String
     return "p_$(Printf.format(fmt, prob1))_q_$(Printf.format(fmt, prob2))"
 end
 
+function fmt_prob(prob::Float64)::String
+    """
+    Single-parameter counterpart to `fmt_probs`, for the circuit-level error
+    model that has only a per-element depolarizing probability `p` (no
+    neighbour `q`). There is no second value to pad against, so `p` is rendered
+    with its own decimal count: `fmt_prob(0.01) == "p_0.01"`,
+    `fmt_prob(0.001) == "p_0.001"`. This is exactly what `fmt_probs` would
+    produce for the `p_...` portion of a lone value. Mirrors the copy in
+    `expts/submission/batch_commands.jl`.
+    """
+    ndig = length(split(string(prob), ".")[end])
+    fmt = Printf.Format("%.$(ndig)f")
+    return "p_$(Printf.format(fmt, prob))"
+end
+
 function random_values_around_one(size::Vector{Int}; scale::Float32=0.01f0)::Array{Float32}
     """
     Generate a matrix of random values around 1.0 with specified scale.

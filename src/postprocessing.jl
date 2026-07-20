@@ -6,19 +6,54 @@ using CSV
 struct DecoderStatistics
     """
     Statistics for the Belief Propagation decoder.
-    """
-    algo::String
-    error_model_name::String
-    error_model_parameters_description::String
-    num_samples_per_error_rate::Int
-    n_iterations_BP::Int # denotes n_layers in Neural Network BP
-    rounds_per_BP::Int # denotes n_epochs in Neural Network BP
-    weight_soft_constraint::Float64 # denotes correlation_strength for Neural Network BP
-    num_failures::Int
-    average_logical_error_rate::Float64
-    std_logical_error_rate::Float64
-    runtime::Float64
 
+    Every field is a Vector, so a single `DecoderStatistics` can hold ONE record
+    (all fields length 1) or MANY (e.g. after concatenating the results of a
+    parameter sweep). The two inner constructors are:
+
+      1. Scalar/per-simulation form (unchanged call signature): pass one
+         simulation's scalar values; the constructor computes the logical error
+         rate and its Bernoulli std, then stores every field as a 1-element
+         Vector. This keeps existing call sites (neural_bp_experiments.jl etc.)
+         working untouched.
+      2. Raw form: pass every field as an already-built Vector (all the same
+         length). Used by `vcat`/concat and the `DataFrame` builder below.
+    """
+    algo::Vector{String}
+    error_model_name::Vector{String}
+    error_model_parameters_description::Vector{String}
+    num_samples_per_error_rate::Vector{Int}
+    n_iterations_BP::Vector{Int} # denotes n_layers in Neural Network BP
+    rounds_per_BP::Vector{Int} # denotes n_epochs in Neural Network BP
+    weight_soft_constraint::Vector{Float64} # denotes correlation_strength for Neural Network BP
+    num_failures::Vector{Int}
+    average_logical_error_rate::Vector{Float64}
+    std_logical_error_rate::Vector{Float64}
+    runtime::Vector{Float64}
+
+    # --- Raw (array) constructor: every field already a Vector. ---------------
+    function DecoderStatistics(algo::Vector{String}, error_model_name::Vector{String},
+            error_model_parameters_description::Vector{String},
+            num_samples_per_error_rate::Vector{Int}, n_iterations_BP::Vector{Int},
+            rounds_per_BP::Vector{Int}, weight_soft_constraint::Vector{Float64},
+            num_failures::Vector{Int}, average_logical_error_rate::Vector{Float64},
+            std_logical_error_rate::Vector{Float64}, runtime::Vector{Float64})
+        n = length(algo)
+        lengths_match = all(==(n), (length(error_model_name), length(error_model_parameters_description),
+                    length(num_samples_per_error_rate), length(n_iterations_BP),
+                    length(rounds_per_BP), length(weight_soft_constraint),
+                    length(num_failures), length(average_logical_error_rate),
+                    length(std_logical_error_rate), length(runtime)))
+        if !lengths_match
+            throw(ArgumentError("All DecoderStatistics field vectors must have the same length."))
+        end
+        new(algo, error_model_name, error_model_parameters_description,
+            num_samples_per_error_rate, n_iterations_BP, rounds_per_BP,
+            weight_soft_constraint, num_failures, average_logical_error_rate,
+            std_logical_error_rate, runtime)
+    end
+
+    # --- Scalar/per-simulation constructor (unchanged public signature). ------
     function DecoderStatistics(algo::String, error_model_name::String, error_model_parameters_description::String, num_samples_per_error_rate::Int, num_iterations_BP::Int, num_rounds_per_iteration_BP::Int, weight_soft_constraint::Float64; num_failures::Int=0, failures::Vector{Bool}=zeros(Bool, num_samples_per_error_rate), runtime::Float64=0.0)
         if !(algo in ("SumProduct", "MinSum", "NN"))
             throw(ArgumentError("Algorithm must be either 'SumProduct', 'MinSum' or 'NN'."))
@@ -34,11 +69,48 @@ struct DecoderStatistics
             average_logical_error_rate = 0.0
             std_logical_error_rate = 0.0
         else
-            average_logical_error_rate = num_failures / num_samples_per_error_rate 
+            average_logical_error_rate = num_failures / num_samples_per_error_rate
             std_logical_error_rate = compute_std_assuming_bernoulli(average_logical_error_rate, num_iterations_BP)
         end
-        new(algo, error_model_name, error_model_parameters_description, num_samples_per_error_rate, num_iterations_BP, num_rounds_per_iteration_BP, weight_soft_constraint, num_failures, average_logical_error_rate, std_logical_error_rate, runtime)
+        # Store every field as a 1-element Vector (delegates to the raw form).
+        new([algo], [error_model_name], [error_model_parameters_description],
+            [num_samples_per_error_rate], [num_iterations_BP], [num_rounds_per_iteration_BP],
+            [weight_soft_constraint], [num_failures], [average_logical_error_rate],
+            [std_logical_error_rate], [runtime])
     end
+end
+
+function Base.vcat(stats::DecoderStatistics...)::DecoderStatistics
+    """
+    Concatenate several `DecoderStatistics` into one by stacking each field vector.
+    Lets you accumulate a sweep's worth of single-record structs into one
+    multi-record struct.
+
+    Arguments:
+    - `stats...`: One or more `DecoderStatistics` instances to concatenate.
+    Returns:
+    - A new `DecoderStatistics` instance containing the concatenated data.
+    """
+    if isempty(stats)
+        throw(ArgumentError("vcat needs at least one DecoderStatistics."))
+    end
+    combined = DecoderStatistics(
+        (reduce(vcat, getfield(s, f) for s in stats) for f in fieldnames(DecoderStatistics))...
+    )
+    return combined
+end
+
+"""
+    DecoderStatistics(df::DataFrame) -> DecoderStatistics
+
+Build a multi-record `DecoderStatistics` from a DataFrame whose columns are the
+struct's field names (e.g. the output of `collect_decoder_statistics`).
+"""
+function DecoderStatistics(df::DataFrame)::DecoderStatistics
+    stats = DecoderStatistics(
+        (Vector(df[!, f]) for f in fieldnames(DecoderStatistics))...
+    )
+    return stats
 end
 
 function record_decoder_statistics(stats::DecoderStatistics, output_filename::String="./../data/decoder_statistics.csv")::DataFrame
@@ -49,7 +121,7 @@ function record_decoder_statistics(stats::DecoderStatistics, output_filename::St
         name => getfield(stats, name) for name in fieldnames(DecoderStatistics)
     )
     println(JSON.json(stats_dict)) # Ensure a newline after the JSON object
-    
+
     # Save the statistics to a CSV file
     stats_dataframe = DataFrame(stats_dict)
     CSV.write(output_filename, stats_dataframe)
@@ -85,189 +157,140 @@ function compute_std_assuming_bernoulli(μ::Float64, n::Int)::Float64
     return σ
 end
 
-function collect_decoder_statistics(simulation_output_file::String)::DataFrame
+function collect_decoder_statistics(simulation_out_files::Vector{String})::DataFrame
     """
-    Collect decoder statistics from simulations with settings.
-    The simulation output file is expected to be a CSV file containing a DataFrame saved using `record_decoder_statistics`.
+    Load each per-simulation result CSV in `simulation_out_files` (each written
+    by `record_decoder_statistics`) and stack them into one DataFrame. Missing
+    files are warned about and skipped; the surviving frames are concatenated
+    row-wise (`vcat`), giving one combined table over all the input files.
     """
-    if !isfile(simulation_output_file)
-        @warn ("File $(simulation_output_file) is missing.")
-        return DataFrame()
-    end
-    stats_dataframe = CSV.read(simulation_output_file, DataFrame)
-    return stats_dataframe
-end
-
-function collect_decoder_statistics_correlated(per_qubit_error_probs::AbstractVector{<:Real}, neighbour_error_probs::AbstractVector{<:Real}, num_samples_per_error_rate::Int, n_layers::Int, n_epochs::Int; prefix::String="./../data")::DataFrame
-    """
-    Collect Neural BP decoder statistics for the correlated (Ballistic) error
-    model. There's one file per simulation run, produced by
-    `neural_bp_experiments.jl` and named by the same convention it builds
-    (see line ~272 of that file):
-
-        simulation_results_test_<pq_tag>_s_<s>_nlayers_<n_layers>_epochs_<n_epochs>_trained_using_train_<pq_tag>_s_<s>.csv
-
-    where `<pq_tag>` is `fmt_probs(p, q)` — the canonical
-    max-decimals-padded formatter — so e.g. `p_0.010_q_0.001`. The
-    `ballistic_` infix that used to sit here (and in older test/train
-    filenames) was dropped when the file-naming convention was unified;
-    an on-disk rename script is available at
-    `expts/scripts/rename_to_padded_pq.py` if you need to bring legacy
-    result CSVs into the new form.
-
-    Arguments:
-      - `per_qubit_error_probs`, `neighbour_error_probs`, `num_samples_per_error_rate`
-        — the grid we iterate over to reconstruct the expected filenames.
-      - `n_layers`, `n_epochs` — pulled from the hyperparams TOML at
-        submission time; must match what was passed to
-        `neural_bp_experiments.jl`.
-      - `prefix` — root path of the codename directory (contains `results/`).
-    """
-    # precompute the number of entries: this is the number of combinations of per_qubit_error_probs, neighbour_error_probs and num_samples_per_error_rate for which we have data files.
-    num_files = 0
+    frames = DataFrame[]
     missing_files = String[]
-    for p in per_qubit_error_probs, q in neighbour_error_probs, s in 1:num_samples_per_error_rate
-        pq_tag = fmt_probs(Float64(p), Float64(q))
-        training_file = "train_$(pq_tag)_s_$(s)"
-        results_file = "$(prefix)/results/simulation_results_test_$(pq_tag)_s_$(s)_nlayers_$(n_layers)_epochs_$(n_epochs)_trained_using_$(training_file).csv"
-        if isfile(results_file)
-            num_files += 1
+    for f in simulation_out_files
+        if isfile(f)
+            push!(frames, CSV.read(f, DataFrame))
         else
-            push!(missing_files, results_file)
+            push!(missing_files, f)
         end
     end
-    if (size(missing_files, 1) > 0)
-        @warn ("$(size(missing_files, 1)) files are missing:\n$(missing_files)")
+    if !isempty(missing_files)
+        @warn ("$(length(missing_files)) file(s) missing and skipped:\n$(missing_files)")
     end
-
-    all_stats = DataFrame(
-        algo = Vector{String}(undef, num_files),
-        error_model_name = Vector{String}(undef, num_files),
-        error_model_parameters_description = Vector{String}(undef, num_files),
-        num_samples_per_error_rate = Vector{Int}(undef, num_files),
-        n_iterations_BP = Vector{Int}(undef, num_files),
-        rounds_per_BP = Vector{Int}(undef, num_files),
-        weight_soft_constraint = Vector{Float64}(undef, num_files),
-        num_failures = Vector{Int}(undef, num_files),
-        average_logical_error_rate = Vector{Float64}(undef, num_files),
-        std_logical_error_rate = Vector{Float64}(undef, num_files),
-        runtime = Vector{Float64}(undef, num_files)
-    )
-    file_index = 1
-    for p in per_qubit_error_probs, q in neighbour_error_probs, s in 1:num_samples_per_error_rate
-        pq_tag = fmt_probs(Float64(p), Float64(q))
-        training_file = "train_$(pq_tag)_s_$(s)"
-        results_file = "$(prefix)/results/simulation_results_test_$(pq_tag)_s_$(s)_nlayers_$(n_layers)_epochs_$(n_epochs)_trained_using_$(training_file).csv"
-        if isfile(results_file)
-            stats_dataframe = CSV.read(results_file, DataFrame)
-            # Fill the dataframe fields
-            all_stats[file_index, :algo] = stats_dataframe[1, :algo]
-            all_stats[file_index, :error_model_name] = stats_dataframe[1, :error_model_name]
-            all_stats[file_index, :error_model_parameters_description] = stats_dataframe[1, :error_model_parameters_description]
-            all_stats[file_index, :num_samples_per_error_rate] = stats_dataframe[1, :num_samples_per_error_rate]
-            all_stats[file_index, :n_iterations_BP] = stats_dataframe[1, :n_iterations_BP]
-            all_stats[file_index, :rounds_per_BP] = stats_dataframe[1, :rounds_per_BP]
-            all_stats[file_index, :weight_soft_constraint] = stats_dataframe[1, :weight_soft_constraint]
-            all_stats[file_index, :num_failures] = stats_dataframe[1, :num_failures]
-            all_stats[file_index, :average_logical_error_rate] = stats_dataframe[1, :average_logical_error_rate]
-            all_stats[file_index, :std_logical_error_rate] = compute_std_assuming_bernoulli(all_stats[file_index, :average_logical_error_rate], all_stats[file_index, :num_samples_per_error_rate])
-            all_stats[file_index, :runtime] = stats_dataframe[1, :runtime]
-            file_index += 1
-        end
+    if isempty(frames)
+        empty_df = DataFrame()
+        return empty_df
     end
-    return all_stats
+    combined = reduce(vcat, frames)
+    return combined
 end
 
-function collect_standard_decoder_statistics_correlated(prefix::String="./../data", ntrials::Int=100000; standard_BP_output_file::String="standard_bp_failure_rates.txt")::DataFrame
+# Convenience overload for a single file path.
+function collect_decoder_statistics(simulation_out_file::String)::DataFrame
+    combined = collect_decoder_statistics([simulation_out_file])
+    return combined
+end
+
+function collect_standard_decoder_statistics(error_type::Symbol; prefix::String="./../data", standard_BP_output_file::String="standard_bp_failure_rates.txt")::DataFrame
     """
-    Collect standard BP-OSD decoder statistics for the correlated (Ballistic)
-    error model. Unlike the Neural BP twin above, standard-decoder results
-    are ALREADY aggregated into a single file — `results/<standard_BP_output_file>`
-    — with one row per `(per_qubit_prob, neighbour_prob, sample)` triple:
+    Collect standard BP-OSD decoder statistics from a single aggregated results
+    file, for either the two-parameter Ising model or the single-parameter
+    circuit-level model. Selected by `error_type`:
 
-        <per_qubit_error_prob> <neighbour_error_prob> <sample> <total number of failures>
+      :Ising   — file rows are `<p> <q> <sample> <failures> <total_trials>
+                 <average> <sigma>` (7 columns). `num_samples_per_error_rate =
+                 total_trials` (column 5), and the average logical error rate
+                 (column 6) and its std (column 7) are READ DIRECTLY from the
+                 file. The description tag uses the two-parameter `fmt_probs(p, q)`.
 
-    We parse it into a DataFrame with the same shape as
-    `collect_decoder_statistics_correlated`'s output so downstream code
-    (plots, comparisons) can consume both interchangeably.
+      :Circuit — file rows are `<p> <sample> <failures> <total_trials> <average>
+                 <sigma>` (6 columns) — the same layout without the `q` column.
+                 `num_samples_per_error_rate = total_trials` (column 4), average
+                 (column 5) and std (column 6) are READ DIRECTLY. The description
+                 tag uses the single-parameter `fmt_prob(p)`.
 
-    The `error_model_parameters_description` field is synthesised to look
-    like a testing-data filename — kept in sync with the canonical
-    `fmt_probs` naming used everywhere else in the pipeline — because the
-    plotting code filters DataFrame rows by `occursin(fmt_probs(p, q), ...)`
-    against this field.
-
-    Returned columns:
-      algo                              — "SumProduct"
-      error_model_name                  — "ExplicitErrorModel"
-      error_model_parameters_description — "\$(prefix)/testing_data/test_<pq_tag>_s_<sample>.txt"
-      num_samples_per_error_rate        — ntrials
-      n_iterations_BP, rounds_per_BP, weight_soft_constraint, runtime — 0
-      num_failures                      — parsed from the file
-      average_logical_error_rate        — num_failures / ntrials
-      std_logical_error_rate            — Bernoulli std at μ = LER, n = ntrials
+    Both branches read the trial count, average, and std straight from the file,
+    so there is no `ntrials` argument. Both return the same DataFrame schema as
+    `collect_decoder_statistics` (and `DecoderStatistics`'s fields) so downstream
+    code can consume them interchangeably. Rows with the wrong column count are
+    warned about and skipped. `error_type` must be `:Ising` or `:Circuit`.
     """
+    if !(error_type in (:Ising, :Circuit))
+        throw(ArgumentError("error_type must be :Ising or :Circuit, got $(repr(error_type))."))
+    end
+
     results_file = "$(prefix)/results/$(standard_BP_output_file)"
     if !isfile(results_file)
         @warn ("File $(results_file) is missing.")
-        return DataFrame()
+        empty_df = DataFrame()
+        return empty_df
     end
 
-    # Estimate the number of lines in the file to preallocate the DataFrame
-    num_lines = 0
-    open(results_file, "r") do fp
-        for _ in eachline(fp)
-            num_lines += 1
-        end
+    expected_cols::Int = 6
+    if error_type == :Ising
+        expected_cols = 7
     end
-    stats_dataframe = DataFrame(
-        algo = Vector{String}(undef, num_lines),
-        error_model_name = Vector{String}(undef, num_lines),
-        error_model_parameters_description = Vector{String}(undef, num_lines),
-        num_samples_per_error_rate = Vector{Int}(undef, num_lines),
-        n_iterations_BP = Vector{Int}(undef, num_lines),
-        rounds_per_BP = Vector{Int}(undef, num_lines),
-        weight_soft_constraint = Vector{Float64}(undef, num_lines),
-        num_failures = Vector{Int}(undef, num_lines),
-        average_logical_error_rate = Vector{Float64}(undef, num_lines),
-        std_logical_error_rate = Vector{Float64}(undef, num_lines),
-        runtime = Vector{Float64}(undef, num_lines)
-    )
-    line_index = 1
+
+    descriptions = String[]
+    num_samples  = Int[]
+    failures_col = Int[]
+    averages     = Float64[]
+    stds         = Float64[]
+
     open(results_file, "r") do fp
         for line in eachline(fp)
-            split_line = split(line)
-            if length(split_line) != 4
-                @warn ("Invalid line format: $line")
+            fields = split(line)
+            if isempty(fields)
                 continue
             end
-            per_qubit_error_prob = split_line[1]
-            neighbour_error_prob = split_line[2]
-            sample = split_line[3]
-            num_failures = parse(Int, split_line[4])
-            # Build the same `p_<X>_q_<Y>` tag that the neural-BP path and the
-            # plotting code use, so DataFrames from both decoders can be
-            # filtered/joined with the same `occursin(fmt_probs(p, q), ...)`
-            # predicate. Parse the raw strings to Float64 first so
-            # `fmt_probs`'s max-decimals-padding runs on numbers, not text.
-            pq_tag = fmt_probs(parse(Float64, per_qubit_error_prob),
-                               parse(Float64, neighbour_error_prob))
-            # Fill the DataFrame row with the corresponding values
-            stats_dataframe[line_index, :algo] = "SumProduct"
-            stats_dataframe[line_index, :error_model_name] = "ExplicitErrorModel"
-            stats_dataframe[line_index, :error_model_parameters_description] = "$(prefix)/testing_data/test_$(pq_tag)_s_$(sample).txt"
-            stats_dataframe[line_index, :num_samples_per_error_rate] = ntrials
-            stats_dataframe[line_index, :n_iterations_BP] = 0
-            stats_dataframe[line_index, :rounds_per_BP] = 0
-            stats_dataframe[line_index, :weight_soft_constraint] = 0.0
-            stats_dataframe[line_index, :num_failures] = num_failures
-            stats_dataframe[line_index, :average_logical_error_rate] = num_failures / ntrials
-            stats_dataframe[line_index, :std_logical_error_rate] = compute_std_assuming_bernoulli(num_failures / ntrials, ntrials)
-            stats_dataframe[line_index, :runtime] = 0.0
-            line_index += 1
+            if startswith(fields[1], "#")
+                continue  # skip comment / header lines
+            end
+            if length(fields) != expected_cols
+                @warn ("Skipping line (expected $(expected_cols) columns for $(error_type)): $line")
+                continue
+            end
+            if error_type == :Ising
+                # p q sample failures total_trials average sigma
+                p = parse(Float64, fields[1])
+                q = parse(Float64, fields[2])
+                sample = fields[3]
+                failures = parse(Int, fields[4])
+                n = parse(Int, fields[5])
+                avg = parse(Float64, fields[6])
+                sigma = parse(Float64, fields[7])
+                tag = fmt_probs(p, q)
+            else # :Circuit — p sample failures total_trials average sigma
+                p = parse(Float64, fields[1])
+                sample = fields[2]
+                failures = parse(Int, fields[3])
+                n = parse(Int, fields[4])
+                avg = parse(Float64, fields[5])
+                sigma = parse(Float64, fields[6])
+                tag = fmt_prob(p)
+            end
+            push!(descriptions, "$(prefix)/testing_data/test_$(tag)_s_$(sample).txt")
+            push!(num_samples, n)
+            push!(failures_col, failures)
+            push!(averages, avg)
+            push!(stds, sigma)
         end
     end
-    return stats_dataframe
+
+    n_rows = length(descriptions)
+    stats_df = DataFrame(
+        algo = fill("SumProduct", n_rows),
+        error_model_name = fill("ExplicitErrorModel", n_rows),
+        error_model_parameters_description = descriptions,
+        num_samples_per_error_rate = num_samples,
+        n_iterations_BP = zeros(Int, n_rows),
+        rounds_per_BP = zeros(Int, n_rows),
+        weight_soft_constraint = zeros(Float64, n_rows),
+        num_failures = failures_col,
+        average_logical_error_rate = averages,
+        std_logical_error_rate = stds,
+        runtime = zeros(Float64, n_rows),
+    )
+    return stats_df
 end
 
 function save_decoder_dataframe(decoder_stats::DataFrame, output_filename::String="./../data/debankan/explicit_error_model_focused_data.csv")::String
@@ -284,59 +307,6 @@ function save_decoder_dataframe(decoder_stats::DataFrame, output_filename::Strin
     return output_filename
 end
 
-function check_approximate(col::AbstractVector, val; atol::Float64=1e-8, rtol::Float64=1e-5)::BitVector
-    """
-    Check if the values in the column are approximately equal to the given value `val` using `isapprox` for Real values,
-    or == for String values. Returns a BitVector indicating which elements are approximately equal or equal.
-    """
-    if eltype(col) <: Real && isa(val, Real)
-        # println("Check if elements the column\n", col, "\n are approximately equal to ", val, ". Result: ", isapprox.(col, val; atol=atol, rtol=rtol))
-        return isapprox.(col, val; atol=atol, rtol=rtol)
-    elseif eltype(col) <: AbstractString && isa(val, AbstractString)
-        # println("Check if elements the column\n", col, "\n are equal to ", val, ". Result: ", col .== val)
-        return col .== val
-    else
-        # Fallback to == for other types
-        return col .== val
-    end
-end
-
-function extract_collected_data(stats_dataframe::DataFrame, select_parameters::Dict{Symbol, AbstractVector{<:Any}}, display_parameters::Vector{Symbol})::DataFrame
-    """
-    Extract data from a dataframe that has a specific set of columns and rows corresponding to the values for the columns.
-    # Define a readable dataframe which has the following columns:
-    # - All the columns in `display_parameters`.
-    # - All the rows that whose values in the columns corresponding to the keys in `select_parameters` match the values in `select_parameters`.
-    """
-    # Check if the selected parameters are valid
-    valid_parameter_names = check_valid_fields_DecoderStatistics(collect(keys(select_parameters)))
-    # println("Valid parameter names: ", valid_parameter_names)
-    valid_parameter_values = Iterators.product(collect([select_parameters[param] for param in valid_parameter_names])...)
-    # println("Valid parameter values: ", collect(valid_parameter_values))
-
-    # Create a focused dataframe with columns as the parameter names.
-    focused_dataframe = DataFrame(
-        #[name => fieldtype(DecoderStatistics, name)[] for name in valid_parameter_names]...,
-        [name => fieldtype(DecoderStatistics, name)[] for name in display_parameters]...
-    )
-    # println("Focused DataFrame columns: ", names(focused_dataframe))
-    # Filter the stats_dataframe to only include rows that match the selected parameter values
-    for values in valid_parameter_values
-        # Search for rows in the `stats_dataframe` where the columns corresponding to the `valid_parameter_names` match the values in `values`
-        filter_condition = reduce((acc, (param, val)) -> acc .& check_approximate(stats_dataframe[!, param], val), zip(valid_parameter_names, values), init=trues(nrow(stats_dataframe)))
-        # For the selected rows, print the columns in `valid_parameter_names` and `display_parameters`
-        matching_rows = stats_dataframe[filter_condition, :]
-        # println("Parameter names: ", valid_parameter_names)
-        # println("Matching rows for values $(values):\n", matching_rows)
-        # If there are matching rows, add them to the focused dataframe
-        if nrow(matching_rows) > 0
-            # append!(focused_dataframe, matching_rows[:, vcat(valid_parameter_names, display_parameters)])
-            append!(focused_dataframe, matching_rows[:, display_parameters])
-        end
-    end
-
-    # Add the selected parameters to the readable dataframe
-    # println("=============================")
-    # println("Summary\n", focused_dataframe)
-    return focused_dataframe
-end
+# NOTE: `check_approximate` and `extract_collected_data` moved to legacy.jl
+# (still exported). They are only used by the legacy expts drivers
+# (ballistic_errors.jl, misc/explicit_errors.jl).

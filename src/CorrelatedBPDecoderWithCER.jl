@@ -102,8 +102,9 @@ export ErrorModel, IIDErrorModel, sample_error, print_error_model_info,
 
 # Data collection and postprocessing
 include("postprocessing.jl")
-export DecoderStatistics, collect_decoder_statistics, save_decoder_dataframe, 
-       check_valid_fields_DecoderStatistics, record_decoder_statistics, 
+export DecoderStatistics, collect_decoder_statistics, collect_standard_decoder_statistics,
+       save_decoder_dataframe,
+       check_valid_fields_DecoderStatistics, record_decoder_statistics,
        extract_collected_data, collect_decoder_statistics_correlated, collect_standard_decoder_statistics_correlated
 
 # Visualization and plotting are intentionally NOT part of this module — see
