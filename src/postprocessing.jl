@@ -19,17 +19,17 @@ struct DecoderStatistics
       2. Raw form: pass every field as an already-built Vector (all the same
          length). Used by `vcat`/concat and the `DataFrame` builder below.
     """
-    algo::Vector{String}
-    error_model_name::Vector{String}
-    error_model_parameters_description::Vector{String}
-    num_samples_per_error_rate::Vector{Int}
-    n_iterations_BP::Vector{Int} # denotes n_layers in Neural Network BP
-    rounds_per_BP::Vector{Int} # denotes n_epochs in Neural Network BP
-    weight_soft_constraint::Vector{Float64} # denotes correlation_strength for Neural Network BP
-    num_failures::Vector{Int}
-    average_logical_error_rate::Vector{Float64}
-    std_logical_error_rate::Vector{Float64}
-    runtime::Vector{Float64}
+    algo::Vector{String} # for standard BP, this is either "SumProduct" or "MinSum"; for Neural BP, this is "NN"
+    error_model_name::Vector{String} # e.g. "ExplicitErrorModel" or "IsingModel" or "CircuitLevelModel"
+    error_model_parameters_description::Vector{String} # e.g. "p=0.0011,q=0.0007" or "p=0.0011" or a filename for an explicit error model
+    num_samples_per_error_rate::Vector{Int} # for standard BP, this is the number of trials (ntrials) for a given error rate; for Neural BP, this is the number of test samples.
+    n_iterations_BP::Vector{Int} # for standard BP, this is the number of iterations of BP; for Neural BP, this is the number of layers in the trained neural network
+    rounds_per_BP::Vector{Int} # for standard BP, this is the number of rounds of BP; for Neural BP, this denotes n_epochs in the trained neural network
+    weight_soft_constraint::Vector{Float64} # for standard BP, this is the weight of the soft constraint in the BP decoder; for Neural BP, this parameter is not used and is set to 0.0
+    num_failures::Vector{Int} # for standard BP, this is the number of logical failures observed in the trials; for Neural BP, this is the number of logical failures observed in the test samples
+    average_logical_error_rate::Vector{Float64} # average logical error rate = num_failures / num_samples_per_error_rate
+    std_logical_error_rate::Vector{Float64} # standard deviation of the logical error rate, computed assuming a Bernoulli distribution
+    runtime::Vector{Float64} # runtime of the decoder in seconds (for standard BP, this is the total runtime for all trials; for Neural BP, this is the total runtime for all test samples)
 
     # --- Raw (array) constructor: every field already a Vector. ---------------
     function DecoderStatistics(algo::Vector{String}, error_model_name::Vector{String},

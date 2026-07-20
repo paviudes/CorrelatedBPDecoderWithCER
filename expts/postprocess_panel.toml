@@ -21,45 +21,72 @@
 # so filenames below are bare — no paths.
 workdir = "./../data"
 
-
 # ###### Operations on Standard BP-OSD results ###############################
-# Build the aggregated standard-decoder (BP-OSD) DataFrame from a failures file.
+# Parse one or more standard-decoder (BP-OSD) failures files and combine them
+# into a single DataFrame.
 [standard_bposd]
 run = false
 # error_model: "Ising" (rows have p, q, ...) or "Circuit" (p only)
 error_model = "Circuit"
-# codename directory (its results/ subfolder holds the input + output)
+# codename directory (its results/ subfolder holds the inputs + output)
 codename = "18q_BB_cycles_1"
-# the standard-BP failures file inside <workdir>/<codename>/results
-file = "18q_BB_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt"
+# one or more standard-BP failures files — bare filenames inside
+# <workdir>/<codename>/results — parsed and stacked into one table
+files = [
+    "18q_BB_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
+    "18q_BB_p_0.0011_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
+    "18q_BB_p_0.0013_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
+    "18q_BB_p_0.0015_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
+    "18q_BB_p_0.0017_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
+    "18q_BB_p_0.0019_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt"
+]
 # output CSV filename, written into <workdir>/<codename>/results
-out = "standard_decoder_statistics.csv"
+output_bposd_file = "decoder_statistics_BP_OSD.csv"
 
 
 # ###### Operations on Neural BP results #####################################
 ## Gather multiple per-simulation output CSVs into a single DataFrame
 [neural_gather]
-run = true
+run = false
 codename = "18q_BB_cycles_1"
 # per-simulation result CSVs — bare filenames inside <workdir>/<codename>/results
 files = [
     "simulation_results_test_p_0.0001_s_1_nlayers_100_epochs_10_trained_using_train_p_0.0001_s_1.csv",
-    "simulation_results_test_p_0.0001_s_1_nlayers_100_epochs_10_trained_using_train_p_0.0003_s_1.csv",
-    "simulation_results_test_p_0.0001_s_1_nlayers_100_epochs_10_trained_using_train_p_0.0005_s_1.csv",
-    "simulation_results_test_p_0.0001_s_1_nlayers_100_epochs_10_trained_using_train_p_0.0007_s_1.csv",
-    "simulation_results_test_p_0.0001_s_1_nlayers_100_epochs_10_trained_using_train_p_0.0009_s_1.csv"
+    "simulation_results_test_p_0.0003_s_1_nlayers_100_epochs_10_trained_using_train_p_0.0003_s_1.csv",
+    "simulation_results_test_p_0.0005_s_1_nlayers_100_epochs_10_trained_using_train_p_0.0005_s_1.csv",
+    "simulation_results_test_p_0.0007_s_1_nlayers_100_epochs_10_trained_using_train_p_0.0007_s_1.csv",
+    "simulation_results_test_p_0.0009_s_1_nlayers_100_epochs_10_trained_using_train_p_0.0009_s_1.csv",
+    "simulation_results_test_p_0.0009_s_1_nlayers_100_epochs_10_trained_using_train_p_0.0011_s_1.csv",
+    "simulation_results_test_p_0.0013_s_1_nlayers_100_epochs_10_trained_using_train_p_0.0013_s_1.csv",
+    "simulation_results_test_p_0.0015_s_1_nlayers_100_epochs_10_trained_using_train_p_0.0015_s_1.csv",
+    "simulation_results_test_p_0.0017_s_1_nlayers_100_epochs_10_trained_using_train_p_0.0017_s_1.csv",
+    "simulation_results_test_p_0.0019_s_1_nlayers_100_epochs_10_trained_using_train_p_0.0019_s_1.csv"
 ]
 # output CSV filename, written into <workdir>/<codename>/results
-out = "18q_decoder_statistics_NeuralBP.csv"
-
+output_neuralbp_file = "decoder_statistics_NeuralBP.csv"
 
 # ###### Plotting ############################################################
-## Plot the standard vs Neural BP results
+## Plot the standard vs Neural BP results (multiple codes on one figure)
 [plot_standard_vs_neural]
-run = false
-codename = "<codename>"
-# the neural / standard decoder-statistics CSVs, inside <workdir>/<codename>/results
-neural_csv   = "decoder_statistics_correlated.csv"
-standard_csv = "standard_decoder_statistics.csv"
-# output plot filename, written into <workdir>/<codename>/plots
-plot_file    = "standard_vs_neural.pdf"
+run = true
+# One entry per code — each code is drawn in a different colour.
+codenames = ["18q_BB_cycles_1", "72q_BB_cycles_1"]
+# Legend label for each code (same length/order as codenames). Shown as a
+# coloured marker in the legend, alongside the two decoder labels below.
+codename_labels = ["[[18, 4, 4]]", "[[72, 12, 6]]"]
+# Aggregate decoder-statistics CSVs to plot: the SAME bare filename inside every
+# <workdir>/<codename>/results. Both must ALREADY EXIST for each codename —
+# generate them with the [standard_bposd] and [neural_gather] sections above,
+# using a consistent `out` filename across codes so a single name works here.
+neural_csv   = "decoder_statistics_NeuralBP.csv"
+standard_csv = "decoder_statistics_BP_OSD.csv"
+# Two legend labels for the decoders: solid line = standard, dashed = neural.
+standard_BP_plot_label = "BP-OSD"
+neural_BP_plot_label   = "Neural BP"
+# Axis scales: "log10" or "linear". Decade-snapping of limits is only applied on
+# a log axis (a linear axis is left to auto-scale).
+x_scale = "linear"
+y_scale = "log10"
+# output plot path, relative to <workdir> — so choose the subdir yourself, e.g.
+# "<codename>/plots/standard_vs_neural.pdf". Missing directories are created.
+plot_file = "18q_BB_cycles_1/plots/standard_vs_neural.pdf"

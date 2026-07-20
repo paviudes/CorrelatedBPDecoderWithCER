@@ -27,9 +27,10 @@
 
 using ArgParse
 using TOML
+using CSV
 using DataFrames
 using CorrelatedBPDecoderWithCER   # collect_standard_decoder_statistics, save_decoder_dataframe
-using PlotsForBPDecoder            # postprocess_neuralbp_results, plotting helpers
+using PlotsForBPDecoder            # postprocess_neuralbp_results, plot_standard_vs_neural
 
 # Fetch a required key from a section, with a clear error naming the section.
 function _require(section::AbstractDict, key::String, id::String)
@@ -38,6 +39,18 @@ function _require(section::AbstractDict, key::String, id::String)
     end
     value = section[key]
     return value
+end
+
+# Map a scale string ("log10" / "linear") to the Plots symbol (:log10 / :identity).
+function _scale_symbol(scale_string::AbstractString)::Symbol
+    s = lowercase(strip(String(scale_string)))
+    if s in ("linear", "identity")
+        return :identity
+    end
+    if s in ("log10", "log")
+        return :log10
+    end
+    error("scale must be \"log10\" or \"linear\", got \"$(scale_string)\".")
 end
 
 # ----------------------------------------------------------------------------
@@ -58,13 +71,31 @@ function run_standard_bposd(section::AbstractDict, id::String, workdir::String)
 
     codename = String(_require(section, "codename", id))
     prefix = joinpath(workdir, codename)
-    failures_file = String(_require(section, "file", id))
-    stats_df = collect_standard_decoder_statistics(
-        error_model; prefix = prefix, standard_BP_output_file = failures_file)
 
-    out_path = joinpath(prefix, "results", String(_require(section, "out", id)))
+    failures_files = String.(_require(section, "files", id))
+    if isempty(failures_files)
+        error("[$(id)] `files` is empty.")
+    end
+
+    # Parse each failures file (from <prefix>/results/) and stack the resulting
+    # tables into one. Files that produce no rows (missing/empty) are skipped.
+    per_file_frames = DataFrame[]
+    for failures_file in failures_files
+        file_df = collect_standard_decoder_statistics(
+            error_model; prefix = prefix, standard_BP_output_file = failures_file)
+        if nrow(file_df) > 0
+            push!(per_file_frames, file_df)
+        end
+    end
+    if isempty(per_file_frames)
+        error("[$(id)] no rows collected from any of the $(length(failures_files)) file(s) in $(joinpath(prefix, "results")).")
+    end
+    stats_df = reduce(vcat, per_file_frames)
+
+    out_path = joinpath(prefix, "results", String(_require(section, "output_bposd_file", id)))
     saved_path = save_decoder_dataframe(stats_df, out_path)
-    println("  standard ($(error_model)) -> $(saved_path)  ($(nrow(stats_df)) rows)")
+    println("  standard ($(error_model)) -> $(saved_path)  " *
+            "($(nrow(stats_df)) rows from $(length(failures_files)) file(s))")
     return nothing
 end
 
@@ -78,26 +109,64 @@ function run_neural_gather(section::AbstractDict, id::String, workdir::String)
     end
     file_paths = [joinpath(results_dir, name) for name in filenames]
 
-    out_path = joinpath(results_dir, String(_require(section, "out", id)))
+    out_path = joinpath(results_dir, String(_require(section, "output_neuralbp_file", id)))
     saved_path = postprocess_neuralbp_results(file_paths, out_path)
     println("  gathered $(length(file_paths)) file(s) -> $(saved_path)")
     return nothing
 end
 
 function run_plot_standard_vs_neural(section::AbstractDict, id::String, workdir::String)
-    codename = String(_require(section, "codename", id))
-    results_dir = joinpath(workdir, codename, "results")
-    plots_dir = joinpath(workdir, codename, "plots")
+    codenames = String.(_require(section, "codenames", id))
+    if isempty(codenames)
+        error("[$(id)] `codenames` is empty.")
+    end
+    codename_labels = String.(_require(section, "codename_labels", id))
+    if length(codename_labels) != length(codenames)
+        error("[$(id)] `codename_labels` must have one entry per codename " *
+              "($(length(codename_labels)) vs $(length(codenames))).")
+    end
+    neural_csv = String(_require(section, "neural_csv", id))
+    standard_csv = String(_require(section, "standard_csv", id))
+    standard_label = String(_require(section, "standard_BP_plot_label", id))
+    neural_label = String(_require(section, "neural_BP_plot_label", id))
 
-    neural_csv = joinpath(results_dir, String(_require(section, "neural_csv", id)))
-    standard_csv = joinpath(results_dir, String(_require(section, "standard_csv", id)))
-    plot_path = joinpath(plots_dir, String(_require(section, "plot_file", id)))
+    # Read the aggregate CSVs for every code (same bare filenames in each
+    # <workdir>/<codename>/results). Both must already exist per codename.
+    standard_dataframes = DataFrame[]
+    neural_dataframes = DataFrame[]
+    for codename in codenames
+        results_dir = joinpath(workdir, codename, "results")
+        standard_path = joinpath(results_dir, standard_csv)
+        neural_path = joinpath(results_dir, neural_csv)
+        for path in (standard_path, neural_path)
+            if !isfile(path)
+                error("[$(id)] missing input: $(path) — generate it with the " *
+                      "standard_bposd / neural_gather sections.")
+            end
+        end
+        push!(standard_dataframes, CSV.read(standard_path, DataFrame))
+        push!(neural_dataframes, CSV.read(neural_path, DataFrame))
+    end
 
-    println("  [$(id)] not implemented yet — placeholder.")
-    println("    would read : $(neural_csv), $(standard_csv)")
-    println("    would write: $(plot_path)")
-    # TODO: mkpath(plots_dir); load the two CSVs; call plot_performance_spread /
-    # plot_statistics_for_ballistic_error_model from PlotsForBPDecoder.
+    # Combined figure, written to <workdir>/<plot_file> (plot_file may include a
+    # subdirectory, e.g. "<codename>/plots/foo.pdf"; missing dirs are created).
+    plot_path = joinpath(workdir, String(_require(section, "plot_file", id)))
+
+    # Per-code 6-column comparison CSVs, written into each code's results/ folder
+    # as standard_vs_neural_<codename>.csv.
+    comparison_csv_paths = [joinpath(workdir, codename, "results", "standard_vs_neural_$(codename).csv")
+                            for codename in codenames]
+
+    # Axis scales — default log10; set to "linear" in the TOML to turn off log.
+    x_scale = _scale_symbol(get(section, "x_scale", "log10"))
+    y_scale = _scale_symbol(get(section, "y_scale", "log10"))
+
+    saved_path = plot_standard_vs_neural(
+        standard_dataframes, neural_dataframes, codename_labels,
+        standard_label, neural_label, plot_path, comparison_csv_paths;
+        xscale = x_scale, yscale = y_scale)
+    println("  plotted $(length(codenames)) code(s) -> $(saved_path)")
+    println("  comparison CSVs -> $(comparison_csv_paths)")
     return nothing
 end
 

@@ -47,6 +47,10 @@ export plot_statistics_for_ballistic_error_model
 include("performance_spread.jl")
 export plot_performance_spread
 
+# Logical error rate vs p, standard (solid) vs neural (dashed), multiple codes.
+include("plot_standard_vs_neural.jl")
+export plot_standard_vs_neural
+
 # Result aggregation / analysis entry points (moved from expts/).
 include("collect.jl")
 export postprocess_neuralbp_results, collect_results
