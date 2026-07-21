@@ -82,7 +82,7 @@ cat > "$SETTINGS_FILE" <<'EOF'
 
 # --- data & experiment ---
 working_dir      = "./../data"
-dirnames         = ["72q_BB_cycles_1"]
+dirnames         = ["18q_BB_cycles_1", "72q_BB_cycles_1"]
 # pvals / qvals: TOML arrays like [0.001, 0.005], OR a QUOTED Julia range
 # shorthand "start:step:stop", e.g. pvals = "0.0001:0.0002:0.0009". The quotes
 # are required — bare 0.0001:0.0002:0.0009 is not valid TOML. You can also mix:
