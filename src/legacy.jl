@@ -517,10 +517,134 @@ function collect_standard_decoder_statistics_correlated(prefix::String="./../dat
 end
 
 # ============================================================================
+# StandardBPDecoderStatistics — statistics for the standard BP decoder.
+# Renamed from `DecoderStatistics` and moved here: standard BP is not the current
+# focus, and the Neural BP path now has its own `NeuralBPDecoderStatistics` (in
+# postprocessing.jl) with fields named for layers/epochs rather than for BP
+# iterations/rounds. `compute_std_assuming_bernoulli` is defined in
+# postprocessing.jl (included earlier) and resolved at call time.
+# ============================================================================
+
+struct StandardBPDecoderStatistics
+    """
+    Statistics for the standard Belief Propagation decoder.
+
+    Every field is a Vector, so a single struct can hold ONE record (all fields
+    length 1) or MANY (e.g. after concatenating a parameter sweep). The two inner
+    constructors are a scalar/per-simulation form (computes the logical error rate
+    and its Bernoulli std, then stores each field as a 1-element Vector) and a raw
+    form taking every field as an already-built Vector (used by `vcat` and the
+    `DataFrame` builder).
+    """
+    algo::Vector{String} # "SumProduct" or "MinSum"
+    error_model_name::Vector{String} # e.g. "ExplicitErrorModel" or "IsingModel" or "CircuitLevelModel"
+    error_model_parameters_description::Vector{String} # e.g. "p=0.0011,q=0.0007" or "p=0.0011" or a filename
+    num_samples_per_error_rate::Vector{Int} # number of trials (ntrials) for a given error rate
+    n_iterations_BP::Vector{Int} # number of iterations of BP
+    rounds_per_BP::Vector{Int} # number of rounds per iteration of BP
+    weight_soft_constraint::Vector{Float64} # weight of the soft constraint in the BP decoder
+    num_failures::Vector{Int} # number of logical failures observed in the trials
+    average_logical_error_rate::Vector{Float64} # average logical error rate = num_failures / num_samples_per_error_rate
+    std_logical_error_rate::Vector{Float64} # standard deviation of the logical error rate, computed assuming a Bernoulli distribution
+    runtime::Vector{Float64} # total runtime of the decoder in seconds over all trials
+
+    # --- Raw (array) constructor: every field already a Vector. ---------------
+    function StandardBPDecoderStatistics(algo::Vector{String}, error_model_name::Vector{String},
+            error_model_parameters_description::Vector{String},
+            num_samples_per_error_rate::Vector{Int}, n_iterations_BP::Vector{Int},
+            rounds_per_BP::Vector{Int}, weight_soft_constraint::Vector{Float64},
+            num_failures::Vector{Int}, average_logical_error_rate::Vector{Float64},
+            std_logical_error_rate::Vector{Float64}, runtime::Vector{Float64})
+        n = length(algo)
+        lengths_match = all(==(n), (length(error_model_name), length(error_model_parameters_description),
+                    length(num_samples_per_error_rate), length(n_iterations_BP),
+                    length(rounds_per_BP), length(weight_soft_constraint),
+                    length(num_failures), length(average_logical_error_rate),
+                    length(std_logical_error_rate), length(runtime)))
+        if !lengths_match
+            throw(ArgumentError("All StandardBPDecoderStatistics field vectors must have the same length."))
+        end
+        new(algo, error_model_name, error_model_parameters_description,
+            num_samples_per_error_rate, n_iterations_BP, rounds_per_BP,
+            weight_soft_constraint, num_failures, average_logical_error_rate,
+            std_logical_error_rate, runtime)
+    end
+
+    # --- Scalar/per-simulation constructor. -----------------------------------
+    function StandardBPDecoderStatistics(algo::String, error_model_name::String, error_model_parameters_description::String, num_samples_per_error_rate::Int, num_iterations_BP::Int, num_rounds_per_iteration_BP::Int, weight_soft_constraint::Float64; num_failures::Int=0, failures::Vector{Bool}=zeros(Bool, num_samples_per_error_rate), runtime::Float64=0.0)
+        if !(algo in ("SumProduct", "MinSum"))
+            throw(ArgumentError("Algorithm must be either 'SumProduct' or 'MinSum'."))
+        end
+        if num_samples_per_error_rate < 0
+            throw(ArgumentError("Number of samples per error rate must be non-negative."))
+        end
+        if (num_failures == 0) && (length(failures) > 0)
+            num_failures = count(failures)
+        end
+        if (num_samples_per_error_rate == 0) || (num_failures == 0)
+            average_logical_error_rate = 0.0
+            std_logical_error_rate = 0.0
+        else
+            average_logical_error_rate = num_failures / num_samples_per_error_rate
+            # NOTE: preserved from the original shared constructor, which divided
+            # by the iteration count. The trial count (num_samples_per_error_rate)
+            # is the statistically correct denominator; left unchanged here to keep
+            # the rename behaviour-preserving for the (test-only) standard path.
+            std_logical_error_rate = compute_std_assuming_bernoulli(average_logical_error_rate, num_iterations_BP)
+        end
+        # Store every field as a 1-element Vector (delegates to the raw form).
+        new([algo], [error_model_name], [error_model_parameters_description],
+            [num_samples_per_error_rate], [num_iterations_BP], [num_rounds_per_iteration_BP],
+            [weight_soft_constraint], [num_failures], [average_logical_error_rate],
+            [std_logical_error_rate], [runtime])
+    end
+end
+
+function Base.vcat(stats::StandardBPDecoderStatistics...)::StandardBPDecoderStatistics
+    """
+    Concatenate several `StandardBPDecoderStatistics` into one by stacking each
+    field vector.
+    """
+    if isempty(stats)
+        throw(ArgumentError("vcat needs at least one StandardBPDecoderStatistics."))
+    end
+    combined = StandardBPDecoderStatistics(
+        (reduce(vcat, getfield(s, f) for s in stats) for f in fieldnames(StandardBPDecoderStatistics))...
+    )
+    return combined
+end
+
+"""
+    StandardBPDecoderStatistics(df::DataFrame) -> StandardBPDecoderStatistics
+
+Build a multi-record `StandardBPDecoderStatistics` from a DataFrame whose columns
+are the struct's field names.
+"""
+function StandardBPDecoderStatistics(df::DataFrame)::StandardBPDecoderStatistics
+    stats = StandardBPDecoderStatistics(
+        (Vector(df[!, f]) for f in fieldnames(StandardBPDecoderStatistics))...
+    )
+    return stats
+end
+
+"""
+Check that all provided symbols are valid fields of `StandardBPDecoderStatistics`.
+Warns about any invalid key and returns only the valid ones.
+"""
+function check_valid_fields_StandardBPDecoderStatistics(keys::Vector{Symbol})::Vector{Symbol}
+    allowed = fieldnames(StandardBPDecoderStatistics)
+    valid = intersect(keys, allowed)
+    invalid = setdiff(keys, allowed)
+    if !isempty(invalid)
+        @warn ("Invalid keys found: $(collect(invalid))")
+    end
+    return valid
+end
+
+# ============================================================================
 # Legacy dataframe-filtering helpers (moved out of postprocessing.jl). Only used
 # by the legacy expts drivers (ballistic_errors.jl, misc/explicit_errors.jl);
-# kept exported so those callers keep working. `check_valid_fields_DecoderStatistics`
-# stays in postprocessing.jl and is resolved at call time.
+# kept exported so those callers keep working.
 # ============================================================================
 
 function check_approximate(col::AbstractVector, val; atol::Float64=1e-8, rtol::Float64=1e-5)::BitVector
@@ -544,13 +668,13 @@ function extract_collected_data(stats_dataframe::DataFrame, select_parameters::D
     Extract data from a dataframe that has a specific set of columns and rows corresponding to the values for the columns.
     Returns the rows whose `select_parameters` columns match, projected onto `display_parameters`.
     """
-    valid_parameter_names = check_valid_fields_DecoderStatistics(collect(keys(select_parameters)))
+    valid_parameter_names = check_valid_fields_StandardBPDecoderStatistics(collect(keys(select_parameters)))
     valid_parameter_values = Iterators.product(collect([select_parameters[param] for param in valid_parameter_names])...)
 
-    # Each DecoderStatistics field is a Vector, so the per-column element type is
-    # `eltype(fieldtype(...))` (e.g. String for a Vector{String} field).
+    # Each StandardBPDecoderStatistics field is a Vector, so the per-column element
+    # type is `eltype(fieldtype(...))` (e.g. String for a Vector{String} field).
     focused_dataframe = DataFrame(
-        [name => eltype(fieldtype(DecoderStatistics, name))[] for name in display_parameters]...
+        [name => eltype(fieldtype(StandardBPDecoderStatistics, name))[] for name in display_parameters]...
     )
     for values in valid_parameter_values
         filter_condition = reduce((acc, (param, val)) -> acc .& check_approximate(stats_dataframe[!, param], val), zip(valid_parameter_names, values), init=trues(nrow(stats_dataframe)))

@@ -102,10 +102,8 @@ export ErrorModel, IIDErrorModel, sample_error, print_error_model_info,
 
 # Data collection and postprocessing
 include("postprocessing.jl")
-export DecoderStatistics, collect_decoder_statistics, collect_standard_decoder_statistics,
-       save_decoder_dataframe,
-       check_valid_fields_DecoderStatistics, record_decoder_statistics,
-       extract_collected_data, collect_decoder_statistics_correlated, collect_standard_decoder_statistics_correlated
+export NeuralBPDecoderStatistics, collect_decoder_statistics, collect_standard_decoder_statistics,
+       save_decoder_dataframe, record_decoder_statistics
 
 # Visualization and plotting are intentionally NOT part of this module — see
 # the note under "Visualization" above and the header of src/plot.jl.
@@ -146,7 +144,10 @@ include("forward_gpu.jl")
 export forward_pass_gpu
 
 include("legacy.jl") # these are solely for debugging and testing, not intended for external use.
-export forward_pass, c2v_to_v2c, v2c_to_c2v, readout
+export forward_pass, c2v_to_v2c, v2c_to_c2v, readout,
+       StandardBPDecoderStatistics, check_valid_fields_StandardBPDecoderStatistics,
+       extract_collected_data, collect_decoder_statistics_correlated,
+       collect_standard_decoder_statistics_correlated
 
 # Print functions for Neural BP models
 include("printfuns.jl")

@@ -371,9 +371,9 @@ if abspath(PROGRAM_FILE) == @__FILE__
         # Error-weight distribution. Counts, for one or more error files, how
         # many sampled patterns have each Hamming weight, and saves a bar plot
         # of the weight histograms.
-        codename         = "18q_BB_p_0.0005_cycles_1"
+        codename         = "18q_BB_cycles_1"
         subdir           = "testing_data"
-        errors_filenames = ["test_errors_p_0.0005.txt"]
+        errors_filenames = ["test_p_0.0015_s_1.txt"]
 
         prefix = joinpath(work_dir, codename)
         weight_distribution_filename = count_error_weights(errors_filenames, subdir; prefix = prefix)
@@ -383,9 +383,9 @@ if abspath(PROGRAM_FILE) == @__FILE__
         # CER correlation calibration. Compares the CER two-qubit marginals
         # against the empirical co-occurrence statistics of an error file, and
         # saves the calibration scatter + companion panels.
-        codename                   = "18q_BB_p_0.0005_cycles_1"
-        correlation_strengths_file = "correlated_weights/correlated_weights_p_0.0005_s_1.txt"
-        error_patterns_file        = "testing_data/test_p_0.0005_s_1.txt"
+        codename                   = "18q_BB_cycles_1"
+        correlation_strengths_file = "correlated_weights/correlated_weights_p_0.0013_s_1.txt"
+        error_patterns_file        = "testing_data/test_p_0.0013_s_1.txt"
 
         analyze_correlations_with_cer_data(
             joinpath(work_dir, codename),

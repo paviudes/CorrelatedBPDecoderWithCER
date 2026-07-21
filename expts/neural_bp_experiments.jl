@@ -121,15 +121,14 @@ if abspath(PROGRAM_FILE) == @__FILE__
     end
     #################################
     
-    # Load the results on to the `DecoderStatistics` structure.
-    stats = DecoderStatistics(
+    # Load the results on to the `NeuralBPDecoderStatistics` structure.
+    stats = NeuralBPDecoderStatistics(
         "NN",
         "ExplicitErrorModel",
         test_errors_file,
         size(is_correct, 1),
         n_hidden_layers,
-        n_epochs,
-        0.0;
+        n_epochs;
         num_failures = count(failures),
         failures = failures,
         runtime = runtime

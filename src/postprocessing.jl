@@ -3,60 +3,66 @@ using DataFrames
 using DataStructures
 using CSV
 
-struct DecoderStatistics
+struct NeuralBPDecoderStatistics
     """
-    Statistics for the Belief Propagation decoder.
+    Statistics for the Neural BP decoder.
 
-    Every field is a Vector, so a single `DecoderStatistics` can hold ONE record
-    (all fields length 1) or MANY (e.g. after concatenating the results of a
-    parameter sweep). The two inner constructors are:
+    Every field is a Vector, so a single `NeuralBPDecoderStatistics` can hold ONE
+    record (all fields length 1) or MANY (e.g. after concatenating the results of
+    a parameter sweep). The two inner constructors are:
 
-      1. Scalar/per-simulation form (unchanged call signature): pass one
-         simulation's scalar values; the constructor computes the logical error
-         rate and its Bernoulli std, then stores every field as a 1-element
-         Vector. This keeps existing call sites (neural_bp_experiments.jl etc.)
-         working untouched.
+      1. Scalar/per-simulation form: pass one simulation's scalar values; the
+         constructor computes the logical error rate and its Bernoulli std, then
+         stores every field as a 1-element Vector.
       2. Raw form: pass every field as an already-built Vector (all the same
          length). Used by `vcat`/concat and the `DataFrame` builder below.
+
+    The field names are Neural-BP-specific. The standard-BP counterpart
+    (`StandardBPDecoderStatistics`, in legacy.jl) stored the layer/epoch counts
+    under the standard-BP names `n_iterations_BP`/`rounds_per_BP` and carried a
+    `weight_soft_constraint`; here those are named `n_layers`/`n_epochs` and there
+    is no soft-constraint weight (a standard-BP-only knob).
     """
-    algo::Vector{String} # for standard BP, this is either "SumProduct" or "MinSum"; for Neural BP, this is "NN"
-    error_model_name::Vector{String} # e.g. "ExplicitErrorModel" or "IsingModel" or "CircuitLevelModel"
-    error_model_parameters_description::Vector{String} # e.g. "p=0.0011,q=0.0007" or "p=0.0011" or a filename for an explicit error model
-    num_samples_per_error_rate::Vector{Int} # for standard BP, this is the number of trials (ntrials) for a given error rate; for Neural BP, this is the number of test samples.
-    n_iterations_BP::Vector{Int} # for standard BP, this is the number of iterations of BP; for Neural BP, this is the number of layers in the trained neural network
-    rounds_per_BP::Vector{Int} # for standard BP, this is the number of rounds of BP; for Neural BP, this denotes n_epochs in the trained neural network
-    weight_soft_constraint::Vector{Float64} # for standard BP, this is the weight of the soft constraint in the BP decoder; for Neural BP, this parameter is not used and is set to 0.0
-    num_failures::Vector{Int} # for standard BP, this is the number of logical failures observed in the trials; for Neural BP, this is the number of logical failures observed in the test samples
+    algo::Vector{String} # always "NN" for the Neural BP decoder
+    error_model_name::Vector{String} # e.g. "ExplicitErrorModel"
+    error_model_parameters_description::Vector{String} # e.g. a filename for an explicit error model
+    num_samples_per_error_rate::Vector{Int} # number of test samples for a given error rate
+    n_layers::Vector{Int} # number of layers in the trained neural network
+    n_epochs::Vector{Int} # number of epochs the network was trained for
+    num_failures::Vector{Int} # number of logical failures observed in the test samples
     average_logical_error_rate::Vector{Float64} # average logical error rate = num_failures / num_samples_per_error_rate
     std_logical_error_rate::Vector{Float64} # standard deviation of the logical error rate, computed assuming a Bernoulli distribution
-    runtime::Vector{Float64} # runtime of the decoder in seconds (for standard BP, this is the total runtime for all trials; for Neural BP, this is the total runtime for all test samples)
+    runtime::Vector{Float64} # total runtime of the decoder in seconds over all test samples
 
     # --- Raw (array) constructor: every field already a Vector. ---------------
-    function DecoderStatistics(algo::Vector{String}, error_model_name::Vector{String},
+    function NeuralBPDecoderStatistics(algo::Vector{String}, error_model_name::Vector{String},
             error_model_parameters_description::Vector{String},
-            num_samples_per_error_rate::Vector{Int}, n_iterations_BP::Vector{Int},
-            rounds_per_BP::Vector{Int}, weight_soft_constraint::Vector{Float64},
-            num_failures::Vector{Int}, average_logical_error_rate::Vector{Float64},
+            num_samples_per_error_rate::Vector{Int}, n_layers::Vector{Int},
+            n_epochs::Vector{Int}, num_failures::Vector{Int},
+            average_logical_error_rate::Vector{Float64},
             std_logical_error_rate::Vector{Float64}, runtime::Vector{Float64})
         n = length(algo)
         lengths_match = all(==(n), (length(error_model_name), length(error_model_parameters_description),
-                    length(num_samples_per_error_rate), length(n_iterations_BP),
-                    length(rounds_per_BP), length(weight_soft_constraint),
-                    length(num_failures), length(average_logical_error_rate),
+                    length(num_samples_per_error_rate), length(n_layers),
+                    length(n_epochs), length(num_failures),
+                    length(average_logical_error_rate),
                     length(std_logical_error_rate), length(runtime)))
         if !lengths_match
-            throw(ArgumentError("All DecoderStatistics field vectors must have the same length."))
+            throw(ArgumentError("All NeuralBPDecoderStatistics field vectors must have the same length."))
         end
         new(algo, error_model_name, error_model_parameters_description,
-            num_samples_per_error_rate, n_iterations_BP, rounds_per_BP,
-            weight_soft_constraint, num_failures, average_logical_error_rate,
+            num_samples_per_error_rate, n_layers, n_epochs,
+            num_failures, average_logical_error_rate,
             std_logical_error_rate, runtime)
     end
 
-    # --- Scalar/per-simulation constructor (unchanged public signature). ------
-    function DecoderStatistics(algo::String, error_model_name::String, error_model_parameters_description::String, num_samples_per_error_rate::Int, num_iterations_BP::Int, num_rounds_per_iteration_BP::Int, weight_soft_constraint::Float64; num_failures::Int=0, failures::Vector{Bool}=zeros(Bool, num_samples_per_error_rate), runtime::Float64=0.0)
-        if !(algo in ("SumProduct", "MinSum", "NN"))
-            throw(ArgumentError("Algorithm must be either 'SumProduct', 'MinSum' or 'NN'."))
+    # --- Scalar/per-simulation constructor. -----------------------------------
+    function NeuralBPDecoderStatistics(algo::String, error_model_name::String,
+            error_model_parameters_description::String, num_samples_per_error_rate::Int,
+            n_layers::Int, n_epochs::Int; num_failures::Int=0,
+            failures::Vector{Bool}=zeros(Bool, num_samples_per_error_rate), runtime::Float64=0.0)
+        if algo != "NN"
+            throw(ArgumentError("Algorithm for the Neural BP decoder must be 'NN'."))
         end
         if num_samples_per_error_rate < 0
             throw(ArgumentError("Number of samples per error rate must be non-negative."))
@@ -65,60 +71,68 @@ struct DecoderStatistics
             num_failures = count(failures)
         end
         if (num_samples_per_error_rate == 0) || (num_failures == 0)
-        # warning("Number of failures is zero. Standard deviation will be set to zero.")
             average_logical_error_rate = 0.0
             std_logical_error_rate = 0.0
         else
             average_logical_error_rate = num_failures / num_samples_per_error_rate
-            std_logical_error_rate = compute_std_assuming_bernoulli(average_logical_error_rate, num_iterations_BP)
+            # KNOWN BUG (fix pending): the Bernoulli std should divide by
+            # num_samples_per_error_rate, NOT n_layers. Kept as-is so this
+            # rename stays behaviour-preserving; the one-line fix is to pass
+            # num_samples_per_error_rate as the second argument here.
+            std_logical_error_rate = compute_std_assuming_bernoulli(average_logical_error_rate, n_layers)
         end
         # Store every field as a 1-element Vector (delegates to the raw form).
         new([algo], [error_model_name], [error_model_parameters_description],
-            [num_samples_per_error_rate], [num_iterations_BP], [num_rounds_per_iteration_BP],
-            [weight_soft_constraint], [num_failures], [average_logical_error_rate],
+            [num_samples_per_error_rate], [n_layers], [n_epochs],
+            [num_failures], [average_logical_error_rate],
             [std_logical_error_rate], [runtime])
     end
 end
 
-function Base.vcat(stats::DecoderStatistics...)::DecoderStatistics
+function Base.vcat(stats::NeuralBPDecoderStatistics...)::NeuralBPDecoderStatistics
     """
-    Concatenate several `DecoderStatistics` into one by stacking each field vector.
-    Lets you accumulate a sweep's worth of single-record structs into one
+    Concatenate several `NeuralBPDecoderStatistics` into one by stacking each field
+    vector. Lets you accumulate a sweep's worth of single-record structs into one
     multi-record struct.
 
     Arguments:
-    - `stats...`: One or more `DecoderStatistics` instances to concatenate.
+    - `stats...`: One or more `NeuralBPDecoderStatistics` instances to concatenate.
     Returns:
-    - A new `DecoderStatistics` instance containing the concatenated data.
+    - A new `NeuralBPDecoderStatistics` instance containing the concatenated data.
     """
     if isempty(stats)
-        throw(ArgumentError("vcat needs at least one DecoderStatistics."))
+        throw(ArgumentError("vcat needs at least one NeuralBPDecoderStatistics."))
     end
-    combined = DecoderStatistics(
-        (reduce(vcat, getfield(s, f) for s in stats) for f in fieldnames(DecoderStatistics))...
+    combined = NeuralBPDecoderStatistics(
+        (reduce(vcat, getfield(s, f) for s in stats) for f in fieldnames(NeuralBPDecoderStatistics))...
     )
     return combined
 end
 
 """
-    DecoderStatistics(df::DataFrame) -> DecoderStatistics
+    NeuralBPDecoderStatistics(df::DataFrame) -> NeuralBPDecoderStatistics
 
-Build a multi-record `DecoderStatistics` from a DataFrame whose columns are the
-struct's field names (e.g. the output of `collect_decoder_statistics`).
+Build a multi-record `NeuralBPDecoderStatistics` from a DataFrame whose columns
+are the struct's field names (e.g. the output of `collect_decoder_statistics` run
+over CSVs produced by the current Neural BP pipeline).
 """
-function DecoderStatistics(df::DataFrame)::DecoderStatistics
-    stats = DecoderStatistics(
-        (Vector(df[!, f]) for f in fieldnames(DecoderStatistics))...
+function NeuralBPDecoderStatistics(df::DataFrame)::NeuralBPDecoderStatistics
+    stats = NeuralBPDecoderStatistics(
+        (Vector(df[!, f]) for f in fieldnames(NeuralBPDecoderStatistics))...
     )
     return stats
 end
 
-function record_decoder_statistics(stats::DecoderStatistics, output_filename::String="./../data/decoder_statistics.csv")::DataFrame
+function record_decoder_statistics(stats, output_filename::String="./../data/decoder_statistics.csv")::DataFrame
     """
     Print the statistics in a JSON format so that they can be easily printed into a file using GNU `parallel`.
+
+    Works for any decoder-statistics struct (e.g. `NeuralBPDecoderStatistics` or
+    the legacy `StandardBPDecoderStatistics`): the CSV columns are taken from the
+    struct's own field names, so each decoder writes its own schema.
     """
     stats_dict = Dict(
-        name => getfield(stats, name) for name in fieldnames(DecoderStatistics)
+        name => getfield(stats, name) for name in fieldnames(typeof(stats))
     )
     println(JSON.json(stats_dict)) # Ensure a newline after the JSON object
 
@@ -126,20 +140,6 @@ function record_decoder_statistics(stats::DecoderStatistics, output_filename::St
     stats_dataframe = DataFrame(stats_dict)
     CSV.write(output_filename, stats_dataframe)
     return stats_dataframe
-end
-
-"""
-Check that all provided symbols are valid fields of `DecoderStatistics`.
-Throws an ArgumentError if an invalid key is found.
-"""
-function check_valid_fields_DecoderStatistics(keys::Vector{Symbol})::Vector{Symbol}
-    allowed = fieldnames(DecoderStatistics)
-    valid = intersect(keys, allowed)
-    invalid = setdiff(keys, allowed)
-    if !isempty(invalid)
-        @warn ("Invalid keys found: $(collect(invalid))")
-    end
-    return valid
 end
 
 function compute_std_assuming_bernoulli(μ::Float64, n::Int)::Float64
@@ -209,9 +209,9 @@ function collect_standard_decoder_statistics(error_type::Symbol; prefix::String=
                  tag uses the single-parameter `fmt_prob(p)`.
 
     Both branches read the trial count, average, and std straight from the file,
-    so there is no `ntrials` argument. Both return the same DataFrame schema as
-    `collect_decoder_statistics` (and `DecoderStatistics`'s fields) so downstream
-    code can consume them interchangeably. Rows with the wrong column count are
+    so there is no `ntrials` argument. Both return a DataFrame whose schema
+    matches the legacy `StandardBPDecoderStatistics` fields so downstream code can
+    consume standard results interchangeably. Rows with the wrong column count are
     warned about and skipped. `error_type` must be `:Ising` or `:Circuit`.
     """
     if !(error_type in (:Ising, :Circuit))
@@ -307,6 +307,8 @@ function save_decoder_dataframe(decoder_stats::DataFrame, output_filename::Strin
     return output_filename
 end
 
-# NOTE: `check_approximate` and `extract_collected_data` moved to legacy.jl
-# (still exported). They are only used by the legacy expts drivers
-# (ballistic_errors.jl, misc/explicit_errors.jl).
+# NOTE: `StandardBPDecoderStatistics` (the former `DecoderStatistics`),
+# `check_valid_fields_StandardBPDecoderStatistics`, `check_approximate`, and
+# `extract_collected_data` now live in legacy.jl — standard BP is not the current
+# focus, and those are only used by the legacy expts drivers (ballistic_errors.jl,
+# misc/explicit_errors.jl, quantum_BP_test.jl).

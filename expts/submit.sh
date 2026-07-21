@@ -86,8 +86,8 @@ dirnames         = ["72q_BB_cycles_1"]
 # pvals / qvals: TOML arrays like [0.001, 0.005], OR a QUOTED Julia range
 # shorthand "start:step:stop", e.g. pvals = "0.0001:0.0002:0.0009". The quotes
 # are required — bare 0.0001:0.0002:0.0009 is not valid TOML. You can also mix:
-# pvals = [0.001, "0.01:0.01:0.05"].
-pvals            = ["0.0001:0.0002:0.0009"]
+# pvals = ["0.0001:0.0002:0.0009", 0.002, 0.0024, 0.0028, 0.0032, 0.0036, 0.0040, 0.0044, 0.0048, 0.005].
+pvals            = [0.002, 0.0024, 0.0028, 0.0032, 0.0036, 0.0040, 0.0044, 0.0048, 0.005]
 qvals            = [0.0]
 n_samples        = 1
 
@@ -100,7 +100,7 @@ error_model      = "Circuit"
 
 # --- Parameters for the neural BP model ---
 # The hyperparams TOML file should be placed in the same directory as the <working_dir>/<dirnames>/<models> folder.
-hyperparams_file = "hyperparams_epochs_10.toml"
+hyperparams_file = "hyperparams_epochs_20.toml"
 n_hidden_layers  = 100
 
 # --- backend selection ---
@@ -140,10 +140,10 @@ account          = "def-jemerson"
 
 # Size per test-mode invocation. For train mode (test=false, no GPU), you can
 # safely go up to 32–48 cores with 4G–8G/core on a CPU node.
-n_cpus           = 10
+n_cpus           = 9
 mem_per_cpu      = "16G"
 
-wall_time        = "1:00:00"
+wall_time        = "3:00:00"
 max_nodes        = 1
 email            = "pavithran.sridhar@gmail.com"
 

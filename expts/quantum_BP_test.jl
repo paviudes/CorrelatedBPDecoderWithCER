@@ -94,9 +94,9 @@ function main(read_from_file::Bool, explicit_error_file::String, ballistic_per_q
 	end
 	
 	# Summary of the experiment
-	stats = DecoderStatistics(
-		algo, 
-		errormodel.name, 
+	stats = StandardBPDecoderStatistics(
+		algo,
+		errormodel.name,
 		errormodel.parameters_description, 
 		num_error_samples, 
 		n_iterations_BP, 

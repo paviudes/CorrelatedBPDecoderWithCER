@@ -19,13 +19,13 @@
 #   <workdir>/<codename>/results   (inputs and gathered/aggregated outputs)
 #   <workdir>/<codename>/plots      (plot outputs)
 # so filenames below are bare — no paths.
-workdir = "./../data"
+workdir = "./../data/update_21July2026"
 
 # ###### Operations on Standard BP-OSD results ###############################
 # Parse one or more standard-decoder (BP-OSD) failures files and combine them
 # into a single DataFrame.
 [standard_bposd]
-run = false
+run = true
 # error_model: "Ising" (rows have p, q, ...) or "Circuit" (p only)
 error_model = "Circuit"
 # codename directory (its results/ subfolder holds the inputs + output)
@@ -42,7 +42,6 @@ files = [
 ]
 # output CSV filename, written into <workdir>/<codename>/results
 output_bposd_file = "decoder_statistics_BP_OSD.csv"
-
 
 # ###### Operations on Neural BP results #####################################
 ## Gather multiple per-simulation output CSVs into a single DataFrame
