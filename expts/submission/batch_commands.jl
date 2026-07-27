@@ -34,6 +34,7 @@
 # ============================================================================
 
 using Printf
+import TOML
 
 """
     fmt_probs(prob1::Float64, prob2::Float64) -> String
@@ -229,6 +230,30 @@ function generate_parallel_commands_Circuit(
     )
 end
 
+# Reconstruct the weights filename that neural_bp_experiments.jl (via
+# `train_Nachmani_neuralbp` in src/train.jl) will look for:
+#   <models_dir>/neuralbp_weights_nlayers_<L>_epochs_<E>_trained_using_<training_source>.json
+# where E = n_epochs read from the command's --hyperparams TOML. Returns `nothing`
+# when the hyperparams file can't be read, so the caller keeps that case rather
+# than dropping it on a check it couldn't actually perform.
+function _expected_weights_path(models_dir::String, hyperparams_file::String, n_hidden_layers::Int, training_source::String)
+    hyperparams_path = joinpath(models_dir, hyperparams_file)
+    if !isfile(hyperparams_path)
+        @warn "submit preflight: hyperparams file not found ($(hyperparams_path)); cannot verify the model for $(training_source), keeping it."
+        return nothing
+    end
+    n_epochs = 0
+    try
+        n_epochs = Int(TOML.parsefile(hyperparams_path)["n_epochs"])
+    catch parse_error
+        @warn "submit preflight: could not read n_epochs from $(hyperparams_path) ($(parse_error)); cannot verify the model for $(training_source), keeping it."
+        return nothing
+    end
+    weights_filename = "neuralbp_weights_nlayers_$(n_hidden_layers)_epochs_$(n_epochs)_trained_using_$(training_source).json"
+    weights_path = joinpath(models_dir, weights_filename)
+    return weights_path
+end
+
 function generate_parallel_commands(
     cer_files::AbstractVector{<:String},
     train_files::AbstractVector{<:String},
@@ -259,13 +284,46 @@ function generate_parallel_commands(
     invocation per tuple), then dispatch to the selected backend.
     """
     commands_dir = joinpath(working_dir, codename, "cluster")
-    isdir(commands_dir) || mkpath(commands_dir)
+    if !isdir(commands_dir)
+        mkpath(commands_dir)
+    end
+
+    # Submission-time preflight (TEST mode only): every command must LOAD an
+    # existing trained model. Reconstruct the exact weights path each command
+    # expects and DROP the cases whose model is missing, so we never queue a job
+    # that would abort (or silently retrain) hours into its wall-clock. If you
+    # really want a dropped case, add its line back to commands.txt by hand —
+    # neural_bp_experiments.jl will then train it (printing a message).
+    command_tuples = collect(zip(cer_files, train_files, test_files, hyperparams_files))
+    if mode == :test
+        models_dir = joinpath(working_dir, codename, "models")
+        kept_tuples = eltype(command_tuples)[]
+        dropped_sources = String[]
+        for command_tuple in command_tuples
+            (cer_file, train_file, test_file, hyperparams_file) = command_tuple
+            training_source = splitext(basename(train_file))[1]
+            weights_path = _expected_weights_path(models_dir, hyperparams_file, n_hidden_layers, training_source)
+            model_missing = weights_path !== nothing && !isfile(weights_path)
+            if model_missing
+                push!(dropped_sources, training_source)
+            else
+                push!(kept_tuples, command_tuple)
+            end
+        end
+        if !isempty(dropped_sources)
+            @warn "[$(codename)] submit preflight: no trained model for $(length(dropped_sources)) test case(s) — EXCLUDING them from commands.txt to avoid silently retraining. " *
+                  "Dropped (training source): $(dropped_sources). " *
+                  "To force one, add its line back to $(joinpath(commands_dir, commands_file)) by hand."
+        end
+        if isempty(kept_tuples)
+            error("[$(codename)] submit preflight: every test case is missing its trained model under $(models_dir) — nothing to run. Train those models first, or submit in train mode.")
+        end
+        command_tuples = kept_tuples
+    end
 
     commands_file_path = joinpath(commands_dir, commands_file)
     open(commands_file_path, "w") do io
-        for (cer_file, train_file, test_file, hyperparams_file) in
-                zip(cer_files, train_files, test_files, hyperparams_files)
-
+        for (cer_file, train_file, test_file, hyperparams_file) in command_tuples
             cmd = """julia --project="$(julia_project)" neural_bp_experiments.jl \
                 --workdir $(working_dir) \
                 --codename $(codename) \
@@ -285,7 +343,7 @@ function generate_parallel_commands(
         end
     end
 
-    n_simulations = length(cer_files)
+    n_simulations = length(command_tuples)
     n_cpus_to_use = min(ncpus, n_simulations)
 
     backend = lowercase(cluster_backend)

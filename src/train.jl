@@ -600,6 +600,8 @@ function train_Nachmani_neuralbp(
         # println("Loading existing weights from file: $weights_filename")
         bpnn = load_trained_neuralbp_model(weights_filename, bpnn)
     else
+        println("No trained weights at $(weights_filename) (or retrain=true); training a new model. " *
+                "This is expected in train mode; in test mode it means the model was missing and is being trained on the fly.")
         # Read errors from the training errors file
         expected_recoveries = convert.(Bool, readdlm(training_errors_file, Int))
         # Compute the syndromes for the training errors
