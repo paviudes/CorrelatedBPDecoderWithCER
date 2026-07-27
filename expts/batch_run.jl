@@ -216,18 +216,26 @@ end
 function _overlay_toml!(parsed_args::Dict, toml_path::String)
     """
     Read `toml_path` and, for every key it contains, replace `parsed_args[key]`
-    UNLESS the user already passed that flag on the command line. Unknown TOML
-    keys (not in `parsed_args`) are ignored with a warning.
+    UNLESS the user already passed that flag on the command line. Any key in the
+    TOML that is not a recognised flag is a hard ERROR: we fail loudly rather than
+    silently falling back to a default (which used to hide typos like `workdir`
+    vs `working_dir`). The message lists every valid key so it's actionable.
     """
     if !isfile(toml_path)
         error("Settings TOML not found: $(toml_path)")
     end
     settings = TOML.parsefile(toml_path)
+
+    # Reject unknown keys up front, reporting all of them at once (rather than
+    # erroring on the first, which would force fix-one-rerun-repeat).
+    unknown_keys = sort([key for key in keys(settings) if !haskey(parsed_args, key)])
+    if !isempty(unknown_keys)
+        valid_keys = sort([key for key in keys(parsed_args) if key != "settings"])
+        error("Unknown key(s) in settings TOML $(toml_path): $(join(unknown_keys, ", ")).\n" *
+              "Valid keys are: $(join(valid_keys, ", ")).")
+    end
+
     for (key, val) in settings
-        if !haskey(parsed_args, key)
-            @warn "Ignoring unknown key in settings TOML: $(key) = $(repr(val))"
-            continue
-        end
         if _is_flag_passed(key)
             # Don't override the value since the user explicitly passed it on the command line.
             continue
@@ -249,8 +257,9 @@ if abspath(PROGRAM_FILE) == @__FILE__
                    "override built-in defaults."
             arg_type = String
             default = ""
-        "--working_dir"
-            help = "Working directory for the simulations."
+        "--workdir"
+            help = "Working directory for the simulations (the data root; matches " *
+                   "the --workdir passed to neural_bp_experiments.jl and postprocess.jl)."
             arg_type = String
             default = "./../data"
         "--dirnames"
@@ -352,7 +361,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     qvals = _expand_numeric_spec(parsed_args["qvals"])
 
     generate_batch_runs(;
-        data_dir         = parsed_args["working_dir"],
+        data_dir         = parsed_args["workdir"],
         codenames        = dirnames,
         pvals            = pvals,
         qvals            = qvals,

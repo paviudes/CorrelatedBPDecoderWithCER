@@ -51,6 +51,11 @@ export plot_performance_spread
 include("plot_standard_vs_neural.jl")
 export plot_standard_vs_neural
 
+# Logical error rate vs p for a SINGLE decoder, one line per code (the standalone
+# BP-OSD / Neural BP figures). Reuses helpers from plot_standard_vs_neural.jl.
+include("plot_logical_error_rate.jl")
+export plot_logical_error_rate
+
 # Result aggregation / analysis entry points (moved from expts/).
 include("collect.jl")
 export postprocess_neuralbp_results, collect_results

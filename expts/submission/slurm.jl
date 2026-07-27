@@ -376,6 +376,53 @@ function run_on_SLURM(
             "# Anchor execution to the exact directory where you ran 'sbatch'",
             "cd \$SLURM_SUBMIT_DIR",
             "",
+            # Test-mode pre-flight: refuse to silently train. In test mode every
+            # command must LOAD an existing trained model; if its weights file is
+            # missing, neural_bp_experiments.jl would quietly launch a full
+            # training run instead. Reconstruct the exact path each command
+            # expects and abort loudly if any are absent, BEFORE spending GPU time.
+            # (raw string: shell $vars pass through untouched.)
+            is_test_mode ?
+                raw"""
+# ---- test-mode pre-flight: never silently train ----
+echo "[preflight] test mode: verifying every command has its trained model..."
+PREFLIGHT_CHUNK="$LOCAL_WORK_DIR/cluster/commands_chunk_${SLURM_ARRAY_TASK_ID}.txt"
+PREFLIGHT_MISSING=0
+while IFS= read -r preflight_cmd; do
+    case "$preflight_cmd" in
+        *neural_bp_experiments.jl*) : ;;
+        *) continue ;;
+    esac
+    pf_layers=$(printf '%s\n' "$preflight_cmd" | grep -oE -- '--n_hidden_layers[ =]+[0-9]+' | grep -oE '[0-9]+$')
+    pf_hp=$(printf '%s\n' "$preflight_cmd" | grep -oE -- '--hyperparams[ =]+[^ ]+' | awk '{print $NF}')
+    pf_train=$(printf '%s\n' "$preflight_cmd" | grep -oE -- '--train[ =]+[^ ]+' | awk '{print $NF}')
+    if [ -z "$pf_layers" ] || [ -z "$pf_hp" ] || [ -z "$pf_train" ]; then
+        echo "[preflight] WARN: could not parse --n_hidden_layers/--hyperparams/--train; skipping guard for: $preflight_cmd"
+        continue
+    fi
+    pf_src=$(basename "$pf_train")
+    pf_src="${pf_src%.*}"
+    pf_epochs=$(grep -E '^[[:space:]]*n_epochs[[:space:]]*=' "$LOCAL_WORK_DIR/models/$pf_hp" 2>/dev/null | head -n1 | grep -oE '[0-9]+' | head -n1)
+    if [ -z "$pf_epochs" ]; then
+        echo "[preflight] WARN: could not read n_epochs from models/$pf_hp; skipping guard for: $preflight_cmd"
+        continue
+    fi
+    pf_weights="$LOCAL_WORK_DIR/models/neuralbp_weights_nlayers_${pf_layers}_epochs_${pf_epochs}_trained_using_${pf_src}.json"
+    if [ ! -f "$pf_weights" ]; then
+        echo "[preflight] MISSING trained model: $pf_weights"
+        PREFLIGHT_MISSING=1
+    fi
+done < "$PREFLIGHT_CHUNK"
+if [ "$PREFLIGHT_MISSING" != "0" ]; then
+    echo "[preflight] ABORT: this is a TEST job but the trained model(s) above are missing."
+    echo "[preflight] Refusing to run, because neural_bp_experiments.jl would silently TRAIN them."
+    echo "[preflight] Fix: make sure models/ staged in correctly, or retrain those points first."
+    exit 1
+fi
+echo "[preflight] OK: all trained models present; proceeding to testing."
+""" :
+                "",
+            "",
             "echo \"Running parallel computations...\"",
             "# In test mode with n_gpus_per_node > 1 we set CUDA_VISIBLE_DEVICES",
             "# per parallel-slot so concurrent workers don't fight over the same",

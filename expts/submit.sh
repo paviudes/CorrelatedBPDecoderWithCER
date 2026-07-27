@@ -78,10 +78,12 @@ cat > "$SETTINGS_FILE" <<'EOF'
 # Lists are TOML arrays: ["foo", "bar"] or [0.01, 0.05].
 # Strings are quoted. Booleans are lowercase (true / false).
 # Lines starting with # are comments and are preserved.
+# Only the keys shown below are recognised — a misspelled or unknown key is a
+# hard error (batch_run.jl will stop and list the valid keys).
 # ----------------------------------------------------------------------------
 
 # --- data & experiment ---
-working_dir      = "./../data"
+workdir          = "./../data"
 dirnames         = ["18q_BB_cycles_1", "72q_BB_cycles_1"]
 # pvals / qvals: TOML arrays like [0.001, 0.005], OR a QUOTED Julia range
 # shorthand "start:step:stop", e.g. pvals = "0.0001:0.0002:0.0009". The quotes
@@ -99,7 +101,7 @@ n_samples        = 1
 error_model      = "Circuit"
 
 # --- Parameters for the neural BP model ---
-# The hyperparams TOML file should be placed in the same directory as the <working_dir>/<dirnames>/<models> folder.
+# The hyperparams TOML file should be placed in the same directory as the <workdir>/<dirnames>/<models> folder.
 hyperparams_file = "hyperparams_epochs_20.toml"
 n_hidden_layers  = 100
 

@@ -9,7 +9,12 @@
 # From the expts/ directory (its Project.toml has both packages via [sources]):
 #   julia --project="./" postprocess.jl                       # run every section with run = true
 #   julia --project="./" postprocess.jl --task=neural_gather  # run just one section
+#   julia --project="./" postprocess.jl --task=all_plots      # run a [task_groups] group (several sections)
 #   julia --project="./" postprocess.jl --config=other.toml   # a different panel file
+#
+# `--task=<x>` matches EITHER a single section id OR a key in the optional
+# [task_groups] TOML table (which maps one key to a list of section ids); a group
+# runs all its member sections in registry order, regardless of their `run` flag.
 #
 # Paths: a global `workdir` is set in the TOML; each section names a `codename`.
 # Files are resolved under <workdir>/<codename>/results and plots are written
@@ -30,7 +35,7 @@ using TOML
 using CSV
 using DataFrames
 using CorrelatedBPDecoderWithCER   # collect_standard_decoder_statistics, save_decoder_dataframe
-using PlotsForBPDecoder            # postprocess_neuralbp_results, plot_standard_vs_neural
+using PlotsForBPDecoder            # postprocess_neuralbp_results, plot_standard_vs_neural, plot_logical_error_rate
 
 # Fetch a required key from a section, with a clear error naming the section.
 function _require(section::AbstractDict, key::String, id::String)
@@ -59,7 +64,7 @@ end
 # aggregated outputs) and <workdir>/<codename>/plots (plot outputs).
 # ----------------------------------------------------------------------------
 
-function run_standard_bposd(section::AbstractDict, id::String, workdir::String)
+function run_standardbp_gather(section::AbstractDict, id::String, workdir::String)
     error_model_string = lowercase(strip(String(_require(section, "error_model", id))))
     if !(error_model_string in ("ising", "circuit"))
         error("[$(id)] error_model must be \"Ising\" or \"Circuit\", got \"$(error_model_string)\".")
@@ -141,7 +146,7 @@ function run_plot_standard_vs_neural(section::AbstractDict, id::String, workdir:
         for path in (standard_path, neural_path)
             if !isfile(path)
                 error("[$(id)] missing input: $(path) — generate it with the " *
-                      "standard_bposd / neural_gather sections.")
+                      "standardbp_gather / neural_gather sections.")
             end
         end
         push!(standard_dataframes, CSV.read(standard_path, DataFrame))
@@ -170,12 +175,70 @@ function run_plot_standard_vs_neural(section::AbstractDict, id::String, workdir:
     return nothing
 end
 
+# Shared body for the two single-decoder plots (standard_bp_osd_plots and
+# neuralbp_plots): one aggregated data file per code, one line per code.
+# `data_file_key` names the TOML key holding the bare filename (in each
+# <workdir>/<codename>/results) and `default_label` titles the figure unless the
+# section overrides it with `plot_label`.
+function _run_single_decoder_plot(section::AbstractDict, id::String, workdir::String;
+        data_file_key::String, default_label::String)
+    codenames = String.(_require(section, "codenames", id))
+    if isempty(codenames)
+        error("[$(id)] `codenames` is empty.")
+    end
+    codename_labels = String.(_require(section, "codename_labels", id))
+    if length(codename_labels) != length(codenames)
+        error("[$(id)] `codename_labels` must have one entry per codename " *
+              "($(length(codename_labels)) vs $(length(codenames))).")
+    end
+    data_file = String(_require(section, data_file_key, id))
+    decoder_label = String(get(section, "plot_label", default_label))
+
+    # Read the aggregate data file for every code (same bare filename in each
+    # <workdir>/<codename>/results — the file produced by the matching gather
+    # step). It must already exist per codename.
+    dataframes = DataFrame[]
+    for codename in codenames
+        data_path = joinpath(workdir, codename, "results", data_file)
+        if !isfile(data_path)
+            error("[$(id)] missing input: $(data_path) — generate it with the gather step.")
+        end
+        push!(dataframes, CSV.read(data_path, DataFrame))
+    end
+
+    # Figure written to <workdir>/<plot_file> (plot_file may include a subdir).
+    plot_path = joinpath(workdir, String(_require(section, "plot_file", id)))
+
+    x_scale = _scale_symbol(get(section, "x_scale", "log10"))
+    y_scale = _scale_symbol(get(section, "y_scale", "log10"))
+
+    saved_path = plot_logical_error_rate(
+        dataframes, codename_labels, decoder_label, plot_path;
+        xscale = x_scale, yscale = y_scale)
+    println("  plotted $(length(codenames)) code(s) [$(decoder_label)] -> $(saved_path)")
+    return nothing
+end
+
+function run_standard_bp_osd_plots(section::AbstractDict, id::String, workdir::String)
+    _run_single_decoder_plot(section, id, workdir;
+        data_file_key = "standard_bp_data_file", default_label = "BP-OSD")
+    return nothing
+end
+
+function run_neuralbp_plots(section::AbstractDict, id::String, workdir::String)
+    _run_single_decoder_plot(section, id, workdir;
+        data_file_key = "neuralbp_data_file", default_label = "Neural BP")
+    return nothing
+end
+
 # ----------------------------------------------------------------------------
 # Registry — ordered so `run = true` sections execute in a sensible sequence.
 # ----------------------------------------------------------------------------
 const OPERATIONS = [
-    ("standard_bposd",          run_standard_bposd),
+    ("standardbp_gather",       run_standardbp_gather),
     ("neural_gather",           run_neural_gather),
+    ("standard_bp_osd_plots",   run_standard_bp_osd_plots),
+    ("neuralbp_plots",          run_neuralbp_plots),
     ("plot_standard_vs_neural", run_plot_standard_vs_neural),
 ]
 
@@ -206,16 +269,40 @@ function main()
         workdir = String(cfg["workdir"])
     end
 
-    only = strip(args["task"])
+    only = String(strip(args["task"]))
+    known_ids = Set(first.(OPERATIONS))
+    task_groups = get(cfg, "task_groups", Dict{String, Any}())
+
+    # Resolve --task into an explicit list of section ids to run. `--task=<id>`
+    # runs that one section; `--task=<group>` (a [task_groups] key) runs all its
+    # members. Empty `only` => run every section with run = true. A group's
+    # members and any unknown id are validated up front so typos fail loudly.
+    selected_ids = String[]
+    if !isempty(only)
+        if haskey(task_groups, only)
+            selected_ids = String.(task_groups[only])
+            if isempty(selected_ids)
+                error("--task=$(only): task group [task_groups].$(only) is empty.")
+            end
+        else
+            selected_ids = [only]
+        end
+        for sid in selected_ids
+            if !(sid in known_ids)
+                error("--task=$(only): unknown id \"$(sid)\". Known ids: $(join(first.(OPERATIONS), ", ")).")
+            end
+        end
+    end
+
     ran = 0
     for (id, handler) in OPERATIONS
         section = get(cfg, id, nothing)
         if !isempty(only)
-            if id != only
+            if !(id in selected_ids)
                 continue
             end
             if section === nothing
-                error("--task=$(only): no [$(only)] section in $(config_path).")
+                error("--task=$(only): no [$(id)] section in $(config_path).")
             end
         else
             enabled = section !== nothing && get(section, "run", false) === true
@@ -228,13 +315,8 @@ function main()
         ran += 1
     end
 
-    if ran == 0
-        if isempty(only)
-            println("[postprocess] nothing to do — set `run = true` on a section in $(config_path).")
-        else
-            known_ids = join(first.(OPERATIONS), ", ")
-            println("[postprocess] unknown --task=\"$(only)\". Known ids: $(known_ids).")
-        end
+    if ran == 0 && isempty(only)
+        println("[postprocess] nothing to do — set `run = true` on a section in $(config_path).")
     end
     return nothing
 end

@@ -15,15 +15,20 @@
 # ----------------------------------------------------------------------------
 
 # ============================================================================
-# BACKEND — conditionally defined based on USE_GPU / GPU_BACKEND env vars
-#   Apple Silicon (M-series): ArrayT = Metal.MtlArray (USE_GPU=1, GPU_BACKEND=metal)
-#   NVIDIA (HPC):             ArrayT = CUDA.CuArray   (USE_GPU=1, GPU_BACKEND=cuda)
-#   CPU fallback:             ArrayT = Array          (USE_GPU=0)
+# BACKEND — the GPU array type is chosen by which backend package is compiled in
+# for this PLATFORM (Metal on Apple, CUDA on Linux); see the backend block in
+# CorrelatedBPDecoderWithCER.jl. `GPU_AVAILABLE` means "a GPU backend is present"
+# — it does NOT mean the GPU is enabled. Whether the GPU is actually used is the
+# RUNTIME decision `CorrelatedBPDecoderWithCER.gpu_active()` (checked by the
+# caller in predict.jl), so this const is safe to bake at precompile time.
+#   Apple Silicon (M-series): ArrayT = Metal.MtlArray
+#   NVIDIA (HPC):             ArrayT = CUDA.CuArray
+#   Neither backend present:  ArrayT = Array
 # ============================================================================
-@static if CorrelatedBPDecoderWithCER.USE_GPU && CorrelatedBPDecoderWithCER.METAL_LOADED
+@static if CorrelatedBPDecoderWithCER.METAL_LOADED
     const ArrayT = CorrelatedBPDecoderWithCER.Metal.MtlArray
     const GPU_AVAILABLE = true
-elseif CorrelatedBPDecoderWithCER.USE_GPU && CorrelatedBPDecoderWithCER.CUDA_LOADED
+elseif CorrelatedBPDecoderWithCER.CUDA_LOADED
     const ArrayT = CorrelatedBPDecoderWithCER.CUDA.CuArray
     const GPU_AVAILABLE = true
 else

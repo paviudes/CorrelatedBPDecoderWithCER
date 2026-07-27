@@ -20,38 +20,51 @@ using Printf            # Formatted printing for error model parameters
 # Set BLAS to use the same number of threads as Julia
 BLAS.set_num_threads(Threads.nthreads())
 
-# GPU acceleration (conditionally loaded based on environment variables)
+# GPU acceleration.
 #
-# Two env vars control the GPU path:
-#   USE_GPU       = "1" to enable any GPU code path. Anything else disables it.
-#   GPU_BACKEND   = "metal" (default, Apple Silicon) or "cuda" (NVIDIA, HPC).
+# Two concerns are deliberately SEPARATED:
 #
-# Only one backend is loaded per Julia session — choose at startup with:
-#   export USE_GPU="1" GPU_BACKEND="cuda"     # Linux HPC with NVIDIA GPUs
-#   export USE_GPU="1" GPU_BACKEND="metal"    # macOS / Apple Silicon (default)
-#   export USE_GPU="0"                      # CPU only; falls back to forward_pass_with_weights
-const USE_GPU = get(ENV, "USE_GPU", "0") == "1"
-const GPU_BACKEND = lowercase(get(ENV, "GPU_BACKEND", "metal"))
-@static if USE_GPU
-    if GPU_BACKEND == "cuda"
-        @eval begin
-            import CUDA
-            const METAL_LOADED = false
-            const CUDA_LOADED  = true
-        end
-    elseif GPU_BACKEND == "metal"
-        @eval begin
-            import Metal
-            const METAL_LOADED = true
-            const CUDA_LOADED  = false
-        end
-    else
-        error("Unknown GPU_BACKEND=\"$(GPU_BACKEND)\". Must be \"metal\" or \"cuda\".")
-    end
+#   1. Which backend PACKAGE is loaded — decided by PLATFORM (Metal on Apple,
+#      CUDA on Linux). The platform is identical at precompile time and at run
+#      time, so a precompiled image is valid no matter what the environment was
+#      when it was built. The backend package always loads (CUDA.jl / Metal.jl
+#      load fine even with no usable device — `functional()` just returns false);
+#      `CUDA_LOADED` / `METAL_LOADED` record which one is present.
+#
+#   2. Whether the GPU is actually USED — a RUNTIME switch, `use_gpu()`, read
+#      from the `USE_GPU` env var on every call. `export USE_GPU=1` (or 0) takes
+#      effect WITHOUT recompiling.
+#
+# This split fixes a silent CPU-fallback bug: the old design baked
+# `const USE_GPU = get(ENV, ...)` at PRECOMPILE time, so a CPU-only train build
+# (USE_GPU=0) sharing the depot could poison a GPU test job's precompile cache
+# and force it onto the CPU. USE_GPU is now never compiled into the image.
+#
+#   export USE_GPU=1     # use the GPU (CUDA on Linux HPC, Metal on Apple Silicon)
+#   export USE_GPU=0     # CPU only; falls back to forward_pass_with_weights
+@static if Sys.isapple()
+    import Metal
+    const GPU_BACKEND  = "metal"
+    const METAL_LOADED = true
+    const CUDA_LOADED  = false
+elseif Sys.islinux()
+    import CUDA
+    const GPU_BACKEND  = "cuda"
+    const METAL_LOADED = false
+    const CUDA_LOADED  = true
 else
+    const GPU_BACKEND  = "none"
     const METAL_LOADED = false
     const CUDA_LOADED  = false
 end
+
+# Runtime GPU on/off switch — read fresh from the environment on each call, never
+# baked into the precompiled image.
+use_gpu()::Bool = get(ENV, "USE_GPU", "0") == "1"
+
+# The GPU is actually engaged only when the user asked for it (USE_GPU=1) AND a
+# backend is compiled in for this platform.
+gpu_active()::Bool = use_gpu() && (CUDA_LOADED || METAL_LOADED)
 
 # Data manipulation and analysis
 using DataFrames        # Tabular data structures for decoder statistics
@@ -87,7 +100,7 @@ include("tanner_graph.jl")
 export TannerGraph, print_tanner_graph, QuantumCode, measure_syndrome, print_code_info
 
 # Configuration constants
-export USE_GPU, GPU_BACKEND, METAL_LOADED, CUDA_LOADED
+export use_gpu, gpu_active, GPU_BACKEND, METAL_LOADED, CUDA_LOADED
 
 # Quantum error correction codes
 include("hypergraph_product_code.jl")
