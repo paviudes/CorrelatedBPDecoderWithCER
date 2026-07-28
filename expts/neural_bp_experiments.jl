@@ -45,9 +45,18 @@ if abspath(PROGRAM_FILE) == @__FILE__
     hyperparams = parse_hyper_parameters(hyperparams_file; prefix=prefix)
     n_epochs = hyperparams["n_epochs"]
     online_training = hyperparams["online_training"]
-    
+
+    # CER switch (default true). When false, behave as if correlated_weights/ did
+    # not exist: preset p=0.1 priors, correlation loss dropped, and every output
+    # filename gets a `_no_cer` tag so CER and no-CER runs never overwrite.
+    use_CER = get(hyperparams, "use_CER", true)
+    cer_tag = use_CER ? "" : "_no_cer"
+    if !use_CER
+        println("[use_CER=false] Ignoring correlated_weights/: preset p=0.1 priors, correlation loss dropped, outputs tagged `_no_cer`.")
+    end
+
     # Train the Neural BP model
-    base = load_base_BP_model(parity_check_matrix_file, logicals_file, n_hidden_layers; correlation_strengths_file=correlation_strengths_file)
+    base = load_base_BP_model(parity_check_matrix_file, logicals_file, n_hidden_layers; correlation_strengths_file=correlation_strengths_file, use_cer=use_CER)
     initial_conditions = Dict{String, Vector{Float32}}(
         "weights_c2v_v2c" => random_values_around_one([base.nb_weights_c2v_v2c * base.n_layers]; scale=hyperparams["initial_conditions_scale"]),
         "weights_llrs" => random_values_around_one([base.code_n_bits * base.n_layers]; scale=hyperparams["initial_conditions_scale"]),
@@ -86,7 +95,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     results_file = "$(results_dir)/simulation_results_$(testing_source)_" *
                "nlayers_$(n_hidden_layers)_" *
                "epochs_$(n_epochs)_" *
-               "trained_using_$(training_source).csv"
+               "trained_using_$(training_source)$(cer_tag).csv"
     
     if isfile(results_file)
         println("Results file already exists: $(results_file). Skipping testing of the Neural BP model and loading results from file.")

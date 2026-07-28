@@ -1,0 +1,207 @@
+# ============================================================================
+# postprocess control panel
+# ============================================================================
+# This TOML is the control panel for expts/postprocess.jl. Each [section] is one
+# operation, keyed by an identifier. To run something:
+#
+#   1. Flip its `run = true`.
+#   2. Fill in that section's parameters.
+#   3. From the expts/ directory:
+#        julia --project="./" postprocess.jl                            # run EVERY section with run = true
+#        julia --project="./" postprocess.jl --task=neural_gather       # run just one section
+#        julia --project="./" postprocess.jl --task=all_plots           # run a [task_groups] group
+#        julia --project="./" postprocess.jl --config=postprocess_configs/other_panel.toml  # run a different panel
+#
+# Lines starting with # are comments. Strings are quoted; booleans are lowercase
+# (true / false); lists are TOML arrays [ "a", "b" ].
+# ============================================================================
+
+# Root data directory. Every section resolves its files relative to
+#   <workdir>/<codename>/results   (inputs and gathered/aggregated outputs)
+#   <workdir>/<codename>/plots      (plot outputs)
+# so filenames below are bare — no paths.
+workdir = "./../data/update_23July2026"
+
+# ###### Operations on Standard BP-OSD results ###############################
+# Parse one or more standard-decoder (BP-OSD) failures files and combine them
+# into a single DataFrame.
+[standardbp_gather]
+run = true
+# error_model: "Ising" (rows have p, q, ...) or "Circuit" (p only)
+error_model = "Circuit"
+# codename directory (its results/ subfolder holds the inputs + output)
+codename = "72q_BB_cycles_1"
+# one or more standard-BP failures files — bare filenames inside
+# <workdir>/<codename>/results — parsed and stacked into one table
+files = [
+    "72q_BB_p_0.0001_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
+    "72q_BB_p_0.0003_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
+    "72q_BB_p_0.0005_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
+    "72q_BB_p_0.0007_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
+    "72q_BB_p_0.0009_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
+    "72q_BB_p_0.0011_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
+    "72q_BB_p_0.0013_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
+    "72q_BB_p_0.0015_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
+    "72q_BB_p_0.0017_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
+    "72q_BB_p_0.0019_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
+    "72q_BB_p_0.002_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
+    "72q_BB_p_0.0024_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
+    "72q_BB_p_0.0028_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
+    "72q_BB_p_0.0032_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
+    "72q_BB_p_0.0036_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
+    "72q_BB_p_0.004_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
+    "72q_BB_p_0.0044_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
+    "72q_BB_p_0.0048_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
+    "72q_BB_p_0.005_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt"
+]
+# output CSV filename, written into <workdir>/<codename>/results
+# (canonical key is `output_file`; the old name `output_bposd_file` still works)
+output_file = "72q_BP_OSD.csv"
+
+# ###### Operations on plain BP (no OSD) results #############################
+# Same gather as [standardbp_gather], but pointed at the plain-BP failures files
+# (..._BP_failure_rates.txt) rather than the BP+OSD ones, writing a SEPARATE
+# aggregated CSV. Feed that CSV to [plot_standard_vs_neural] via `bp_csv` to draw
+# BP as a dotted third line and compute gains against it.
+[bp_gather]
+run = true
+# error_model: "Ising" (rows have p, q, ...) or "Circuit" (p only)
+error_model = "Circuit"
+# codename directory (its results/ subfolder holds the inputs + output)
+codename = "72q_BB_cycles_1"
+# one or more plain-BP failures files — bare filenames inside
+# <workdir>/<codename>/results — parsed and stacked into one table
+files = [
+    "72q_BB_p_0.0001_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.0003_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.0005_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.0007_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.0009_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.0011_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.0013_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.0015_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.0017_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.0019_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.002_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.0024_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.0028_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.0032_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.0036_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.004_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.0044_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.0048_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.005_cycles_1_BP_failure_rates.txt"
+]
+# output CSV filename, written into <workdir>/<codename>/results
+output_file = "72q_BP.csv"
+
+# ###### Operations on Neural BP results #####################################
+## Gather multiple per-simulation output CSVs into a single DataFrame
+[neural_gather]
+run = true
+codename = "72q_BB_cycles_1"
+# per-simulation result CSVs — bare filenames inside <workdir>/<codename>/results
+files = [
+    "simulation_results_test_p_0.0001_s_1_nlayers_100_epochs_20_trained_using_train_p_0.0001_s_1.csv",
+    "simulation_results_test_p_0.0003_s_1_nlayers_100_epochs_20_trained_using_train_p_0.0003_s_1.csv",
+    "simulation_results_test_p_0.0005_s_1_nlayers_100_epochs_20_trained_using_train_p_0.0005_s_1.csv",
+    "simulation_results_test_p_0.0007_s_1_nlayers_100_epochs_20_trained_using_train_p_0.0007_s_1.csv",
+    "simulation_results_test_p_0.0009_s_1_nlayers_100_epochs_20_trained_using_train_p_0.0009_s_1.csv",
+    "simulation_results_test_p_0.0011_s_1_nlayers_100_epochs_20_trained_using_train_p_0.0011_s_1.csv",
+    "simulation_results_test_p_0.0013_s_1_nlayers_100_epochs_20_trained_using_train_p_0.0013_s_1.csv",
+    "simulation_results_test_p_0.0015_s_1_nlayers_100_epochs_20_trained_using_train_p_0.0015_s_1.csv",
+    "simulation_results_test_p_0.0017_s_1_nlayers_100_epochs_20_trained_using_train_p_0.0017_s_1.csv",
+    "simulation_results_test_p_0.0019_s_1_nlayers_100_epochs_20_trained_using_train_p_0.0019_s_1.csv",
+    "simulation_results_test_p_0.002_s_1_nlayers_100_epochs_20_trained_using_train_p_0.002_s_1.csv",
+    "simulation_results_test_p_0.0024_s_1_nlayers_100_epochs_20_trained_using_train_p_0.0024_s_1.csv",
+    "simulation_results_test_p_0.0028_s_1_nlayers_100_epochs_20_trained_using_train_p_0.0028_s_1.csv",
+    "simulation_results_test_p_0.0032_s_1_nlayers_100_epochs_20_trained_using_train_p_0.0032_s_1.csv",
+    "simulation_results_test_p_0.0036_s_1_nlayers_100_epochs_20_trained_using_train_p_0.0036_s_1.csv",
+    "simulation_results_test_p_0.004_s_1_nlayers_100_epochs_20_trained_using_train_p_0.004_s_1.csv",
+    "simulation_results_test_p_0.0044_s_1_nlayers_100_epochs_20_trained_using_train_p_0.0044_s_1.csv",
+    "simulation_results_test_p_0.0048_s_1_nlayers_100_epochs_20_trained_using_train_p_0.0048_s_1.csv",
+    "simulation_results_test_p_0.005_s_1_nlayers_100_epochs_20_trained_using_train_p_0.005_s_1.csv"
+
+]
+# output CSV filename, written into <workdir>/<codename>/results
+output_neuralbp_file = "decoder_statistics_NeuralBP.csv"
+
+# ###### Plotting ############################################################
+## Plot the standard vs Neural BP results (multiple codes on one figure)
+[plot_standard_vs_neural]
+run = false
+# One entry per code — each code is drawn in a different colour.
+codenames = ["18q_BB_cycles_1", "72q_BB_cycles_1"]
+# Legend label for each code (same length/order as codenames). Shown as a
+# coloured marker in the legend, alongside the two decoder labels below.
+codename_labels = ["[[18, 4, 4]]", "[[72, 12, 6]]"]
+# Aggregate decoder-statistics CSVs to plot: the SAME bare filename inside every
+# <workdir>/<codename>/results. Both must ALREADY EXIST for each codename —
+# generate them with the [standardbp_gather] and [neural_gather] sections above,
+# using a consistent filename across codes so a single name works here.
+neural_csv   = "decoder_statistics_NeuralBP.csv"
+standard_csv = "decoder_statistics_BP_OSD.csv"
+# Legend labels for the decoders: solid line = BP-OSD, dashed = neural (and
+# dotted = BP, if bp_csv below is enabled).
+standard_BP_plot_label = "BP-OSD"
+neural_BP_plot_label   = "Neural BP"
+# Optional: include plain BP as a dotted THIRD line. Uncomment `bp_csv` to turn
+# it on — the gain Δ in the bottom panel then switches to BP as the baseline
+# instead of BP-OSD. The file must exist in EVERY codename's results/ (produce it
+# with [bp_gather]); with the default 18q+72q codenames, only enable this once BP
+# data exists for BOTH codes.
+# bp_csv        = "decoder_statistics_BP.csv"
+# bp_plot_label = "BP"
+# Axis scales: "log10" or "linear". Decade-snapping of limits is only applied on
+# a log axis (a linear axis is left to auto-scale).
+x_scale = "linear"
+y_scale = "log10"
+# output plot path, relative to <workdir> — so choose the subdir yourself, e.g.
+# "<codename>/plots/standard_vs_neural.pdf". Missing directories are created.
+plot_file = "18q_BB_cycles_1/plots/standard_vs_neural.pdf"
+
+# ###### Individual (single-decoder) plots ###################################
+## Plot ONLY the standard BP-OSD logical error rates — one coloured line per code.
+[standard_bp_osd_plots]
+run = false
+# One entry per code — each code is drawn in a different colour.
+codenames = ["18q_BB_cycles_1", "72q_BB_cycles_1"]
+# Legend label for each code (same length/order as codenames).
+codename_labels = ["[[18, 4, 4]]", "[[72, 12, 6]]"]
+# The gathered BP-OSD data file: a bare filename inside <workdir>/<codename>/results,
+# i.e. the `output_file` produced by [standardbp_gather]. Must already exist
+# for every codename.
+standard_bp_data_file = "decoder_statistics_BP_OSD.csv"
+# Figure title (optional; defaults to "BP-OSD").
+plot_label = "BP-OSD"
+# Axis scales: "log10" or "linear".
+x_scale = "log10"
+y_scale = "log10"
+# Output plot path, relative to <workdir> (missing directories are created).
+plot_file = "plots/standard_bp_osd.pdf"
+
+## Plot ONLY the Neural BP logical error rates — one coloured line per code.
+[neuralbp_plots]
+run = false
+codenames = ["18q_BB_cycles_1", "72q_BB_cycles_1"]
+codename_labels = ["[[18, 4, 4]]", "[[72, 12, 6]]"]
+# The gathered Neural BP data file: a bare filename inside <workdir>/<codename>/results,
+# i.e. the `output_neuralbp_file` produced by [neural_gather]. Must already exist
+# for every codename.
+neuralbp_data_file = "decoder_statistics_NeuralBP.csv"
+# Figure title (optional; defaults to "Neural BP").
+plot_label = "Neural BP"
+x_scale = "log10"
+y_scale = "log10"
+plot_file = "plots/neuralbp.pdf"
+
+# ###### Task groups #########################################################
+# Optional. Map ONE key to a LIST of section ids; then `--task=<key>` runs all of
+# them, in registry order, regardless of each section's `run` flag. Handy for
+# firing several related steps with a single command. An unknown member id is a
+# hard error. (A key here shadows a section id of the same name, so keep them
+# distinct.)
+[task_groups]
+gather   = ["standardbp_gather", "bp_gather", "neural_gather"]
+all_plots = ["standard_bp_osd_plots", "neuralbp_plots", "plot_standard_vs_neural"]
+everything = ["standardbp_gather", "bp_gather", "neural_gather", "standard_bp_osd_plots", "neuralbp_plots", "plot_standard_vs_neural"]

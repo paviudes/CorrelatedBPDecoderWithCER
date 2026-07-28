@@ -63,6 +63,26 @@ include("submission/google_vm.jl")
 include("submission/local_runs.jl")
 include("submission/batch_commands.jl")
 
+"""
+    _use_cer_from_hyperparams(hyperparams_path::String) -> Bool
+
+Read `use_CER` from a hyperparams TOML for the submit-time CER preflight.
+Defaults to `true` when the file is missing, the key is absent, or the file
+can't be parsed — mirroring `parse_hyper_parameters` (CER is the default). Like
+the rest of this driver, it reads TOML directly rather than loading the heavy
+package, so submission stays lightweight on the login node.
+"""
+function _use_cer_from_hyperparams(hyperparams_path::String)::Bool
+    if !isfile(hyperparams_path)
+        return true
+    end
+    try
+        return get(TOML.parsefile(hyperparams_path), "use_CER", true) === true
+    catch
+        return true
+    end
+end
+
 # ----------------------------------------------------------------------------
 # generate_batch_runs — generate a submission script (SLURM / local / Google VM) for one or
 # more codenames. In test mode, flips retrain=false in each hyperparams TOML
@@ -112,8 +132,22 @@ function generate_batch_runs(;
     end
 
     for codename in codenames
+        # CER preflight — run BEFORE any side effects (e.g. the retrain flip). If
+        # this codename's hyperparams enable CER, its correlated_weights/ folder
+        # must exist; error before submitting anything if it doesn't. With
+        # use_CER = false we intentionally do NOT require the folder (the run
+        # pretends it's absent: preset p=0.1 priors, correlation loss dropped).
+        hp_path = joinpath(data_dir, codename, "models", hyperparams_file)
+        if _use_cer_from_hyperparams(hp_path)
+            cer_dir = joinpath(data_dir, codename, "correlated_weights")
+            if !isdir(cer_dir)
+                error("[use_CER=true] correlated_weights/ not found for codename \"$(codename)\": $(cer_dir).\n" *
+                      "Provide the folder, or set `use_CER = false` in $(hyperparams_file) to run without CER " *
+                      "priors (preset p=0.1, correlation loss dropped, outputs tagged `_no_cer`).")
+            end
+        end
+
         if test
-            hp_path = joinpath(data_dir, codename, "models", hyperparams_file)
             println("[--test] disabling retrain in $(hp_path)")
             disable_retrain_in_hyperparams(hp_path)
         end

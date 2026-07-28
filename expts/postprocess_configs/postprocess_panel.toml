@@ -10,7 +10,7 @@
 #        julia --project="./" postprocess.jl                            # run EVERY section with run = true
 #        julia --project="./" postprocess.jl --task=neural_gather       # run just one section
 #        julia --project="./" postprocess.jl --task=all_plots           # run a [task_groups] group
-#        julia --project="./" postprocess.jl --config=other_panel.toml  # run a different panel
+#        julia --project="./" postprocess.jl --config=postprocess_configs/other_panel.toml  # run a different panel
 #
 # Lines starting with # are comments. Strings are quoted; booleans are lowercase
 # (true / false); lists are TOML arrays [ "a", "b" ].
@@ -51,7 +51,45 @@ files = [
     "72q_BB_p_0.005_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt"
 ]
 # output CSV filename, written into <workdir>/<codename>/results
-output_bposd_file = "decoder_statistics_BP_OSD.csv"
+# (canonical key is `output_file`; the old name `output_bposd_file` still works)
+output_file = "decoder_statistics_BP_OSD.csv"
+
+# ###### Operations on plain BP (no OSD) results #############################
+# Same gather as [standardbp_gather], but pointed at the plain-BP failures files
+# (..._BP_failure_rates.txt) rather than the BP+OSD ones, writing a SEPARATE
+# aggregated CSV. Feed that CSV to [plot_standard_vs_neural] via `bp_csv` to draw
+# BP as a dotted third line and compute gains against it.
+[bp_gather]
+run = true
+# error_model: "Ising" (rows have p, q, ...) or "Circuit" (p only)
+error_model = "Circuit"
+# codename directory (its results/ subfolder holds the inputs + output)
+codename = "72q_BB_cycles_1"
+# one or more plain-BP failures files — bare filenames inside
+# <workdir>/<codename>/results — parsed and stacked into one table
+files = [
+    "72q_BB_p_0.0001_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.0003_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.0005_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.0007_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.0009_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.0011_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.0013_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.0015_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.0017_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.0019_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.002_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.0024_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.0028_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.0032_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.0036_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.004_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.0044_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.0048_cycles_1_BP_failure_rates.txt",
+    "72q_BB_p_0.005_cycles_1_BP_failure_rates.txt"
+]
+# output CSV filename, written into <workdir>/<codename>/results
+output_file = "decoder_statistics_BP.csv"
 
 # ###### Operations on Neural BP results #####################################
 ## Gather multiple per-simulation output CSVs into a single DataFrame
@@ -99,9 +137,17 @@ codename_labels = ["[[18, 4, 4]]", "[[72, 12, 6]]"]
 # using a consistent filename across codes so a single name works here.
 neural_csv   = "decoder_statistics_NeuralBP.csv"
 standard_csv = "decoder_statistics_BP_OSD.csv"
-# Two legend labels for the decoders: solid line = standard, dashed = neural.
+# Legend labels for the decoders: solid line = BP-OSD, dashed = neural (and
+# dotted = BP, if bp_csv below is enabled).
 standard_BP_plot_label = "BP-OSD"
 neural_BP_plot_label   = "Neural BP"
+# Optional: include plain BP as a dotted THIRD line. Uncomment `bp_csv` to turn
+# it on — the gain Δ in the bottom panel then switches to BP as the baseline
+# instead of BP-OSD. The file must exist in EVERY codename's results/ (produce it
+# with [bp_gather]); with the default 18q+72q codenames, only enable this once BP
+# data exists for BOTH codes.
+# bp_csv        = "decoder_statistics_BP.csv"
+# bp_plot_label = "BP"
 # Axis scales: "log10" or "linear". Decade-snapping of limits is only applied on
 # a log axis (a linear axis is left to auto-scale).
 x_scale = "linear"
@@ -119,7 +165,7 @@ codenames = ["18q_BB_cycles_1", "72q_BB_cycles_1"]
 # Legend label for each code (same length/order as codenames).
 codename_labels = ["[[18, 4, 4]]", "[[72, 12, 6]]"]
 # The gathered BP-OSD data file: a bare filename inside <workdir>/<codename>/results,
-# i.e. the `output_bposd_file` produced by [standardbp_gather]. Must already exist
+# i.e. the `output_file` produced by [standardbp_gather]. Must already exist
 # for every codename.
 standard_bp_data_file = "decoder_statistics_BP_OSD.csv"
 # Figure title (optional; defaults to "BP-OSD").
@@ -152,6 +198,6 @@ plot_file = "plots/neuralbp.pdf"
 # hard error. (A key here shadows a section id of the same name, so keep them
 # distinct.)
 [task_groups]
-gather   = ["standardbp_gather", "neural_gather"]
+gather   = ["standardbp_gather", "bp_gather", "neural_gather"]
 all_plots = ["standard_bp_osd_plots", "neuralbp_plots", "plot_standard_vs_neural"]
-everything = ["standardbp_gather", "neural_gather", "standard_bp_osd_plots", "neuralbp_plots", "plot_standard_vs_neural"]
+everything = ["standardbp_gather", "bp_gather", "neural_gather", "standard_bp_osd_plots", "neuralbp_plots", "plot_standard_vs_neural"]

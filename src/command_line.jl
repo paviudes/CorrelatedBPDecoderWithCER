@@ -283,6 +283,7 @@ function parse_hyper_parameters(hyperparams_file::String=""; prefix::String="./.
     """
     default_hyperparams::Dict{String, Any} = Dict(
         "retrain" => false, # Whether to retrain the model even if trained weights are available.
+        "use_CER" => true, # Whether to use correlated-error-rate (CER) priors. If false, the correlated_weights/ folder is ignored: single-qubit priors default to p=0.1 and the correlation loss term is dropped. Outputs are tagged `_no_cer` so CER and no-CER runs don't overwrite each other.
         "learning_rate" => 1f-1, # Learning rate for training the Neural BP model using the ADAM optimizer
         "max_grad_norm" => 2f0, # Gradient clipping threshold
         "weight_decay" => 1f-4, # L2 regularization strength for ADAM optimizer

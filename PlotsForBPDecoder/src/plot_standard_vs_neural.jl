@@ -3,10 +3,12 @@
 # for several codes on one figure.
 # ============================================================================
 #
-# Each code is a colour; the standard decoder is a solid line and the neural
-# decoder a dashed line (so the legend needs only two entries — the two decoder
-# labels — while colour distinguishes the codes). A per-code 6-column comparison
-# CSV is written alongside for inspection.
+# Each code is a colour; BP-OSD is a solid line and the neural decoder a dashed
+# line, with an optional third decoder (plain BP) drawn dotted when its data is
+# supplied. So the legend needs only the decoder entries (solid / dotted /
+# dashed) while colour distinguishes the codes. A per-code comparison CSV is
+# written alongside for inspection; the gain Δ uses plain BP as the baseline when
+# present, else BP-OSD.
 # ============================================================================
 
 function _logical_error_rate_vs_p(stats_dataframe::DataFrame)::Matrix{Float64}
@@ -39,49 +41,73 @@ function _logical_error_rate_vs_p(stats_dataframe::DataFrame)::Matrix{Float64}
     return result
 end
 
-function _comparison_dataframe(standard_matrix::Matrix{Float64}, neural_matrix::Matrix{Float64})::DataFrame
+function _comparison_dataframe(bposd_matrix::Matrix{Float64}, neural_matrix::Matrix{Float64};
+        bp_matrix::Union{Nothing, Matrix{Float64}} = nothing)::DataFrame
     """
-    Join the standard and neural [p, LER, std] matrices on p and build the
-    6-column comparison table:
-        p, LER (BP-OSD), std (BP-OSD), LER (Neural BP), std (Neural BP),
-        performance_gain = LER(BP-OSD) / LER(Neural BP).
-    Only p values present for BOTH decoders are kept.
+    Join the standard (BP-OSD), optional plain-BP, and neural [p, LER, std]
+    matrices on p and build the comparison table. Columns:
+        p,
+        average_logical_error_rate_BP_OSD, standard_error_BP_OSD,
+        [average_logical_error_rate_BP, standard_error_BP,]   # only if bp_matrix given
+        average_logical_error_rate_Neural_BP, standard_error_Neural_BP,
+        performance_gain, gain_baseline.
+    The gain is LER(baseline) / LER(Neural BP), where the baseline is plain BP
+    when `bp_matrix` is supplied, else BP-OSD (recorded per row in gain_baseline).
+    The table is keyed on the baseline's p grid; only p values also present for
+    the neural decoder are kept, and any other decoder's value missing at a kept
+    p is written as NaN.
     """
-    neural_by_p = Dict{Float64, Tuple{Float64, Float64}}()
-    for r in 1:size(neural_matrix, 1)
-        neural_by_p[neural_matrix[r, 1]] = (neural_matrix[r, 2], neural_matrix[r, 3])
-    end
+    to_lookup(m) = Dict(m[r, 1] => (m[r, 2], m[r, 3]) for r in 1:size(m, 1))
+    neural_by_p = to_lookup(neural_matrix)
+    bposd_by_p  = to_lookup(bposd_matrix)
+    bp_by_p     = bp_matrix === nothing ? nothing : to_lookup(bp_matrix)
+
+    has_bp = bp_matrix !== nothing
+    baseline_matrix = has_bp ? bp_matrix : bposd_matrix
+    baseline_name = has_bp ? "BP" : "BP-OSD"
 
     p_values         = Float64[]
-    ler_standard     = Float64[]
-    std_standard     = Float64[]
+    ler_bposd        = Float64[]
+    std_bposd        = Float64[]
+    ler_bp           = Float64[]
+    std_bp           = Float64[]
     ler_neural       = Float64[]
     std_neural       = Float64[]
     performance_gain = Float64[]
-    for r in 1:size(standard_matrix, 1)
-        p_value = standard_matrix[r, 1]
-        if !haskey(neural_by_p, p_value)
-            continue
-        end
+    for r in 1:size(baseline_matrix, 1)
+        p_value = baseline_matrix[r, 1]
+        haskey(neural_by_p, p_value) || continue
         (neural_ler, neural_std) = neural_by_p[p_value]
-        standard_ler = standard_matrix[r, 2]
-        standard_std = standard_matrix[r, 3]
+        (bposd_ler, bposd_std)   = get(bposd_by_p, p_value, (NaN, NaN))
         push!(p_values, p_value)
-        push!(ler_standard, standard_ler)
-        push!(std_standard, standard_std)
+        push!(ler_bposd, bposd_ler)
+        push!(std_bposd, bposd_std)
         push!(ler_neural, neural_ler)
         push!(std_neural, neural_std)
-        push!(performance_gain, standard_ler / neural_ler)
+        if has_bp
+            (bp_ler_value, bp_std_value) = bp_by_p[p_value]  # present: we iterate BP's grid
+            push!(ler_bp, bp_ler_value)
+            push!(std_bp, bp_std_value)
+            baseline_ler = bp_ler_value
+        else
+            baseline_ler = bposd_ler
+        end
+        push!(performance_gain, baseline_ler / neural_ler)
     end
 
     comparison_df = DataFrame(
         p = p_values,
-        average_logical_error_rate_BP_OSD = ler_standard,
-        standard_error_BP_OSD = std_standard,
-        average_logical_error_rate_Neural_BP = ler_neural,
-        standard_error_Neural_BP = std_neural,
-        performance_gain = performance_gain,
+        average_logical_error_rate_BP_OSD = ler_bposd,
+        standard_error_BP_OSD = std_bposd,
     )
+    if has_bp
+        comparison_df.average_logical_error_rate_BP = ler_bp
+        comparison_df.standard_error_BP = std_bp
+    end
+    comparison_df.average_logical_error_rate_Neural_BP = ler_neural
+    comparison_df.standard_error_Neural_BP = std_neural
+    comparison_df.performance_gain = performance_gain
+    comparison_df.gain_baseline = fill(baseline_name, length(p_values))
     return comparison_df
 end
 
@@ -110,17 +136,22 @@ function _build_ler_panel(
     colors::Vector{Symbol},
     x_limits,
     xscale::Symbol,
-    yscale::Symbol,
+    yscale::Symbol;
+    bp_matrices::Union{Nothing, Vector{Matrix{Float64}}} = nothing,
+    bp_label::String = "BP",
 )
     """
     Build the TOP panel: logical error rate vs p. Each code is a colour;
-    standard-BP is a solid line + circle, neural-BP a dashed line + square. The
-    legend carries the two decoder entries (`standard_label` solid, `neural_label`
-    dashed) plus one coloured marker per code from `codename_labels`. Returns the
-    `Plots.jl` plot. X tick labels are kept visible (both panels show them).
+    BP-OSD is a solid line + circle and neural-BP a dashed line + square. When
+    `bp_matrices` is supplied, plain BP is added as a dotted line + diamond (same
+    colour per code). The legend carries the decoder entries (`standard_label`
+    solid, `bp_label` dotted if present, `neural_label` dashed) plus one coloured
+    marker per code from `codename_labels`. Returns the `Plots.jl` plot. X tick
+    labels are kept visible (both panels show them).
     """
     is_y_log = yscale in (:log10, :log2, :ln, :log)
     n_codes = length(standard_matrices)
+    has_bp = bp_matrices !== nothing
 
     ler_panel = plot(;
         xlabel = "\nPhysical Error Probability \$p\$",
@@ -134,8 +165,11 @@ function _build_ler_panel(
     end
 
     # LER y-limits (decade-snapped only on a log y-axis) + error-bar floor.
+    ylim_matrices = has_bp ?
+        Iterators.flatten((standard_matrices, neural_matrices, bp_matrices)) :
+        Iterators.flatten((standard_matrices, neural_matrices))
     all_y = Float64[]
-    for matrix in Iterators.flatten((standard_matrices, neural_matrices))
+    for matrix in ylim_matrices
         for r in 1:size(matrix, 1)
             ler = matrix[r, 2]
             err = matrix[r, 3]
@@ -153,33 +187,29 @@ function _build_ler_panel(
         plot!(ler_panel; ylims = (y_low, y_high))
     end
 
-    # Legend: two decoder entries + one coloured marker per code.
+    # A single code's LER line, with log-safe error bars.
+    yerr_for(matrix) = is_y_log ? _log_safe_yerror(matrix[:, 2], matrix[:, 3], y_floor) : matrix[:, 3]
+    draw_line!(matrix, style, mark, color) = plot!(ler_panel, matrix[:, 1], matrix[:, 2];
+        yerr = yerr_for(matrix), color = color, linestyle = style,
+        marker = mark, markersize = 3, linewidth = 1, label = "")
+
+    # Legend: the decoder entries (solid / dotted / dashed) + one coloured marker
+    # per code.
     plot!(ler_panel, [NaN], [NaN]; label = standard_label, color = :black, linestyle = :solid, linewidth = 1)
-    plot!(ler_panel, [NaN], [NaN]; label = neural_label,   color = :black, linestyle = :dash,  linewidth = 1)
+    if has_bp
+        plot!(ler_panel, [NaN], [NaN]; label = bp_label, color = :black, linestyle = :dot, linewidth = 1)
+    end
+    plot!(ler_panel, [NaN], [NaN]; label = neural_label, color = :black, linestyle = :dash, linewidth = 1)
     for i in 1:n_codes
         color = colors[mod1(i, length(colors))]
         scatter!(ler_panel, [NaN], [NaN]; label = codename_labels[i], color = color,
                  markershape = :circle, markersize = 5, markerstrokewidth = 0)
 
-        standard_matrix = standard_matrices[i]
-        if is_y_log
-            standard_yerr = _log_safe_yerror(standard_matrix[:, 2], standard_matrix[:, 3], y_floor)
-        else
-            standard_yerr = standard_matrix[:, 3]
+        draw_line!(standard_matrices[i], :solid, :circle, color)
+        if has_bp
+            draw_line!(bp_matrices[i], :dot, :diamond, color)
         end
-        plot!(ler_panel, standard_matrix[:, 1], standard_matrix[:, 2];
-            yerr = standard_yerr, color = color, linestyle = :solid,
-            marker = :circle, markersize = 3, linewidth = 1, label = "")
-
-        neural_matrix = neural_matrices[i]
-        if is_y_log
-            neural_yerr = _log_safe_yerror(neural_matrix[:, 2], neural_matrix[:, 3], y_floor)
-        else
-            neural_yerr = neural_matrix[:, 3]
-        end
-        plot!(ler_panel, neural_matrix[:, 1], neural_matrix[:, 2];
-            yerr = neural_yerr, color = color, linestyle = :dash,
-            marker = :square, markersize = 3, linewidth = 1, label = "")
+        draw_line!(neural_matrices[i], :dash, :square, color)
     end
     return ler_panel
 end
@@ -190,19 +220,22 @@ function _build_gain_panel(
     colors::Vector{Symbol},
     x_limits,
     xscale::Symbol,
+    gain_ylabel::String,
 )
     """
-    Build the BOTTOM panel: the performance gain Δ = LER(standard) / LER(neural)
+    Build the BOTTOM panel: the performance gain Δ = LER(baseline) / LER(neural)
     vs p, one line per code (matching colour). A dotted Δ = 1 break-even reference
     is drawn (neural is better above it). The legend maps each coloured marker to
-    its code label (`codename_labels`). The y-axis is always log. Returns the
+    its code label (`codename_labels`). The y-axis is always log. `gain_ylabel`
+    names the axis after the baseline actually used (e.g. `\$\\Delta_{\\text{BP}}\$`
+    when BP is present, `\$\\Delta_{\\text{BP-OSD}}\$` otherwise). Returns the
     `Plots.jl` plot.
     """
     n_codes = length(comparison_dataframes)
 
     gain_panel = plot(;
         xlabel = "\nPhysical Error Probability \$p\$",
-        ylabel = "\$\\Delta\$\n",
+        ylabel = gain_ylabel,
         xscale = xscale,
         yscale = :log10,
         legend = :topright,
@@ -256,28 +289,31 @@ function plot_standard_vs_neural(
     neural_label::String,
     output_path::String,
     comparison_csv_paths::Vector{String};
+    bp_dataframes::Union{Nothing, Vector{DataFrame}} = nothing,
+    bp_label::String = "BP",
     xscale::Symbol = :log10,
     yscale::Symbol = :log10,
 )
     """
     Two-panel figure (shared x-axis) for several codes:
       - TOP: logical error rate vs physical error probability `p`. Each code is a
-        colour; standard-BP solid, neural-BP dashed. Legend = the two decoder
-        entries (`standard_label` solid, `neural_label` dashed) plus one
+        colour; BP-OSD solid, neural-BP dashed, and — when `bp_dataframes` is
+        given — plain BP dotted. Legend = the decoder entries (`standard_label`
+        solid, `bp_label` dotted if present, `neural_label` dashed) plus one
         coloured-marker entry per code from `codename_labels`.
-      - BOTTOM: the performance gain Δ = LER(standard) / LER(neural) vs the same
+      - BOTTOM: the performance gain Δ = LER(baseline) / LER(neural) vs the same
         `p`, one line per code (matching colour), with a dotted Δ = 1 break-even
-        reference (neural is better above the line).
+        reference (neural is better above the line). The baseline is plain BP when
+        `bp_dataframes` is supplied, else BP-OSD.
 
-    `standard_dataframes[i]` / `neural_dataframes[i]` are the aggregated
-    standard/neural statistics for code `i` (columns
+    `standard_dataframes[i]` / `neural_dataframes[i]` (and optional
+    `bp_dataframes[i]`) are the aggregated statistics for code `i` (columns
     `error_model_parameters_description`, `average_logical_error_rate`,
     `std_logical_error_rate`). `xscale`/`yscale` set the TOP panel's scales
     (:log10 or :identity); decade-snapping of limits is applied only on log axes,
-    and the gain panel always uses a log y-axis. For each code the 6-column
-    comparison table (see `_comparison_dataframe`) is written to
-    `comparison_csv_paths[i]`. The figure is written to `output_path`, whose path
-    is returned.
+    and the gain panel always uses a log y-axis. For each code the comparison
+    table (see `_comparison_dataframe`) is written to `comparison_csv_paths[i]`.
+    The figure is written to `output_path`, whose path is returned.
     """
     n_codes = length(standard_dataframes)
     if length(neural_dataframes) != n_codes
@@ -292,14 +328,24 @@ function plot_standard_vs_neural(
         error("comparison_csv_paths must have one entry per code " *
               "($(length(comparison_csv_paths)) vs $(n_codes)).")
     end
+    if bp_dataframes !== nothing && length(bp_dataframes) != n_codes
+        error("bp_dataframes must have one entry per code " *
+              "($(length(bp_dataframes)) vs $(n_codes)).")
+    end
 
     colors = [:blue, :red, :green, :orange, :purple, :cyan, :magenta, :brown]
 
     # Per-code [p, LER, std] matrices and the joined comparison tables. Reused for
-    # both panels and written out as CSVs.
+    # both panels and written out as CSVs. BP is optional (dotted curve + gain
+    # baseline); when absent, `bp_matrices` stays `nothing` and the figure is the
+    # usual BP-OSD-vs-neural comparison.
     standard_matrices = [_logical_error_rate_vs_p(df) for df in standard_dataframes]
     neural_matrices   = [_logical_error_rate_vs_p(df) for df in neural_dataframes]
-    comparison_dataframes = [_comparison_dataframe(standard_matrices[i], neural_matrices[i]) for i in 1:n_codes]
+    bp_matrices = bp_dataframes === nothing ? nothing :
+                  [_logical_error_rate_vs_p(df) for df in bp_dataframes]
+    comparison_dataframes = [_comparison_dataframe(standard_matrices[i], neural_matrices[i];
+                                bp_matrix = (bp_matrices === nothing ? nothing : bp_matrices[i]))
+                             for i in 1:n_codes]
     for i in 1:n_codes
         csv_path = comparison_csv_paths[i]
         mkpath(dirname(csv_path))
@@ -311,8 +357,11 @@ function plot_standard_vs_neural(
     # Shared x-limits (decade-snapped only on a log x-axis; linear uses the data
     # range plus a small margin, which also stops the [NaN] legend dummies / hline
     # from driving a bogus auto-range like 0..2).
+    xlim_matrices = bp_matrices === nothing ?
+        Iterators.flatten((standard_matrices, neural_matrices)) :
+        Iterators.flatten((standard_matrices, neural_matrices, bp_matrices))
     all_p = Float64[]
-    for matrix in Iterators.flatten((standard_matrices, neural_matrices))
+    for matrix in xlim_matrices
         for r in 1:size(matrix, 1)
             p_value = matrix[r, 1]
             if !is_x_log || p_value > 0
@@ -339,8 +388,11 @@ function plot_standard_vs_neural(
     # Build each panel separately, then stack them with a shared x-axis. Both
     # panels keep their x tick labels (easier to read off the gain against p).
     ler_panel = _build_ler_panel(standard_matrices, neural_matrices, codename_labels,
-        standard_label, neural_label, colors, x_limits, xscale, yscale)
-    gain_panel = _build_gain_panel(comparison_dataframes, codename_labels, colors, x_limits, xscale)
+        standard_label, neural_label, colors, x_limits, xscale, yscale;
+        bp_matrices = bp_matrices, bp_label = bp_label)
+    # Name the gain axis after the baseline used: BP when present, else BP-OSD.
+    gain_ylabel = bp_matrices === nothing ? "\$\\Delta_{\\text{BP-OSD}}\$\n" : "\$\\Delta_{\\text{BP}}\$\n"
+    gain_panel = _build_gain_panel(comparison_dataframes, codename_labels, colors, x_limits, xscale, gain_ylabel)
 
     plt = plot(ler_panel, gain_panel;
         layout = @layout([a{0.68h}; b{0.32h}]),

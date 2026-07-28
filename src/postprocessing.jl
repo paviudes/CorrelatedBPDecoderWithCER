@@ -75,11 +75,11 @@ struct NeuralBPDecoderStatistics
             std_logical_error_rate = 0.0
         else
             average_logical_error_rate = num_failures / num_samples_per_error_rate
-            # KNOWN BUG (fix pending): the Bernoulli std should divide by
-            # num_samples_per_error_rate, NOT n_layers. Kept as-is so this
-            # rename stays behaviour-preserving; the one-line fix is to pass
-            # num_samples_per_error_rate as the second argument here.
-            std_logical_error_rate = compute_std_assuming_bernoulli(average_logical_error_rate, n_layers)
+            # Standard error of the estimated logical error rate: divide by the
+            # number of Monte-Carlo trials (num_samples_per_error_rate), NOT
+            # n_layers. (Passing n_layers here previously inflated the reported
+            # error by sqrt(num_samples_per_error_rate / n_layers).)
+            std_logical_error_rate = compute_std_assuming_bernoulli(average_logical_error_rate, num_samples_per_error_rate)
         end
         # Store every field as a 1-element Vector (delegates to the raw form).
         new([algo], [error_model_name], [error_model_parameters_description],
@@ -145,7 +145,8 @@ end
 function compute_std_assuming_bernoulli(μ::Float64, n::Int)::Float64
     """
     Compute the standard deviation of a Bernoulli random variable given its mean (μ) and number of trials (n).
-    The standard deviation is given by sqrt(μ * (1 - μ) / n).
+    The standard deviation is given by σ = sqrt(μ * (1 - μ) / n).
+    #TODO: check if this is σ = sqrt(μ * (1 - μ) / n) or σ = sqrt(p * (1 - p) / n) where p is the probability of success. Should be the same as since μ = p, but check if this is correct.
     """
     if n == 0
         return 0.0

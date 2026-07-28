@@ -63,6 +63,7 @@ julia --project="./../" neural_bp_experiments.jl \
 | `n_epochs` | Int | Number of training epochs. |
 | `batch_size` | Int | Batch size for training. |
 | `correlation_strengths_file` | String | File containing correlation strengths (located in `correlated_weights/`). |
+| `use_CER` | Bool | Use correlated-error-rate priors (hyperparameters TOML key, default `true`). Set `false` to ignore `correlated_weights/` even if present: single-qubit priors become p=0.1 and the correlation loss term is dropped. No-CER outputs (results CSVs and model weights) are tagged `_no_cer` so they never overwrite the CER runs. With `use_CER = true`, submission errors out if `correlated_weights/` is missing. |
 | `training_errors_file` | String | File containing training errors (located in `training_data/`). |
 | `testing_errors_file` | String | File containing testing errors (located in `testing_data/`). |
 | `retrain` | Bool | Whether to retrain the model (`true`/`false`). |
@@ -76,7 +77,7 @@ Before running, ensure that `./../data/<codename>/` exists and contains the foll
 ```
 <codename>/
 ├── code/                    # HX.txt, HZ.txt, LX.txt, LZ.txt
-├── correlated_weights/      # correlation strengths file
+├── correlated_weights/      # correlation strengths file (required when use_CER = true; ignored when false)
 ├── training_data/           # training errors file
 └── testing_data/            # testing errors file
 ```

@@ -232,10 +232,11 @@ end
 
 # Reconstruct the weights filename that neural_bp_experiments.jl (via
 # `train_Nachmani_neuralbp` in src/train.jl) will look for:
-#   <models_dir>/neuralbp_weights_nlayers_<L>_epochs_<E>_trained_using_<training_source>.json
-# where E = n_epochs read from the command's --hyperparams TOML. Returns `nothing`
-# when the hyperparams file can't be read, so the caller keeps that case rather
-# than dropping it on a check it couldn't actually perform.
+#   <models_dir>/neuralbp_weights_nlayers_<L>_epochs_<E>_trained_using_<training_source>[_no_cer].json
+# where E = n_epochs read from the command's --hyperparams TOML and the `_no_cer`
+# suffix is present iff that TOML sets `use_CER = false` (matching the runtime
+# tag). Returns `nothing` when the hyperparams file can't be read, so the caller
+# keeps that case rather than dropping it on a check it couldn't actually perform.
 function _expected_weights_path(models_dir::String, hyperparams_file::String, n_hidden_layers::Int, training_source::String)
     hyperparams_path = joinpath(models_dir, hyperparams_file)
     if !isfile(hyperparams_path)
@@ -243,13 +244,17 @@ function _expected_weights_path(models_dir::String, hyperparams_file::String, n_
         return nothing
     end
     n_epochs = 0
+    use_cer = true
     try
-        n_epochs = Int(TOML.parsefile(hyperparams_path)["n_epochs"])
+        parsed_hyperparams = TOML.parsefile(hyperparams_path)
+        n_epochs = Int(parsed_hyperparams["n_epochs"])
+        use_cer = get(parsed_hyperparams, "use_CER", true)
     catch parse_error
         @warn "submit preflight: could not read n_epochs from $(hyperparams_path) ($(parse_error)); cannot verify the model for $(training_source), keeping it."
         return nothing
     end
-    weights_filename = "neuralbp_weights_nlayers_$(n_hidden_layers)_epochs_$(n_epochs)_trained_using_$(training_source).json"
+    cer_tag = use_cer ? "" : "_no_cer"
+    weights_filename = "neuralbp_weights_nlayers_$(n_hidden_layers)_epochs_$(n_epochs)_trained_using_$(training_source)$(cer_tag).json"
     weights_path = joinpath(models_dir, weights_filename)
     return weights_path
 end

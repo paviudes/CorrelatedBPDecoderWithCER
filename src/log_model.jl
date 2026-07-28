@@ -1,9 +1,15 @@
-function load_base_BP_model(parity_check_matrix_file::String, logicals_file::String, n_hidden_layers::Int; correlation_strengths_file::String="")
+function load_base_BP_model(parity_check_matrix_file::String, logicals_file::String, n_hidden_layers::Int; correlation_strengths_file::String="", use_cer::Bool=true)
     """
     Load the base BP model from the parity check matrix and logical operators files.
     The parity check matrix file is a text file where each line corresponds to a row of the parity check matrix, and the entries are separated by spaces.
     The logical operators file is a text file where each line corresponds to a logical operator, and the entries are separated by spaces.
     The function will read these files, construct the parity check matrix and logical operators, and return a NeuralBPBase model.
+
+    `use_cer` (default true) controls whether correlated-error-rate priors are
+    used. When false, the `correlation_strengths_file` is IGNORED even if present
+    (as if the correlated_weights/ folder did not exist): single-qubit priors
+    default to p=0.1 and the connectivity/correlations are left empty, so the
+    base's `is_correlated` is false and the correlation loss term is dropped.
     """
     # Load the parity check matrix
     parity_check_matrix = readdlm(parity_check_matrix_file, Int)
@@ -12,8 +18,10 @@ function load_base_BP_model(parity_check_matrix_file::String, logicals_file::Str
     logicals = readdlm(logicals_file, Int)
     # Construct the dual parity check matrix
     dual_parity_check_matrix = vcat(parity_check_matrix, logicals)
-    # If the `correlation_strengths_file` is provided, parse the correlation strengths and connectivity matrix from the file. Otherwise, use empty values.
-    if isfile(correlation_strengths_file)
+    # If the `correlation_strengths_file` is provided (and CER is enabled), parse
+    # the correlation strengths and connectivity matrix from the file. Otherwise
+    # (no file, or use_cer=false) use empty values + preset p=0.1 priors.
+    if use_cer && isfile(correlation_strengths_file)
         (connectivity_matrix, correlation_strengths, single_qubit_error_rates) = parse_cer_data(correlation_strengths_file; verbose=false)
         initial_llrs = zeros(Float32, n_bits)
         for qubit in 1:n_bits

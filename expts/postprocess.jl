@@ -10,7 +10,7 @@
 #   julia --project="./" postprocess.jl                       # run every section with run = true
 #   julia --project="./" postprocess.jl --task=neural_gather  # run just one section
 #   julia --project="./" postprocess.jl --task=all_plots      # run a [task_groups] group (several sections)
-#   julia --project="./" postprocess.jl --config=other.toml   # a different panel file
+#   julia --project="./" postprocess.jl --config=postprocess_configs/other.toml   # a different panel
 #
 # `--task=<x>` matches EITHER a single section id OR a key in the optional
 # [task_groups] TOML table (which maps one key to a list of section ids); a group
@@ -58,13 +58,31 @@ function _scale_symbol(scale_string::AbstractString)::Symbol
     error("scale must be \"log10\" or \"linear\", got \"$(scale_string)\".")
 end
 
+# Output filename for a standard-decoder gather section: canonical key is
+# `output_file`; `output_bposd_file` is accepted as a legacy fallback (the old
+# BP-OSD-only name) so existing panels keep working without edits.
+function _gather_output_filename(section::AbstractDict, id::String)::String
+    if haskey(section, "output_file")
+        return String(section["output_file"])
+    end
+    if haskey(section, "output_bposd_file")
+        return String(section["output_bposd_file"])
+    end
+    error("[$(id)] missing required key 'output_file' (legacy alias 'output_bposd_file').")
+end
+
 # ----------------------------------------------------------------------------
 # Handlers — one per operation. Each takes its TOML section, the section id, and
 # the global workdir. Files live under <workdir>/<codename>/results (inputs and
 # aggregated outputs) and <workdir>/<codename>/plots (plot outputs).
 # ----------------------------------------------------------------------------
 
-function run_standardbp_gather(section::AbstractDict, id::String, workdir::String)
+# Gather one or more standard-decoder failures files (plain BP *or* BP+OSD — the
+# collector reads trials/average/std straight from the file, so the same handler
+# serves both) into one aggregated CSV. Registered under both `standardbp_gather`
+# (BP-OSD) and `bp_gather` (plain BP); the section id only changes which files it
+# reads and where it writes.
+function run_standard_gather(section::AbstractDict, id::String, workdir::String)
     error_model_string = lowercase(strip(String(_require(section, "error_model", id))))
     if !(error_model_string in ("ising", "circuit"))
         error("[$(id)] error_model must be \"Ising\" or \"Circuit\", got \"$(error_model_string)\".")
@@ -97,9 +115,9 @@ function run_standardbp_gather(section::AbstractDict, id::String, workdir::Strin
     end
     stats_df = reduce(vcat, per_file_frames)
 
-    out_path = joinpath(prefix, "results", String(_require(section, "output_bposd_file", id)))
+    out_path = joinpath(prefix, "results", _gather_output_filename(section, id))
     saved_path = save_decoder_dataframe(stats_df, out_path)
-    println("  standard ($(error_model)) -> $(saved_path)  " *
+    println("  [$(id)] standard ($(error_model)) -> $(saved_path)  " *
             "($(nrow(stats_df)) rows from $(length(failures_files)) file(s))")
     return nothing
 end
@@ -135,10 +153,17 @@ function run_plot_standard_vs_neural(section::AbstractDict, id::String, workdir:
     standard_label = String(_require(section, "standard_BP_plot_label", id))
     neural_label = String(_require(section, "neural_BP_plot_label", id))
 
+    # Optional third (plain-BP) curve. Present `bp_csv` => a dotted BP line is
+    # added per code and the gain Δ is computed against BP instead of BP-OSD;
+    # absent => the plot is the usual two-decoder (BP-OSD vs neural) figure.
+    bp_csv = haskey(section, "bp_csv") ? String(section["bp_csv"]) : nothing
+    bp_label = String(get(section, "bp_plot_label", "BP"))
+
     # Read the aggregate CSVs for every code (same bare filenames in each
     # <workdir>/<codename>/results). Both must already exist per codename.
     standard_dataframes = DataFrame[]
     neural_dataframes = DataFrame[]
+    bp_dataframes = bp_csv === nothing ? nothing : DataFrame[]
     for codename in codenames
         results_dir = joinpath(workdir, codename, "results")
         standard_path = joinpath(results_dir, standard_csv)
@@ -151,6 +176,14 @@ function run_plot_standard_vs_neural(section::AbstractDict, id::String, workdir:
         end
         push!(standard_dataframes, CSV.read(standard_path, DataFrame))
         push!(neural_dataframes, CSV.read(neural_path, DataFrame))
+        if bp_dataframes !== nothing
+            bp_path = joinpath(results_dir, bp_csv)
+            if !isfile(bp_path)
+                error("[$(id)] missing BP input: $(bp_path) — generate it with the " *
+                      "bp_gather section, or drop `bp_csv` to plot without BP.")
+            end
+            push!(bp_dataframes, CSV.read(bp_path, DataFrame))
+        end
     end
 
     # Combined figure, written to <workdir>/<plot_file> (plot_file may include a
@@ -169,8 +202,10 @@ function run_plot_standard_vs_neural(section::AbstractDict, id::String, workdir:
     saved_path = plot_standard_vs_neural(
         standard_dataframes, neural_dataframes, codename_labels,
         standard_label, neural_label, plot_path, comparison_csv_paths;
+        bp_dataframes = bp_dataframes, bp_label = bp_label,
         xscale = x_scale, yscale = y_scale)
-    println("  plotted $(length(codenames)) code(s) -> $(saved_path)")
+    baseline_note = bp_dataframes === nothing ? "gain vs BP-OSD" : "with BP (dotted); gain vs BP"
+    println("  plotted $(length(codenames)) code(s) [$(baseline_note)] -> $(saved_path)")
     println("  comparison CSVs -> $(comparison_csv_paths)")
     return nothing
 end
@@ -235,7 +270,8 @@ end
 # Registry — ordered so `run = true` sections execute in a sensible sequence.
 # ----------------------------------------------------------------------------
 const OPERATIONS = [
-    ("standardbp_gather",       run_standardbp_gather),
+    ("standardbp_gather",       run_standard_gather),   # BP+OSD failures files
+    ("bp_gather",               run_standard_gather),   # plain-BP failures files
     ("neural_gather",           run_neural_gather),
     ("standard_bp_osd_plots",   run_standard_bp_osd_plots),
     ("neuralbp_plots",          run_neuralbp_plots),
@@ -244,13 +280,13 @@ const OPERATIONS = [
 
 function main()
     s = ArgParseSettings(
-        description = "Post-processing control panel. Edit postprocess_panel.toml " *
+        description = "Post-processing control panel. Edit postprocess_configs/postprocess_panel.toml " *
                       "(flip `run = true`, fill params), then run this.")
     @add_arg_table s begin
         "--config"
-            help = "path to the control-panel TOML"
+            help = "path to the control-panel TOML (default lives in postprocess_configs/)"
             arg_type = String
-            default = "postprocess_panel.toml"
+            default = "postprocess_configs/postprocess_panel.toml"
         "--task"
             help = "run only this section id (default: run every section with run = true)"
             arg_type = String
@@ -260,7 +296,7 @@ function main()
 
     config_path = args["config"]
     if !isfile(config_path)
-        error("config not found: $(config_path) — see postprocess_panel.toml for the template.")
+        error("config not found: $(config_path) — see postprocess_configs/postprocess_panel.toml for the template.")
     end
     cfg = TOML.parsefile(config_path)
 

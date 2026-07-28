@@ -590,11 +590,14 @@ function train_Nachmani_neuralbp(
     
     # Check if the weights file already exists
     n_epochs = hyperparameters["n_epochs"]
+    # `_no_cer` tag mirrors neural_bp_experiments.jl (and the submit-time
+    # preflight) so a no-CER model never overwrites its CER counterpart.
+    cer_tag = get(hyperparameters, "use_CER", true) ? "" : "_no_cer"
     weights_filename =
         "$(models_dir)/neuralbp_weights_" *
         "nlayers_$(base.n_layers)_" *
         "epochs_$(n_epochs)_" *
-        "trained_using_$(training_source).json"
+        "trained_using_$(training_source)$(cer_tag).json"
     
     if isfile(weights_filename) && !hyperparameters["retrain"]
         # println("Loading existing weights from file: $weights_filename")
