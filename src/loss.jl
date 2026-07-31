@@ -158,8 +158,8 @@ function compute_additional_loss_from_ising_correlations(
         loss += loss_from_sample
     end
 
-    correlation_penalty = - loss / (n_samples * n_edges)
-    # correlation_penalty = loss / (n_samples) # Experimenting with this normalization.
+    # correlation_penalty = - loss / (n_samples * n_edges)
+    correlation_penalty = loss / (n_samples) # Experimenting with this normalization.
     return correlation_penalty
 end
 
