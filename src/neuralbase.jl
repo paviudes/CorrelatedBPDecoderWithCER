@@ -283,7 +283,15 @@ function parse_cer_data(correlation_strengths_file::String; verbose::Bool = true
     - the correlation strengths: vector where each element corresponds to the weight of the edge between the two qubits (same order as the rows of the connectivity matrix)
     - single qubit error rates: dictionary where each key is a qubit index and the value is the error rate of that qubit
     """
-    min_error_rate::Float32 = 1f-6  # minimum error rate to avoid issues with log(0) in the decoder
+    # VALUE CONVENTIONS (differ by line shape — do not unify these):
+    #   "(i, j) : v"  ->  v is a SIGNED log-odds Ising coupling
+    #                     J_ij = log[P11·P00 / (P10·P01)].
+    #                     v > 0: correlated pair, v < 0: anti-correlated pair,
+    #                     v = 0: independent. Stored verbatim, no floor.
+    #   "i : v"       ->  v is a single-qubit error PROBABILITY in (0, 1),
+    #                     floored by `min_error_rate` and converted to an LLR
+    #                     via log((1-p)/p) in `load_base_BP_model`.
+    min_error_rate::Float32 = 1f-6  # probability floor for SINGLE-QUBIT rates (avoids log(0)); NOT applied to couplings
 
     # Graceful no-CER path: if the file is missing, warn and return empty
     # structures so the caller can proceed without correlation data instead of
@@ -303,6 +311,7 @@ function parse_cer_data(correlation_strengths_file::String; verbose::Bool = true
     n_two_qubit_unparsed::Int    = 0   # "(i,j): v"-shaped lines that failed to parse
     n_single_qubit_unparsed::Int = 0   # "i: v"-shaped lines that failed to parse
     n_unrecognized::Int          = 0   # non-empty lines matching neither shape
+    n_negative_couplings::Int    = 0   # pair lines with J < 0 (anti-correlated)
 
     # Whitespace-insensitive around ',' and ':'. The previous strict extraction
     # regex `\((\d+), (\d+)\) : ([\d\.]+)` demanded exactly one space after the
@@ -329,9 +338,18 @@ function parse_cer_data(correlation_strengths_file::String; verbose::Bool = true
                 if m !== nothing
                     qubit1 = parse(Int, m.captures[1])
                     qubit2 = parse(Int, m.captures[2])
-                    two_qubit_error_rate = parse(Float32, m.captures[3])
+                    two_qubit_coupling = parse(Float32, m.captures[3])
                     push!(connectivity, (qubit1, qubit2))
-                    push!(correlation_strengths, max(two_qubit_error_rate, min_error_rate))
+                    # SIGNED log-odds Ising coupling J_ik = log[P11·P00 / (P10·P01)].
+                    # Deliberately NOT floored: J < 0 means an ANTI-correlated pair,
+                    # and the old probability-domain `max(v, min_error_rate)` floor
+                    # silently rewrote every such pair into a weak POSITIVE
+                    # correlation. In log-odds space the neutral value is J = 0, not
+                    # `min_error_rate`.
+                    push!(correlation_strengths, two_qubit_coupling)
+                    if two_qubit_coupling < 0f0
+                        n_negative_couplings += 1
+                    end
                 else
                     n_two_qubit_unparsed += 1
                     if verbose
@@ -380,7 +398,8 @@ function parse_cer_data(correlation_strengths_file::String; verbose::Bool = true
     # ---- End-of-function summary (gated by `verbose`). --------------------
     if verbose
         @info "parse_cer_data: parsed $(length(correlation_strengths)) two-qubit " *
-              "marginals and $(length(single_qubit_error_rates)) single-qubit rates " *
+              "couplings ($(n_negative_couplings) negative / anti-correlated) and " *
+              "$(length(single_qubit_error_rates)) single-qubit rates " *
               "from $(correlation_strengths_file)."
     end
     if n_two_qubit_unparsed > 0

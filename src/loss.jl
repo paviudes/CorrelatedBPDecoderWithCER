@@ -107,39 +107,31 @@ function compute_additional_loss_from_ising_correlations(
     parity_check_matrix_dual::BitMatrix,
     connectivity::Matrix{Int},
     correlation_strengths::Vector{Float32},
-    correlation_syndrome_importance::Float32   # gate sharpness β in exp(-β·|s|)
+    correlation_syndrome_importance::Float32
 )::Float32
     """
     We want to add a term to the Loss function that prefers a correlated error instead of an independent error.
     Right now we want to focus on Ising-type two-body correlations.
     Suppose we have a list of qubit indices that are correlated: (q1, q2), (q3, q4), ... specified by `C`.
-    Then we want to add a term to the Loss function that penalizes solutions where the errors at these qubit indices are not correlated.
-    For example, if we have an error on q1 but not on q2, we want to penalize that solution. Hence, between q1 and q2, the favoured configurations are
-    (0, 0), and (1, 1), while the disfavoured configurations are (0,1) and (1, 0).
-    This can be achieved by adding a term proportional to `(e_(q1) - e_(q2))^2` to the Loss function, where `e_(qi)` is the predicted error at qubit `qi`.
-    At the end of the day, we want to prioritize solutions that show no errors. So, we don't end up choosing an error solely because it is correlated.
     
     Hence the penalty for violating correlations is:
-        L_corr(μ) = exp(-|s|) ∑_((qi, qj) ∈ C)  λ_(i,j) (e_(qi) - e_(qj))^2
+        L_corr(μ) = ∑_((qi, qj) ∈ C)  J_(i,j) (1 - e_(qi) * e_(qj))
     where
         - L(μ, e) is the original Loss function from `compute_loss_error_from_llrs`.
-        - λ_(i,j) is a hyperparameter that controls the strength of the correlation penalty for the pair (qi, qj).
+        - J_(i,j) is a hyperparameter that controls the strength of the correlation penalty for the pair (qi, qj).
         - C is the set of correlated qubit index pairs.
         - e_(qi) is the predicted error at qubit `qi`.
         - s is the residualsyndrome of the error, given by: s = H * e_total,
         - H is the parity-check matrix of the dual code,
         - e_total = e_pred + e_expected is the total predicted error.
 
-    Since we want to implement this in a differentiable manner, we can use the fact that:
-        (e_(qi) - e_(qj))^2 = (σ(μ_(qi)) - σ(μ_(qj)))^2
-    where e_(qi) is approximated by σ(μ_(qi)).
-
+    Note: e_(qi) is approximated by σ(μ_(qi)).
     """
 
     # Compute the syndrome of the residual error, which is given by: s = H * e_total, where e_total = e_pred + e_expected.
-    residual_errors = @. sigmoid(posterior_llrs) + expected_recoveries
-    residual_syndromes = parity_check_matrix_dual * residual_errors
-    real_residual_syndrome_weights = sum(sine_residue.(residual_syndromes), dims=1)
+    # residual_errors = @. sigmoid(posterior_llrs) + expected_recoveries
+    # residual_syndromes = parity_check_matrix_dual * residual_errors
+    # real_residual_syndrome_weights = sum(sine_residue.(residual_syndromes), dims=1)
 
     n_samples = size(posterior_llrs, 2)
     n_edges   = size(connectivity, 1)
@@ -159,12 +151,14 @@ function compute_additional_loss_from_ising_correlations(
             σ_i = sigmoid(μ_i)
             σ_k = sigmoid(μ_k)
 
-            loss_from_sample += correlation_strengths[e] * (σ_i - σ_k)^2
+            # loss_from_sample += correlation_strengths[e] * (σ_i - σ_k)^2
+            loss_from_sample += correlation_strengths[e] * σ_i * σ_k
         end
-        loss += exp(-real_residual_syndrome_weights[j] * correlation_syndrome_importance) * loss_from_sample
+        # loss += exp(-real_residual_syndrome_weights[j] * correlation_syndrome_importance) * loss_from_sample
+        loss += loss_from_sample
     end
 
-    correlation_penalty = loss / (n_samples * n_edges)
+    correlation_penalty = - loss / (n_samples * n_edges)
     # correlation_penalty = loss / (n_samples) # Experimenting with this normalization.
     return correlation_penalty
 end

@@ -371,9 +371,9 @@ if abspath(PROGRAM_FILE) == @__FILE__
         # Error-weight distribution. Counts, for one or more error files, how
         # many sampled patterns have each Hamming weight, and saves a bar plot
         # of the weight histograms.
-        codename         = "18q_BB_cycles_1"
+        codename         = "update_23July2026/72q_BB_cycles_1"
         subdir           = "testing_data"
-        errors_filenames = ["test_p_0.0015_s_1.txt"]
+        errors_filenames = ["test_p_0.0005_s_1.txt"]
 
         prefix = joinpath(work_dir, codename)
         weight_distribution_filename = count_error_weights(errors_filenames, subdir; prefix = prefix)
