@@ -2,7 +2,6 @@ function get_loss_value(
     weights_c2v_v2c, # learanble weights for computing m^t_(v→c) from m^(t-1)_(c→v).
     weights_llrs, # learnable weights for m^t_(v→c) from the initial LLRs, and also for computing the posterior LLRs from m^t_(c→v).
     weights_c2v_readout, # learnable weights for computing the readout (posterior LLRs) from m^t_(c→v).
-    correlation_syndrome_importance, # gate sharpness β in exp(-β·|s|), annealed during training.
     correlation_weight, # overall weight α₄ on the correlation term, annealed during training.
     loss_layer_regularizer, # temperature for the smooth minimum approximation when combining losses from different layers, to be annealed during training.
     llr_certainty_importance, # term for ensuring that the LLRs have converged.
@@ -38,8 +37,7 @@ function get_loss_value(
         base.parity_check_matrix_dual,
         base.connectivity,
         base.correlation_strengths,
-        base.is_correlated, # Change back to base.is_correlated for the actual implementation, set to `false` for testing without correlations for now.
-        correlation_syndrome_importance, # gate sharpness β for the syndrome-gated correlation penalty.
+        base.is_correlated,
         correlation_weight, # overall weight α₄ on the correlation term.
         loss_layer_regularizer, # temperature for the smooth minimum approximation when combining losses from different layers, to be annealed during training.
         llr_certainty_importance, # weight for ensuring that the LLRs are converged.
@@ -53,7 +51,6 @@ function get_individual_loss_values(
     weights_c2v_v2c::Vector{Float32}, # learanble weights for computing m^t_(v→c) from m^(t-1)_(c→v).
     weights_llrs::Vector{Float32}, # learnable weights for m^t_(v→c) from the initial LLRs, and also for computing the posterior LLRs from m^t_(c→v).
     weights_c2v_readout::Vector{Float32}, # learnable weights for computing the readout (posterior LLRs) from m^t_(c→v).
-    correlation_syndrome_importance::Float32, # gate sharpness β in exp(-β·|s|), annealed during training.
     correlation_weight::Float32, # overall weight α₄ on the correlation term, annealed during training.
     loss_layer_regularizer::Float32, # temperature for the smooth minimum approximation when combining losses from different layers, to be annealed during training.
     llr_certainty_importance::Float32, # term for ensuring that the LLRs have converged.
@@ -100,8 +97,7 @@ function get_individual_loss_values(
         corr_pen::Float32 = 0f0
         if is_correlated
             corr_pen = compute_additional_loss_from_ising_correlations(
-                post, expected_recoveries, parity_check_matrix_dual,
-                connectivity, correlation_strengths, correlation_syndrome_importance
+                post, connectivity, correlation_strengths
             )
         end
 
@@ -166,7 +162,6 @@ function init_training_debug_logs(n_samples_to_log::Int)
         epoch = zeros(Int, n_samples_to_log),
         sample = zeros(Int, n_samples_to_log),
         loss_layer_temp = zeros(Float32, n_samples_to_log),
-        correlation_syndrome_importance = zeros(Float32, n_samples_to_log),
         correlation_weight = zeros(Float32, n_samples_to_log),
         llr_certainty_importance = zeros(Float32, n_samples_to_log),
         sparsity_importance = zeros(Float32, n_samples_to_log),
@@ -215,7 +210,6 @@ function log_batch_debug!(
     hp_log[index, :epoch] = epoch
     hp_log[index, :sample] = b
     hp_log[index, :loss_layer_temp] = hp[:loss_layer_temperature]
-    hp_log[index, :correlation_syndrome_importance] = hp[:correlation_syndrome_importance]
     hp_log[index, :correlation_weight] = hp[:correlation_weight]
     hp_log[index, :llr_certainty_importance] = hp[:llr_certainty_importance]
     hp_log[index, :sparsity_importance] = hp[:sparsity_importance]
@@ -305,7 +299,6 @@ function train_neuralbp_enzyme!(
         key => hyperparameters[key]
         for key in [
             "loss_layer_temperature",
-            "correlation_syndrome_importance",
             "correlation_weight",
             "llr_certainty_importance",
             "sparsity_importance"
@@ -420,7 +413,6 @@ function train_neuralbp_enzyme!(
                 Enzyme.Duplicated(bpnn.weights_llrs, grad_w_llrs),
                 Enzyme.Duplicated(bpnn.weights_c2v_readout, grad_w_readout),
                 # Constant arguments (order MUST match get_loss_value's signature):
-                Enzyme.Const(hp[:correlation_syndrome_importance]),
                 Enzyme.Const(hp[:correlation_weight]),
                 Enzyme.Const(hp[:loss_layer_temperature]),
                 Enzyme.Const(hp[:llr_certainty_importance]),
@@ -491,7 +483,6 @@ function train_neuralbp_enzyme!(
                     bpnn.weights_c2v_v2c,
                     bpnn.weights_llrs,
                     bpnn.weights_c2v_readout,
-                    hp[:correlation_syndrome_importance],
                     hp[:correlation_weight],
                     hp[:loss_layer_temperature],
                     hp[:llr_certainty_importance],
@@ -592,12 +583,16 @@ function train_Nachmani_neuralbp(
     n_epochs = hyperparameters["n_epochs"]
     # `_no_cer` tag mirrors neural_bp_experiments.jl (and the submit-time
     # preflight) so a no-CER model never overwrites its CER counterpart.
+    # `run_tag` does the same job for hyperparameter sweeps: the filename encodes
+    # only nlayers/epochs/training_source, so two runs differing ONLY in e.g.
+    # `correlation_weight` would otherwise silently share one weights file.
     cer_tag = get(hyperparameters, "use_CER", true) ? "" : "_no_cer"
+    run_tag = String(get(hyperparameters, "run_tag", ""))
     weights_filename =
         "$(models_dir)/neuralbp_weights_" *
         "nlayers_$(base.n_layers)_" *
         "epochs_$(n_epochs)_" *
-        "trained_using_$(training_source)$(cer_tag).json"
+        "trained_using_$(training_source)$(cer_tag)$(run_tag).json"
     
     if isfile(weights_filename) && !hyperparameters["retrain"]
         # println("Loading existing weights from file: $weights_filename")

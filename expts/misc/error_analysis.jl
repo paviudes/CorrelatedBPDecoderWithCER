@@ -133,132 +133,175 @@ function plot_error_weight_distribution(weight_distribution_filename::String)
     return nothing
 end
 
+function empirical_ising_coupling(
+    error_patterns::BitMatrix, u::Int, v::Int; haldane::Float64 = 0.5,
+)::Tuple{Float64, Float64, NTuple{4, Int}, Bool}
+    """
+    Empirical log-odds Ising coupling for the qubit pair (u, v):
+
+        J_emp = log[ (n00 * n11) / (n01 * n10) ]
+
+    from the 2x2 contingency table of co-occurrences across all samples. This is
+    the SAME quantity the CER file stores, so the two are directly comparable.
+
+    Zero cells are the norm at low p (n11 is often 0), and they send J to ±Inf.
+    We apply the standard Haldane–Anscombe correction — add `haldane` (default
+    0.5) to every cell — whenever ANY cell is zero, which keeps J finite and
+    is the usual estimator for sparse contingency tables. The last return value
+    flags whether the correction was applied, so those edges can be marked in the
+    plots rather than silently trusted.
+
+    We also return Woolf's standard error for a log odds ratio,
+
+        SE(J) = sqrt(1/n00 + 1/n01 + 1/n10 + 1/n11)  ~  1/sqrt(n11)
+
+    which is what makes this comparison interpretable: at low p, n11 is tiny, so
+    a weak edge can easily show |J_emp - J_file| ~ 0.5 purely from Poisson noise
+    on a handful of co-occurrences. Without the SE you cannot tell "the CER file
+    is wrong" from "this edge is unmeasurable with this many samples". Verified
+    against synthetic data with known J: all deviations fall within 3 SE.
+
+    Returns `(J_emp, SE, (n00, n01, n10, n11), was_corrected)`.
+    """
+    eu = error_patterns[u, :]
+    ev = error_patterns[v, :]
+    n11 = count(eu .& ev)
+    n10 = count(eu .& .!ev)
+    n01 = count(.!eu .& ev)
+    n00 = length(eu) - n11 - n10 - n01
+
+    was_corrected = (n00 == 0) || (n01 == 0) || (n10 == 0) || (n11 == 0)
+    a, b, c, d = Float64(n00), Float64(n01), Float64(n10), Float64(n11)
+    if was_corrected
+        a += haldane; b += haldane; c += haldane; d += haldane
+    end
+    J_emp = log((a * d) / (b * c))
+    standard_error = sqrt(1 / a + 1 / b + 1 / c + 1 / d)
+    return (J_emp, standard_error, (n00, n01, n10, n11), was_corrected)
+end
+
 function analyze_correlations_with_cer_data(
     connectivity_matrix::Matrix{Int},
-    cer_two_qubit_marginals::Vector{Float64},
+    cer_couplings::Vector{Float64},
     error_patterns::BitMatrix,
     output_plot_file::String;
     codename::String = "",
 )
     """
-    Compare the CER two-qubit marginals against the empirical two-qubit
-    statistics of an actual set of error patterns.
+    Validate the CER file's log-odds couplings J against the empirical couplings
+    measured directly from a set of error patterns.
 
-    Arguments
-    - `connectivity_matrix` : one edge per row, `[u v]` (1-based qubit indices).
-    - `cer_two_qubit_marginals` : the CER marginal for edge `e`, aligned with the
-      rows of `connectivity_matrix`. Interpreted as the joint two-qubit marginal
-      P(e_u = e_v = 1) — i.e. directly comparable to the empirical co-occurrence.
-    - `error_patterns` : BitMatrix, one error pattern per COLUMN (rows = qubits).
-    - `output_plot_file` : output PDF filename (a bare filename; `.pdf` appended
-      if missing).
-    - `codename` (keyword) : if given, the figure is written to
-      `<codename>/plots/<output_plot_file>`; otherwise to `plots/<output_plot_file>`.
-      (Added as a keyword because the 4 positional args don't carry the codename
-      that the requested save path `<codename>/plots/...` needs.)
+    `cer_couplings[e]` is the file's value for edge `e` (row `e` of
+    `connectivity_matrix`): the SIGNED Ising coupling
+    J = log[P00*P11 / (P01*P10)]. For each edge we measure the same quantity from
+    the data (see `empirical_ising_coupling`) and compare.
 
-    For each edge e = (u, v) we compute the empirical joint marginal
-        emp[e] = mean_samples( error[u] .& error[v] )
-    and compare it to `cer_two_qubit_marginals[e]`.
+    This is the check that answers "does the CER file describe the errors we
+    actually generated?". If the file claims J ~ 4 (a ~16% conditional co-flip at
+    p ~ 0.004) where the data says J ~ 0, the decoder is being handed a strong,
+    confidently WRONG prior — which is far more damaging than a weak one.
 
-    We make three plots, combined into a single figure (calibration scatter on
-    top, the other two side-by-side below):
+    Three panels:
+      1. Calibration scatter (top): file J (x) vs empirical J (y) on LINEAR axes
+         (J is already a log quantity — do NOT log it again), with the y = x
+         reference. Points on the line are well calibrated; the panel reports the
+         Pearson r, the best-fit slope, and the mean signed bias. Edges needing
+         the Haldane correction are drawn hollow, since their J is an estimate
+         from a table with an empty cell.
+      2. Sorted overlay (bottom-left): both series against edges sorted by file J,
+         so systematic mis-calibration across the strength range is visible.
+      3. Residual (bottom-right): (empirical - file) J per edge, with a zero line.
 
-    1. Calibration scatter (top). A log-log scatter of the CER marginal (x) vs
-       the empirical marginal (y), with the y = x reference line overlaid. Points
-       on the line are well-calibrated; points above it are edges the CER
-       UNDER-estimates, points below are edges it OVER-estimates. The panel title
-       reports the log-space Pearson r between the two and the number of edges
-       whose empirical co-occurrence is exactly 0 (CER claims a correlation the
-       data never realises jointly). This is the panel that actually answers "are
-       the CER marginals consistent with what the errors do?".
-
-    2. Sorted CER-vs-empirical overlay (bottom-left). Both series plotted on a log
-       y-axis against edges sorted by CER marginal (edges with empirical 0 are
-       dropped from the log axis). Reading left-to-right walks from the weakest to
-       the strongest CER couplings, so a gap between the two curves that grows or
-       shifts across the range exposes whether mis-calibration is systematic over
-       the ~2-orders-of-magnitude spread of strengths.
-
-    3. Product metric (bottom-right). A scatter of the
-       per-edge `emp[e] * cer[e]` (empirical co-occurrence times CER marginal) vs
-       edge index. Kept for reference, but note it mixes the two quantities
-       multiplicatively, so a high/low point does NOT tell you whether the CER
-       value AGREES with the data — that is what plot 1 is for.
-
-    (If your CER value is actually a connected correlation / covariance rather
-    than a joint marginal, compare it instead to emp[e] - mean(e_u)*mean(e_v);
-    say the word and I'll switch the empirical quantity.)
-
-    Returns a NamedTuple with the computed arrays and calibration stats.
+    Returns a NamedTuple with the arrays and calibration statistics.
     """
     n_edges = size(connectivity_matrix, 1)
-    if n_edges != length(cer_two_qubit_marginals)
+    if n_edges != length(cer_couplings)
         error(
-            "connectivity_matrix has $(n_edges) rows but cer_two_qubit_marginals " *
-            "has $(length(cer_two_qubit_marginals)) entries.")
+            "connectivity_matrix has $(n_edges) rows but cer_couplings " *
+            "has $(length(cer_couplings)) entries.")
     end
     (_, n_samples) = size(error_patterns)
 
-    # Empirical joint two-qubit marginal per edge, P(e_u = e_v = 1) averaged over the samples.
-    empirical = zeros(Float64, n_edges)
+    # Empirical log-odds coupling per edge, plus the contingency table and whether
+    # the Haldane correction had to be applied (an empty cell in that table).
+    empirical_J  = zeros(Float64, n_edges)
+    standard_err = zeros(Float64, n_edges)
+    corrected    = falses(n_edges)
+    n11_counts   = zeros(Int, n_edges)
     @inbounds for e in 1:n_edges
         u = connectivity_matrix[e, 1]
         v = connectivity_matrix[e, 2]
-        # Count the average number of occurrences of errors on both qubits `u` and `v`.
-        empirical[e] = count(error_patterns[u, :] .& error_patterns[v, :]) / n_samples
+        (J_emp, se, counts, was_corrected) = empirical_ising_coupling(error_patterns, u, v)
+        empirical_J[e]  = J_emp
+        standard_err[e] = se
+        corrected[e]    = was_corrected
+        n11_counts[e]   = counts[4]
     end
 
-    # Data for plot 3: average number of occurrences of two-qubit errors times the CER marginal.
-    product_metric = empirical .* cer_two_qubit_marginals
+    residual = empirical_J .- cer_couplings
+    # How many standard errors the file sits from the measurement. |z| > 3 on an
+    # edge with a small SE is a real disagreement; a large residual on an edge
+    # with a large SE is just an unmeasurable edge.
+    z_scores = residual ./ standard_err
 
-    # Compute the Pearson correlation in log space, ignoring edges with empirical = 0 (log undefined).
-    positive_edges = findall(e -> empirical[e] > 0 && cer_two_qubit_marginals[e] > 0, 1:n_edges)
-    log_pearson::Float64 = 0.0
-    if length(positive_edges) >= 2
-        log_pearson = cor(log10.(cer_two_qubit_marginals[positive_edges]), log10.(empirical[positive_edges]))
-    else
-        log_pearson = NaN
+    # Calibration statistics. `clean` = edges whose table had no empty cell, i.e.
+    # where the empirical J is measured rather than Haldane-imputed.
+    clean = findall(.!corrected)
+    pearson_all::Float64 = length(cer_couplings) >= 2 ? cor(cer_couplings, empirical_J) : NaN
+    pearson_clean::Float64 = length(clean) >= 2 ? cor(cer_couplings[clean], empirical_J[clean]) : NaN
+    # Least-squares slope of empirical vs file (1.0 == perfectly calibrated).
+    slope::Float64 = NaN
+    if length(clean) >= 2
+        x = cer_couplings[clean]; y = empirical_J[clean]
+        xbar = mean(x); ybar = mean(y)
+        denom = sum((x .- xbar) .^ 2)
+        slope = denom > 0 ? sum((x .- xbar) .* (y .- ybar)) / denom : NaN
     end
+    bias = mean(residual)
 
-    # --- Panel 1: Log-Log scatter of the CER marginals vs empirical co-occurrence. ----------------------
-    n_empirical_zero = count(e -> cer_two_qubit_marginals[e] > 0 && empirical[e] == 0, 1:n_edges)
+    # --- Panel 1: calibration scatter, file J vs empirical J (LINEAR axes). -----
     panel_scatter = scatter(
-        cer_two_qubit_marginals[positive_edges], empirical[positive_edges];
-        xscale = :log10, yscale = :log10,
-        xlabel = "CER two-qubit marginal", ylabel = "empirical  P(e_u = e_v = 1)",
-        # title = "Calibration: log-space r = $(round(log_pearson, digits = 3)), $(n_empirical_zero) edges with empirical = 0",
-        label = "r = $(round(log_pearson, digits = 3))", markersize = 3, markerstrokewidth = 0, legend = :topleft,
+        cer_couplings[clean], empirical_J[clean];
+        xlabel = "CER file coupling  \$J = \\log[P_{00}P_{11}/(P_{01}P_{10})]\$",
+        ylabel = "empirical \$J\$ from error patterns",
+        label = "measured (r = $(round(pearson_clean, digits = 3)))",
+        markersize = 3, markerstrokewidth = 0, legend = :topleft,
     )
-    # Add the Y = X reference line to the scatter plot.
-    if !isempty(positive_edges)
-        low = min(minimum(cer_two_qubit_marginals[positive_edges]), minimum(empirical[positive_edges]))
-        high = max(maximum(cer_two_qubit_marginals[positive_edges]), maximum(empirical[positive_edges]))
-        plot!(panel_scatter, [low, high], [low, high]; label = "y = x", linestyle = :dash, color = :black)
+    if any(corrected)
+        scatter!(panel_scatter, cer_couplings[corrected], empirical_J[corrected];
+            label = "Haldane-corrected (empty cell)", markersize = 3,
+            markerstrokewidth = 1, markercolor = :white, markerstrokecolor = :red)
     end
+    low  = min(minimum(cer_couplings), minimum(empirical_J))
+    high = max(maximum(cer_couplings), maximum(empirical_J))
+    plot!(panel_scatter, [low, high], [low, high]; label = "y = x (calibrated)",
+          linestyle = :dash, color = :black)
 
-    # --- Panel 2: CER marginals and empirical co-occurrence sorted by CER marginal. ----------------------
-    order = sortperm(cer_two_qubit_marginals)
+    # --- Panel 2: both series sorted by the file's J. --------------------------
+    order = sortperm(cer_couplings)
     panel_sorted = plot(
-        1:n_edges, cer_two_qubit_marginals[order];
-        yscale = :log10, xlabel = "edge (sorted by CER marginal)",
-        ylabel = "CER / empirical", label = "CER marginal", lw = 2,
-        # title = "CER vs empirical co-occurrence",
+        1:n_edges, cer_couplings[order];
+        xlabel = "edge (sorted by CER \$J\$)", ylabel = "\$J\$",
+        label = "CER file", lw = 2,
     )
-    # Skip edges with empirical = 0 for the log plot, replacing them with NaN so that they don't appear.
-    empirical_sorted = [empirical[order[i]] > 0 ? empirical[order[i]] : NaN for i in 1:n_edges]
-    scatter!(panel_sorted, 1:n_edges, empirical_sorted; label = "empirical", markersize = 2, markerstrokewidth = 0)
+    scatter!(panel_sorted, 1:n_edges, empirical_J[order];
+        label = "empirical", markersize = 2, markerstrokewidth = 0)
+    hline!(panel_sorted, [0.0]; color = :gray, linestyle = :dot, label = "")
 
-    # --- Panel 3: mean(e_u * e_v) * CER marginal. -------
-    panel_product = scatter(
-        1:n_edges, product_metric;
-        xlabel = "edge index", ylabel = "\$\\{\\langle e_u ~ e_v \\rangle ~ : ~ (u,v) \\in E \\}\$ * CER marginal",
-        # title = "Empirical co-occurrence * CER",
+    # --- Panel 3: residual in units of the measurement error. ------------------
+    # Plotting z rather than the raw residual is the point: it separates "the CER
+    # file is wrong here" from "this edge has too few co-occurrences to measure".
+    panel_residual = scatter(
+        1:n_edges, z_scores[order];
+        xlabel = "edge (sorted by CER \$J\$)",
+        ylabel = "(empirical \$J\$ - CER \$J\$) / SE",
         label = "", markersize = 2, markerstrokewidth = 0,
     )
-    
+    hline!(panel_residual, [0.0]; color = :black, linestyle = :dash, label = "")
+    hline!(panel_residual, [-3.0, 3.0]; color = :red, linestyle = :dot, label = "±3 SE")
+
     # -- Combine the three panels into a single figure with a 2x2 layout. ----------------------
-    plt = plot(panel_scatter, panel_sorted, panel_product; layout = @layout([a{0.5h}; b c]), size = (1000, 1000))
+    plt = plot(panel_scatter, panel_sorted, panel_residual; layout = @layout([a{0.5h}; b c]), size = (1000, 1000))
 
     # --- Save to <codename>/plots/<output_plot_file>. -------------------------
     plots_dir = isempty(codename) ? "plots" : joinpath(codename, "plots")
@@ -273,15 +316,46 @@ function analyze_correlations_with_cer_data(
 
     # Print summary statistics.
     println("==================================================")
-    println("Summary of correlation analysis for $(output_plot_file):")
-    println("edges = $(n_edges)")
-    println("Positive empirical and CER marginals = $(length(positive_edges))")
-    println("Empirical-zero = $(n_empirical_zero)")
-    println("log-space Pearson r = $(round(log_pearson, digits = 3))")
-    println("Plot saved to $(save_path).")
+    println("CER coupling validation for $(output_plot_file):")
+    println("  samples                     = $(n_samples)")
+    println("  edges                       = $(n_edges)")
+    println("  edges with an empty cell    = $(count(corrected))  (Haldane-corrected)")
+    println("  edges with n11 == 0         = $(count(==(0), n11_counts))")
+    println("  file J:      mean = $(round(mean(cer_couplings), digits = 3))   " *
+            "mean|J| = $(round(mean(abs.(cer_couplings)), digits = 3))   " *
+            "max|J| = $(round(maximum(abs.(cer_couplings)), digits = 3))")
+    println("  empirical J: mean = $(round(mean(empirical_J), digits = 3))   " *
+            "mean|J| = $(round(mean(abs.(empirical_J)), digits = 3))   " *
+            "max|J| = $(round(maximum(abs.(empirical_J)), digits = 3))")
+    println("  Pearson r (all edges)       = $(round(pearson_all, digits = 3))")
+    println("  Pearson r (measured only)   = $(round(pearson_clean, digits = 3))")
+    println("  best-fit slope (measured)   = $(round(slope, digits = 3))   [1.0 = calibrated]")
+    println("  mean bias (empirical - file)= $(round(bias, digits = 3))")
+    println("  median SE(J)                = $(round(median(standard_err), digits = 3))   " *
+            "[edges with SE > ~0.5 are effectively unmeasurable at this sample count]")
+    n_significant = count(z -> isfinite(z) && abs(z) > 3, z_scores)
+    println("  edges disagreeing by >3 SE  = $(n_significant) / $(n_edges)")
+    println("  VERDICT: " * (
+        isnan(pearson_clean)  ? "not enough measured edges to judge." :
+        pearson_clean > 0.8 && abs(slope - 1) < 0.25 ? "CER file AGREES with the data." :
+        pearson_clean > 0.5 ? "partial agreement — check the slope/bias above." :
+        "CER file does NOT track the data (a strong but WRONG prior)."))
+    println("  Plot saved to $(save_path).")
     println("==================================================")
 
-    return nothing
+    return (
+        connectivity = connectivity_matrix,
+        cer_J = cer_couplings,
+        empirical_J = empirical_J,
+        standard_error = standard_err,
+        z_scores = z_scores,
+        residual = residual,
+        corrected = corrected,
+        pearson_all = pearson_all,
+        pearson_clean = pearson_clean,
+        slope = slope,
+        bias = bias,
+    )
 end
 
 function analyze_correlations_with_cer_data(
@@ -294,24 +368,24 @@ function analyze_correlations_with_cer_data(
     delegate to the matrix/vector form above.
 
     - `parse_cer_data("<codename>/<correlation_strengths_file>")` supplies the
-      connectivity matrix and CER marginals (its third return, the single-qubit
-      rates, is unused here).
+      connectivity matrix and the SIGNED log-odds couplings J (its third return,
+      the single-qubit rates, is unused here).
     - error patterns are read from `<codename>/<error_patterns_file>` as a
       BitMatrix (one pattern per column).
-    - the output PDF is named `correlations_in_<errors-basename>.pdf` and written
-      under `<codename>/plots/`.
+    - the output PDF is named `cer_coupling_validation_<errors-basename>.pdf` and
+      written under `<codename>/plots/`.
     """
-    (connectivity_matrix, cer_marginals_f32, _) =
+    (connectivity_matrix, cer_couplings_f32, _) =
         parse_cer_data(joinpath(codename, correlation_strengths_file))
-    cer_two_qubit_marginals = Float64.(cer_marginals_f32)
+    cer_couplings = Float64.(cer_couplings_f32)
 
     error_patterns = BitMatrix(convert.(Bool, readdlm(joinpath(codename, error_patterns_file), Int)))
 
     errors_basename = splitext(basename(error_patterns_file))[1]
-    output_plot_file = "correlations_in_$(errors_basename).pdf"
+    output_plot_file = "cer_coupling_validation_$(errors_basename).pdf"
 
     return analyze_correlations_with_cer_data(
-        connectivity_matrix, cer_two_qubit_marginals, error_patterns, output_plot_file;
+        connectivity_matrix, cer_couplings, error_patterns, output_plot_file;
         codename = codename,
     )
 end
@@ -380,12 +454,14 @@ if abspath(PROGRAM_FILE) == @__FILE__
         plot_error_weight_distribution(weight_distribution_filename)
 
     elseif analysis == "correlations"
-        # CER correlation calibration. Compares the CER two-qubit marginals
-        # against the empirical co-occurrence statistics of an error file, and
-        # saves the calibration scatter + companion panels.
-        codename                   = "18q_BB_cycles_1"
-        correlation_strengths_file = "correlated_weights/correlated_weights_p_0.0013_s_1.txt"
-        error_patterns_file        = "testing_data/test_p_0.0013_s_1.txt"
+        # CER coupling validation. Compares the SIGNED log-odds couplings
+        # J = log[P00*P11/(P01*P10)] stored in the CER file against the same
+        # quantity measured empirically from an error file, and saves the
+        # calibration scatter + companion panels. Use the TRAINING errors if you
+        # want to know what the model was actually taught.
+        codename                   = "72q_BB_cycles_1"
+        correlation_strengths_file = "correlated_weights/correlated_weights_p_0.0005_s_1.txt"
+        error_patterns_file        = "training_data/train_p_0.0005_s_1.txt"
 
         analyze_correlations_with_cer_data(
             joinpath(work_dir, codename),

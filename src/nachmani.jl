@@ -22,7 +22,7 @@ struct NachmaniNeuralBP <: NeuralBP
         1. Weights for the connections from C2V to V2C: `weights_c2v_v2c`
         2. Weights for the connections from C2V to V2C: `weights_llrs`
         3. Weights for the connections from C2V to readout: `weights_c2v_readout`
-        4. Correlation penalty knobs: gate sharpness β `correlation_syndrome_importance` and overall weight α₄ `correlation_weight`
+        4. Correlation penalty knob: overall weight α₄ `correlation_weight`
         5. Temperature for the smooth minimum approximation when combining losses from different layers: `loss_layer_regularizer`
         """
         # We will initialize the learnable parameters to Gaussian random values, if they are not explicitly provided.

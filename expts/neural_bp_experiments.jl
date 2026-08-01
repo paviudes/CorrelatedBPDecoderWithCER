@@ -51,6 +51,12 @@ if abspath(PROGRAM_FILE) == @__FILE__
     # filename gets a `_no_cer` tag so CER and no-CER runs never overwrite.
     use_CER = get(hyperparams, "use_CER", true)
     cer_tag = use_CER ? "" : "_no_cer"
+
+    # Optional free-form tag appended to the results AND model filenames, so a
+    # hyperparameter sweep (which varies only e.g. `correlation_weight`) doesn't
+    # have every point overwrite the same files. Set `run_tag` in the
+    # hyperparameters TOML; empty (default) reproduces the old names exactly.
+    run_tag = String(get(hyperparams, "run_tag", ""))
     if !use_CER
         println("[use_CER=false] Ignoring correlated_weights/: preset p=0.1 priors, correlation loss dropped, outputs tagged `_no_cer`.")
     end
@@ -95,7 +101,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     results_file = "$(results_dir)/simulation_results_$(testing_source)_" *
                "nlayers_$(n_hidden_layers)_" *
                "epochs_$(n_epochs)_" *
-               "trained_using_$(training_source)$(cer_tag).csv"
+               "trained_using_$(training_source)$(cer_tag)$(run_tag).csv"
     
     if isfile(results_file)
         println("Results file already exists: $(results_file). Skipping testing of the Neural BP model and loading results from file.")

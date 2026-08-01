@@ -103,36 +103,35 @@ end
 
 function compute_additional_loss_from_ising_correlations(
     posterior_llrs::Matrix{Float32},
-    expected_recoveries::BitMatrix,
-    parity_check_matrix_dual::BitMatrix,
     connectivity::Matrix{Int},
-    correlation_strengths::Vector{Float32},
-    correlation_syndrome_importance::Float32
+    correlation_strengths::Vector{Float32}
 )::Float32
     """
-    We want to add a term to the Loss function that prefers a correlated error instead of an independent error.
-    Right now we want to focus on Ising-type two-body correlations.
-    Suppose we have a list of qubit indices that are correlated: (q1, q2), (q3, q4), ... specified by `C`.
-    
-    Hence the penalty for violating correlations is:
-        L_corr(μ) = ∑_((qi, qj) ∈ C)  J_(i,j) (1 - e_(qi) * e_(qj))
-    where
-        - L(μ, e) is the original Loss function from `compute_loss_error_from_llrs`.
-        - J_(i,j) is a hyperparameter that controls the strength of the correlation penalty for the pair (qi, qj).
-        - C is the set of correlated qubit index pairs.
-        - e_(qi) is the predicted error at qubit `qi`.
-        - s is the residualsyndrome of the error, given by: s = H * e_total,
-        - H is the parity-check matrix of the dual code,
-        - e_total = e_pred + e_expected is the total predicted error.
+    Ising two-body correlation term — the pair part of the negative log prior.
 
-    Note: e_(qi) is approximated by σ(μ_(qi)).
+    For the set `C` of correlated qubit pairs (the rows of `connectivity`), with
+    SIGNED log-odds couplings J_(i,k) = log[P00·P11 / (P01·P10)]:
+
+        L_corr(μ) = - (1 / (n_samples · |C|)) ∑_((qi,qk) ∈ C) J_(i,k) · e_(qi) · e_(qk)
+
+    where e_(qi) is approximated by σ(μ_(qi)). This is the co-activation form:
+      - J > 0 (correlated pair)      → the loss is LOWERED when both qubits are
+                                        flagged, so co-activation is encouraged.
+      - J < 0 (anti-correlated pair) → the loss is RAISED when both are flagged,
+                                        so simultaneous flips are discouraged.
+      - J = 0                        → the pair contributes nothing.
+
+    NOTE: this term is monotonically decreasing in σ wherever J > 0, i.e. it
+    always argues for MORE predicted errors and carries no internal counterweight.
+    In the full log prior that counterweight is the single-qubit field term, whose
+    role here is played by `sparsity_penalty`. The balance between
+    `sparsity_importance` (α₃) and `correlation_weight` (α₄) is therefore doing
+    real work and must be tuned together — see expts/misc/sweep_correlation_weight.sh.
+
+    There is deliberately NO syndrome gating: the correlation term is a prior on
+    the error distribution, so it applies unconditionally rather than being
+    switched on/off by whether the current residual already clears the syndrome.
     """
-
-    # Compute the syndrome of the residual error, which is given by: s = H * e_total, where e_total = e_pred + e_expected.
-    # residual_errors = @. sigmoid(posterior_llrs) + expected_recoveries
-    # residual_syndromes = parity_check_matrix_dual * residual_errors
-    # real_residual_syndrome_weights = sum(sine_residue.(residual_syndromes), dims=1)
-
     n_samples = size(posterior_llrs, 2)
     n_edges   = size(connectivity, 1)
 
@@ -151,15 +150,19 @@ function compute_additional_loss_from_ising_correlations(
             σ_i = sigmoid(μ_i)
             σ_k = sigmoid(μ_k)
 
-            # loss_from_sample += correlation_strengths[e] * (σ_i - σ_k)^2
             loss_from_sample += correlation_strengths[e] * σ_i * σ_k
         end
-        # loss += exp(-real_residual_syndrome_weights[j] * correlation_syndrome_importance) * loss_from_sample
         loss += loss_from_sample
     end
 
-    # correlation_penalty = - loss / (n_samples * n_edges)
-    correlation_penalty = loss / (n_samples) # Experimenting with this normalization.
+    # The MINUS is essential: Σ J σ_i σ_k is the (log) prior we want to MAXIMISE,
+    # so the loss is its negative. Dropping it inverts the physics — a positive
+    # J (correlated pair) would then be pushed APART instead of co-activated.
+    #
+    # Normalising by n_edges as well as n_samples makes the term a per-edge MEAN,
+    # so `correlation_weight` means the same thing regardless of how dense
+    # the connectivity graph is.
+    correlation_penalty = - loss / (n_samples * n_edges)
     return correlation_penalty
 end
 
@@ -229,7 +232,6 @@ function compute_loss_including_correlations(
     connectivity::Matrix{Int},
     correlation_strengths::Vector{Float32},
     is_correlated::Bool,
-    correlation_syndrome_importance::Float32,   # gate sharpness β in exp(-β·|s|)
     correlation_weight::Float32,                # overall weight α₄ on the correlation term
     loss_layer_temperature::Float32,
     llr_certainty_importance::Float32,
@@ -257,8 +259,7 @@ function compute_loss_including_correlations(
         sparse_pen  = sparsity_penalty(post)
         if is_correlated
             corr_pen = compute_additional_loss_from_ising_correlations(
-                          post, expected_recoveries, parity_check_matrix_dual,
-                          connectivity, correlation_strengths, correlation_syndrome_importance
+                          post, connectivity, correlation_strengths
                       )
         else
             corr_pen = 0f0
