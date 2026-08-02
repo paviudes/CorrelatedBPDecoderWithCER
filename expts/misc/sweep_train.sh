@@ -9,34 +9,50 @@
 # through GPU array allocation, so it runs on the CPU regardless of USE_GPU.
 # A GPU here would sit idle for the whole job.
 #
-# THE EXPERIMENT (defaults below): does CER help when the network has a SMALL
-# training budget? With 500 gradient updates per epoch x 20 epochs the network
-# can learn the pairwise correlations directly from the samples, which makes an
-# explicit prior redundant. The defaults here cut that to 50 updates x 10 epochs
-# (batch 200), i.e.
-#     samples/epoch  10,000 -> 10,000   (unchanged)
-#     total samples 200,000 -> 100,000  (2x less)
-#     grad updates   10,000 ->     500  (20x fewer)   <-- the real change
-# so this is an OPTIMISATION-budget test more than a data-volume test. Both arms
-# get identical budgets; only use_CER differs.
+# THE EXPERIMENT: does CER help when the network has a SMALL training budget?
+# At 10,000 gradient steps the network learns the pairwise correlations straight
+# from the samples, which makes an explicit prior redundant — and there CER was
+# measured to be a wash (298 vs 277 failures). So this sweeps a BUDGET LADDER and
+# asks where, if anywhere, the prior starts paying for itself:
+#
+#     updates/epoch    samples/epoch   total samples   gradient steps
+#            25             1,250          12,500             250
+#           100             5,000          50,000           1,000
+#           400            20,000         200,000           4,000
+#
+# `batch_size` is HELD FIXED (50) across the ladder on purpose: batch size sets
+# the SGD gradient-noise scale, a qualitatively different knob from budget, and
+# varying both would leave the result unattributable.
+#
+# The prediction worth falsifying: near the bottom rung the model is close to its
+# initialisation, i.e. roughly plain BP with whatever priors it was given — and
+# BP with the TRUE channel priors should beat BP with a mis-specified p=0.1. If
+# CER is not ahead even at 250 steps, the prior buys nothing at any budget.
 #
 # BOTH ARMS ARE GENERATED HERE (use_CER = true and false) so the comparison is
 # matched in every other respect. When use_CER = false the correlation term is
 # inactive (is_correlated = false), so only alpha4 = 0 is generated for that arm
 # — the other alpha4 values would be identical runs and pure waste.
 #
+# JOB ARRAY: the commands are split into contiguous chunks, one per array task,
+# exactly as submission/slurm.jl does — each task sed's out its own slice and
+# runs it with GNU parallel across its own cores. 126 points over 2 tasks of 63.
+#
 # RUN FROM expts/ , and sbatch the emitted script from expts/ too.
 #
 #     bash misc/sweep_train.sh
-#     bash misc/sweep_train.sh --repeats 6 --updates 50 --batch_size 200 --epochs 10
+#     bash misc/sweep_train.sh --updates_per_epoch "25 100 400" --repeats 7
 #     sbatch ../data/72q_BB_cycles_1/cluster/sweep_train_<timestamp>.sh
 #
 # Then:  bash misc/sweep_test.sh   (with the SAME grid flags)
 #
-# REPEATS: `--repeats N` trains N independent models per point (tagged _r1.._rN).
-# Julia seeds its RNG per process, so repeats differ only in random weight
-# initialisation — which is exactly the training variance you need to decide
-# whether a gap between arms is real. Measured baseline spread was ~2%.
+# REPEATS: `--repeats N` trains N independent models per point (tagged _r1.._rN),
+# identical in every setting. They differ only in the random weight
+# initialisation and in which minibatches get drawn (online_training samples
+# randomly) — i.e. they measure training-run variance, which is the uncertainty
+# that decides whether a gap between arms is real. Measured baseline spread was
+# ~2% (742 / 748 / 773 failures on repeats of one config). There is no explicit
+# RNG seeding anywhere in the codebase, so repeats genuinely differ.
 #
 # Every generated point is recorded in models/directory.csv (run_tag -> full
 # hyperparameter set).
@@ -53,14 +69,14 @@ usage() { sed -n '2,45p' "$0"; }
 WORKDIR="./../data"
 CODENAME="72q_BB_cycles_1"
 BASE_HP="hyperparams_epochs_20.toml"
-PVALS="0.0005"                 # one p keeps the ladder affordable; 0.0005 is where
-                               # the CER effect was largest
+PVALS="0.0005 0.0015"
 USE_CER_VALUES="true false"
 ALPHA4="0 0.1"                 # only applied to the use_CER = true arm.
                                # 0   = CER priors, correlation term OFF
                                # 0.1 = CER priors + correlation term (best so far)
 ALPHA3="0.5"
-REPEATS=7                      # 3 budgets x (2 CER + 1 no-CER) x 1 p x 7 = 63 runs
+REPEATS=7                      # 3 budgets x (2 CER + 1 no-CER) x 2 p x 7 = 126 runs
+                               # = 2 array tasks x 63 (of 64 cores each)
 # Training budget. With online_training = true the trainer does not sweep a
 # fixed dataset: each epoch it draws UPDATES batches of BATCH_SIZE from the pool.
 #   samples per epoch    = BATCH_SIZE * UPDATES
@@ -74,9 +90,15 @@ BATCH_SIZE=50                  # HELD FIXED across the ladder: batch size sets t
 UPDATES_LIST="25 100 400"      # TOML key: n_gradient_updates_per_epoch — the LADDER
 NLAYERS=100
 SEED=1
-JOBS=64                        # one Narval node
-WALLTIME="6:00:00"
-MEM_PER_CPU="4G"
+JOBS=64                        # parallel slots == cores per array task (one Narval node)
+MAX_NODES=4                    # cap on the SLURM array size
+WALLTIME="8:00:00"             # set by the SLOWEST rung: u=400 is 200,000 total
+                               # samples, i.e. the same sample count as the
+                               # original 20-epoch runs (~6h). Slack so a timeout
+                               # doesn't cost the top rung.
+MEM_PER_CPU="3G"               # 64 x 3G = 192G. A Narval standard node has 249G
+                               # usable, so 4G/core (256G) would only fit on the
+                               # scarce 498G nodes and sit in the queue.
 ACCOUNT="def-jemerson"
 EMAIL="pavithran.sridhar@gmail.com"
 JULIA_MODULE="julia/1.12.5"
@@ -97,6 +119,7 @@ while [ "$#" -gt 0 ]; do
         --nlayers)    NLAYERS="$2";        shift 2;;
         --seed)       SEED="$2";           shift 2;;
         --jobs)       JOBS="$2";           shift 2;;
+        --max_nodes)  MAX_NODES="$2";      shift 2;;
         --walltime)   WALLTIME="$2";       shift 2;;
         --mem)        MEM_PER_CPU="$2";    shift 2;;
         --account)    ACCOUNT="$2";        shift 2;;
@@ -155,27 +178,44 @@ for updates in $UPDATES_LIST; do
   done
 done
 
+# --------------------------------------------------------------- job array ---
+# Same split as submission/slurm.jl: each array task owns a contiguous chunk of
+# the commands file and runs it with GNU parallel across its own cores.
+N_TASKS=$(( (n_points + JOBS - 1) / JOBS ))
+[ "$N_TASKS" -lt 1 ] && N_TASKS=1
+[ "$N_TASKS" -gt "$MAX_NODES" ] && N_TASKS=$MAX_NODES
+CHUNK=$(( (n_points + N_TASKS - 1) / N_TASKS ))
+# Never request more cores (or parallel slots) than the chunk actually holds —
+# with 126 points over 2 tasks the chunk is 63, so asking for 64 would leave a
+# core idle in every task and inflate the memory request for nothing.
+CPUS_PER_TASK=$JOBS
+[ "$CHUNK" -lt "$CPUS_PER_TASK" ] && CPUS_PER_TASK=$CHUNK
+SLOTS=$CPUS_PER_TASK
+
 # ----------------------------------------------------------- SLURM script ---
 cat > "$SLURM" <<EOF
 #!/bin/bash
 #SBATCH --account=$ACCOUNT
 #SBATCH --job-name=cer_sweep_train_$TS
-#SBATCH --output=$CLUSTER_DIR/sweep_train_${TS}.out
-#SBATCH --error=$CLUSTER_DIR/sweep_train_${TS}.err
+#SBATCH --output=$CLUSTER_DIR/sweep_train_${TS}_%a.out
+#SBATCH --error=$CLUSTER_DIR/sweep_train_${TS}_%a.err
+#SBATCH --array=0-$((N_TASKS - 1))
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=$JOBS
+#SBATCH --cpus-per-task=$CPUS_PER_TASK
 #SBATCH --mem-per-cpu=$MEM_PER_CPU
 #SBATCH --time=$WALLTIME
 #SBATCH --signal=B:TERM@300
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=$EMAIL
 
-# CER sweep — TRAIN phase. $n_points command(s), $JOBS at a time. CPU only.
+# CER sweep — TRAIN phase. $n_points command(s) split over $N_TASKS array task(s)
+# of up to $CHUNK each, $JOBS at a time. CPU only.
 # Budget ladder: $EPOCHS epochs x {$UPDATES_LIST} updates x batch $BATCH_SIZE.
 # NOTE: no 'set -e' — one failing point must not kill the rest of the sweep.
 set -uo pipefail
 echo "========================================="
-echo "sweep TRAIN started: \$(date)   points: $n_points   slots: $JOBS"
+echo "sweep TRAIN task \${SLURM_ARRAY_TASK_ID} started: \$(date)"
+echo "total points: $n_points   array tasks: $N_TASKS   chunk: $CHUNK   slots: $SLOTS"
 echo "========================================="
 
 module load $JULIA_MODULE
@@ -209,10 +249,14 @@ STAGE_IN_START=\$(date +%s)
 tar -cf - -C "\$(dirname $WORKDIR/$CODENAME)" "\$(basename $WORKDIR/$CODENAME)" | tar -xf - -C "\$SLURM_TMPDIR"
 echo "[stage-in] done in \$(( \$(date +%s) - STAGE_IN_START ))s"
 
-COMMANDS_LOCAL="\$SLURM_TMPDIR/sweep_commands_train.txt"
-sed "s|\\\$WORKDIR_RUNTIME|\$SLURM_TMPDIR|g" "$COMMANDS" > "\$COMMANDS_LOCAL"
+# This array task's slice of the command list (1-based, inclusive).
+START=\$(( SLURM_ARRAY_TASK_ID * $CHUNK + 1 ))
+END=\$(( START + $CHUNK - 1 ))
+COMMANDS_LOCAL="\$SLURM_TMPDIR/sweep_commands_train_\${SLURM_ARRAY_TASK_ID}.txt"
+sed -n "\${START},\${END}p" "$COMMANDS" | sed "s|\\\$WORKDIR_RUNTIME|\$SLURM_TMPDIR|g" > "\$COMMANDS_LOCAL"
+echo "[chunk] lines \${START}-\${END}: \$(wc -l < "\$COMMANDS_LOCAL") command(s)"
 
-LOCAL_LOGS="\$LOCAL_WORK_DIR/cluster/logs/sweep_train_$TS"
+LOCAL_LOGS="\$LOCAL_WORK_DIR/cluster/logs/sweep_train_${TS}_\${SLURM_ARRAY_TASK_ID}"
 mkdir -p "\$LOCAL_LOGS"
 
 stage_out_done=0
@@ -238,11 +282,11 @@ trap stage_out EXIT
 # Background + wait so the TERM trap fires immediately; a FOREGROUND parallel
 # would defer it and the walltime SIGKILL would wipe \$SLURM_TMPDIR with every
 # trained model in it.
-parallel --jobs $JOBS --results "\$LOCAL_LOGS" < "\$COMMANDS_LOCAL" &
+parallel --jobs $SLOTS --results "\$LOCAL_LOGS" < "\$COMMANDS_LOCAL" &
 wait \$!
 
 echo "========================================="
-echo "sweep TRAIN finished: \$(date)"
+echo "sweep TRAIN task \${SLURM_ARRAY_TASK_ID} finished: \$(date)"
 echo "========================================="
 EOF
 chmod +x "$SLURM"
@@ -259,7 +303,8 @@ echo "  hyperparams -> $MODELS_DIR/hyperparams_sweep*.toml   (retrain = true)"
 echo "  registry    -> $REGISTRY"
 echo "  commands    -> $COMMANDS"
 echo "  slurm       -> $SLURM"
-echo "  resources   -> ${JOBS} CPUs, $WALLTIME, USE_GPU=0"
+echo "  array       -> ${N_TASKS} task(s) x up to ${CHUNK} command(s), ${JOBS} slots each"
+echo "  resources   -> ${CPUS_PER_TASK} CPUs/task x ${MEM_PER_CPU} = $((CPUS_PER_TASK * ${MEM_PER_CPU%G}))G/task, $WALLTIME, USE_GPU=0"
 echo
 echo "submit with:  sbatch $SLURM"
 echo

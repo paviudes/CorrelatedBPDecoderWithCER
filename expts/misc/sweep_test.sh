@@ -49,7 +49,7 @@ usage() { sed -n '2,33p' "$0"; }
 WORKDIR="./../data"
 CODENAME="72q_BB_cycles_1"
 BASE_HP="hyperparams_epochs_20.toml"
-PVALS="0.0005"
+PVALS="0.0005 0.0015"
 USE_CER_VALUES="true false"
 ALPHA4="0 0.1"
 ALPHA3="0.5"
@@ -62,6 +62,7 @@ GPU_TYPE="a100_3g.20gb"        # Narval A100 50% MIG: 6 cores, 62 GB
 JOBS=""                        # defaults to GPUS (one command per GPU)
 CPUS_PER_GPU=6                 # bundle ratio for a100_3g.20gb
 MEM_PER_CPU="10G"              # 6 x 10G = 60G, just inside the 62 GB bundle
+MAX_NODES=4                    # SLURM array size: each task gets its own GPU
 WALLTIME="6:00:00"
 ACCOUNT="def-jemerson"
 EMAIL="pavithran.sridhar@gmail.com"
@@ -84,6 +85,7 @@ while [ "$#" -gt 0 ]; do
         --gpus)         GPUS="$2";           shift 2;;
         --gpu_type)     GPU_TYPE="$2";       shift 2;;
         --jobs)         JOBS="$2";           shift 2;;
+        --max_nodes)    MAX_NODES="$2";      shift 2;;
         --cpus_per_gpu) CPUS_PER_GPU="$2";   shift 2;;
         --mem)          MEM_PER_CPU="$2";    shift 2;;
         --walltime)     WALLTIME="$2";       shift 2;;
@@ -185,13 +187,23 @@ else
     PARALLEL_LINE="parallel --jobs $JOBS --results \"\$LOCAL_LOGS\" < \"\$COMMANDS_LOCAL\" &"
 fi
 
+# --------------------------------------------------------------- job array ---
+# Same split as submission/slurm.jl. In test mode the concurrency limit per task
+# is the GPU count, not the core count, so a task's chunk runs `--jobs $JOBS`
+# at a time and the array spreads the rest across tasks (each with its own GPU).
+N_TASKS=$(( (n_points + JOBS - 1) / JOBS ))
+[ "$N_TASKS" -lt 1 ] && N_TASKS=1
+[ "$N_TASKS" -gt "$MAX_NODES" ] && N_TASKS=$MAX_NODES
+CHUNK=$(( (n_points + N_TASKS - 1) / N_TASKS ))
+
 # ----------------------------------------------------------- SLURM script ---
 cat > "$SLURM" <<EOF
 #!/bin/bash
 #SBATCH --account=$ACCOUNT
 #SBATCH --job-name=cer_sweep_test_$TS
-#SBATCH --output=$CLUSTER_DIR/sweep_test_${TS}.out
-#SBATCH --error=$CLUSTER_DIR/sweep_test_${TS}.err
+#SBATCH --output=$CLUSTER_DIR/sweep_test_${TS}_%a.out
+#SBATCH --error=$CLUSTER_DIR/sweep_test_${TS}_%a.err
+#SBATCH --array=0-$((N_TASKS - 1))
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=$CPUS_PER_TASK
 #SBATCH --mem-per-cpu=$MEM_PER_CPU
