@@ -1,0 +1,52 @@
+# ============================================================================
+# sweep_test_commands_local.txt — CER sweep TEST phase, to run locally on a Mac
+# ============================================================================
+# 16 points: alpha4 (correlation_weight) in {0, 0.01, 0.1, 1.0}
+#          x alpha3 (sparsity_importance) in {0.5, 5.0}
+#          x train/test p in {0.0005, 0.002}
+#
+# RUN FROM THE expts/ DIRECTORY:
+#     bash misc/sweep_test_commands_local.txt
+#
+# Runs sequentially; one failure does not stop the rest. `--quiet false` so you
+# see per-run progress.
+#
+# WHAT YOU NEED LOCALLY under data/72q_BB_cycles_1/ :
+#     code/                 HZ.txt, LZ.txt
+#     models/               the 16 neuralbp_weights_*_a4*_a3*.json  AND
+#                           the 8  hyperparams_sweep_a4*_a3*.toml   (retrain = false)
+#     correlated_weights/   correlated_weights_p_0.0005_s_1.txt, ..._p_0.002_s_1.txt
+#     testing_data/         test_p_0.0005_s_1.txt, test_p_0.002_s_1.txt
+#
+# You do NOT need training_data/: with retrain = false and the weights present,
+# train.jl loads the model and never reads the training file. (The --train flag
+# is still required — it is what determines the model filename to load.)
+#
+# Results are written to data/72q_BB_cycles_1/results/ as
+#     simulation_results_test_p_<p>_s_1_nlayers_100_epochs_20_trained_using_train_p_<p>_s_1_a4<A>_a3<B>.csv
+# ============================================================================
+
+# CRITICAL: the CPU path in predict.jl is UNBATCHED — it allocates a
+# (n_bits x n_samples x n_layers) tensor, i.e. ~29 TB at 10^6 samples and 100
+# layers, and will abort. USE_GPU=1 takes the batched Metal path (32768/batch).
+export USE_GPU=1
+
+# ---- p = 0.0005 -----------------------------------------------------------
+julia --project="./../" neural_bp_experiments.jl --workdir ./../data --codename 72q_BB_cycles_1 --n_hidden_layers 100 --hyperparams hyperparams_sweep_a40_a30p5.toml --correlation_strengths_file correlated_weights_p_0.0005_s_1.txt --quiet false --train train_p_0.0005_s_1.txt --test test_p_0.0005_s_1.txt
+julia --project="./../" neural_bp_experiments.jl --workdir ./../data --codename 72q_BB_cycles_1 --n_hidden_layers 100 --hyperparams hyperparams_sweep_a40_a35p0.toml --correlation_strengths_file correlated_weights_p_0.0005_s_1.txt --quiet false --train train_p_0.0005_s_1.txt --test test_p_0.0005_s_1.txt
+julia --project="./../" neural_bp_experiments.jl --workdir ./../data --codename 72q_BB_cycles_1 --n_hidden_layers 100 --hyperparams hyperparams_sweep_a40p01_a30p5.toml --correlation_strengths_file correlated_weights_p_0.0005_s_1.txt --quiet false --train train_p_0.0005_s_1.txt --test test_p_0.0005_s_1.txt
+julia --project="./../" neural_bp_experiments.jl --workdir ./../data --codename 72q_BB_cycles_1 --n_hidden_layers 100 --hyperparams hyperparams_sweep_a40p01_a35p0.toml --correlation_strengths_file correlated_weights_p_0.0005_s_1.txt --quiet false --train train_p_0.0005_s_1.txt --test test_p_0.0005_s_1.txt
+julia --project="./../" neural_bp_experiments.jl --workdir ./../data --codename 72q_BB_cycles_1 --n_hidden_layers 100 --hyperparams hyperparams_sweep_a40p1_a30p5.toml --correlation_strengths_file correlated_weights_p_0.0005_s_1.txt --quiet false --train train_p_0.0005_s_1.txt --test test_p_0.0005_s_1.txt
+julia --project="./../" neural_bp_experiments.jl --workdir ./../data --codename 72q_BB_cycles_1 --n_hidden_layers 100 --hyperparams hyperparams_sweep_a40p1_a35p0.toml --correlation_strengths_file correlated_weights_p_0.0005_s_1.txt --quiet false --train train_p_0.0005_s_1.txt --test test_p_0.0005_s_1.txt
+julia --project="./../" neural_bp_experiments.jl --workdir ./../data --codename 72q_BB_cycles_1 --n_hidden_layers 100 --hyperparams hyperparams_sweep_a41p0_a30p5.toml --correlation_strengths_file correlated_weights_p_0.0005_s_1.txt --quiet false --train train_p_0.0005_s_1.txt --test test_p_0.0005_s_1.txt
+julia --project="./../" neural_bp_experiments.jl --workdir ./../data --codename 72q_BB_cycles_1 --n_hidden_layers 100 --hyperparams hyperparams_sweep_a41p0_a35p0.toml --correlation_strengths_file correlated_weights_p_0.0005_s_1.txt --quiet false --train train_p_0.0005_s_1.txt --test test_p_0.0005_s_1.txt
+
+# ---- p = 0.002 ------------------------------------------------------------
+julia --project="./../" neural_bp_experiments.jl --workdir ./../data --codename 72q_BB_cycles_1 --n_hidden_layers 100 --hyperparams hyperparams_sweep_a40_a30p5.toml --correlation_strengths_file correlated_weights_p_0.002_s_1.txt --quiet false --train train_p_0.002_s_1.txt --test test_p_0.002_s_1.txt
+julia --project="./../" neural_bp_experiments.jl --workdir ./../data --codename 72q_BB_cycles_1 --n_hidden_layers 100 --hyperparams hyperparams_sweep_a40_a35p0.toml --correlation_strengths_file correlated_weights_p_0.002_s_1.txt --quiet false --train train_p_0.002_s_1.txt --test test_p_0.002_s_1.txt
+julia --project="./../" neural_bp_experiments.jl --workdir ./../data --codename 72q_BB_cycles_1 --n_hidden_layers 100 --hyperparams hyperparams_sweep_a40p01_a30p5.toml --correlation_strengths_file correlated_weights_p_0.002_s_1.txt --quiet false --train train_p_0.002_s_1.txt --test test_p_0.002_s_1.txt
+julia --project="./../" neural_bp_experiments.jl --workdir ./../data --codename 72q_BB_cycles_1 --n_hidden_layers 100 --hyperparams hyperparams_sweep_a40p01_a35p0.toml --correlation_strengths_file correlated_weights_p_0.002_s_1.txt --quiet false --train train_p_0.002_s_1.txt --test test_p_0.002_s_1.txt
+julia --project="./../" neural_bp_experiments.jl --workdir ./../data --codename 72q_BB_cycles_1 --n_hidden_layers 100 --hyperparams hyperparams_sweep_a40p1_a30p5.toml --correlation_strengths_file correlated_weights_p_0.002_s_1.txt --quiet false --train train_p_0.002_s_1.txt --test test_p_0.002_s_1.txt
+julia --project="./../" neural_bp_experiments.jl --workdir ./../data --codename 72q_BB_cycles_1 --n_hidden_layers 100 --hyperparams hyperparams_sweep_a40p1_a35p0.toml --correlation_strengths_file correlated_weights_p_0.002_s_1.txt --quiet false --train train_p_0.002_s_1.txt --test test_p_0.002_s_1.txt
+julia --project="./../" neural_bp_experiments.jl --workdir ./../data --codename 72q_BB_cycles_1 --n_hidden_layers 100 --hyperparams hyperparams_sweep_a41p0_a30p5.toml --correlation_strengths_file correlated_weights_p_0.002_s_1.txt --quiet false --train train_p_0.002_s_1.txt --test test_p_0.002_s_1.txt
+julia --project="./../" neural_bp_experiments.jl --workdir ./../data --codename 72q_BB_cycles_1 --n_hidden_layers 100 --hyperparams hyperparams_sweep_a41p0_a35p0.toml --correlation_strengths_file correlated_weights_p_0.002_s_1.txt --quiet false --train train_p_0.002_s_1.txt --test test_p_0.002_s_1.txt
