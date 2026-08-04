@@ -57,12 +57,22 @@ if abspath(PROGRAM_FILE) == @__FILE__
     # have every point overwrite the same files. Set `run_tag` in the
     # hyperparameters TOML; empty (default) reproduces the old names exactly.
     run_tag = String(get(hyperparams, "run_tag", ""))
+
+    # Cap on |initial LLR| (0 = disabled). Equalises the gradient conditioning
+    # between the CER (LLR ~ 5.4) and no-CER (2.2) arms so the correlation
+    # information can be judged independently of the prior's magnitude.
+    prior_llr_clip = Float32(get(hyperparams, "prior_llr_clip", 0.0f0))
+    if prior_llr_clip > 0f0
+        println("[prior_llr_clip=$(prior_llr_clip)] capping |initial LLR|; " *
+                "tanh'(clip/2) = $(round(1 - tanh(prior_llr_clip/2)^2, digits=4)) " *
+                "(unclipped CER ~0.018, no-CER ~0.36).")
+    end
     if !use_CER
         println("[use_CER=false] Ignoring correlated_weights/: preset p=0.1 priors, correlation loss dropped, outputs tagged `_no_cer`.")
     end
 
     # Train the Neural BP model
-    base = load_base_BP_model(parity_check_matrix_file, logicals_file, n_hidden_layers; correlation_strengths_file=correlation_strengths_file, use_cer=use_CER)
+    base = load_base_BP_model(parity_check_matrix_file, logicals_file, n_hidden_layers; correlation_strengths_file=correlation_strengths_file, use_cer=use_CER, prior_llr_clip=prior_llr_clip)
     initial_conditions = Dict{String, Vector{Float32}}(
         "weights_c2v_v2c" => random_values_around_one([base.nb_weights_c2v_v2c * base.n_layers]; scale=hyperparams["initial_conditions_scale"]),
         "weights_llrs" => random_values_around_one([base.code_n_bits * base.n_layers]; scale=hyperparams["initial_conditions_scale"]),

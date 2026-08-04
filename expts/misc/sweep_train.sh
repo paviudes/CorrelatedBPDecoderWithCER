@@ -69,14 +69,14 @@ usage() { sed -n '2,45p' "$0"; }
 WORKDIR="./../data"
 CODENAME="72q_BB_cycles_1"
 BASE_HP="hyperparams_epochs_20.toml"
-PVALS="0.0005 0.0015"
-USE_CER_VALUES="true false"
-ALPHA4="0 0.1"                 # only applied to the use_CER = true arm.
-                               # 0   = CER priors, correlation term OFF
-                               # 0.1 = CER priors + correlation term (best so far)
+PVALS="0.0005"                 # where the CER penalty was largest and cleanest
+USE_CER_VALUES="true"          # no-CER is unaffected by clipping (its LLR 2.20 < any
+                               # clip here), so its existing runs serve as the
+                               # reference — re-running it would be identical work
+ALPHA4="0 0.1"                 # 0   = CER priors, correlation term OFF
+                               # 0.1 = CER priors + correlation term
 ALPHA3="0.5"
-REPEATS=7                      # 3 budgets x (2 CER + 1 no-CER) x 2 p x 7 = 126 runs
-                               # = 2 array tasks x 63 (of 64 cores each)
+REPEATS=7                      # 3 clips x 2 alpha4 x 1 p x 7 = 42 runs (one node)
 # Training budget. With online_training = true the trainer does not sweep a
 # fixed dataset: each epoch it draws UPDATES batches of BATCH_SIZE from the pool.
 #   samples per epoch    = BATCH_SIZE * UPDATES
@@ -87,7 +87,15 @@ BATCH_SIZE=50                  # HELD FIXED across the ladder: batch size sets t
                                # SGD gradient-noise scale, which is a different
                                # knob from budget. Varying it too would confound
                                # "fewer updates" with "noisier/cleaner gradients".
-UPDATES_LIST="25 100 400"      # TOML key: n_gradient_updates_per_epoch — the LADDER
+UPDATES_LIST="400"             # TOML key: n_gradient_updates_per_epoch (400 x 10 = 4000 steps,
+                               # the rung where the CER penalty was significant)
+# Cap on |initial LLR| (0 = disabled). THE CURRENT EXPERIMENT: the CER arm starts
+# at LLR ~ 5.4 vs the no-CER arm's 2.2, where tanh' differs ~20x, so CER trains
+# ~20x more slowly — which is why the arms tie at 250 steps and CER falls 1.9x
+# behind by 4000. Clipping equalises the conditioning; if CER then matches or
+# beats no-CER, the correlation information was never the problem.
+# Unclipped (0) results already exist, so the default sweeps only clipped values.
+CLIP_LIST="1.5 2.5 3.5"
 NLAYERS=100
 SEED=1
 JOBS=64                        # parallel slots == cores per array task (one Narval node)
@@ -116,6 +124,7 @@ while [ "$#" -gt 0 ]; do
         --epochs)     EPOCHS="$2";         shift 2;;
         --batch_size) BATCH_SIZE="$2";     shift 2;;
         --updates_per_epoch|--updates) UPDATES_LIST="$2"; shift 2;;
+        --clip|--prior_llr_clip) CLIP_LIST="$2"; shift 2;;
         --nlayers)    NLAYERS="$2";        shift 2;;
         --seed)       SEED="$2";           shift 2;;
         --jobs)       JOBS="$2";           shift 2;;
@@ -149,6 +158,7 @@ n_budgets=$(echo $UPDATES_LIST | wc -w)
 n_points=0
 n_skipped=0
 for updates in $UPDATES_LIST; do
+ for clip in $CLIP_LIST; do
   for use_cer in $USE_CER_VALUES; do
     for a4 in $ALPHA4; do
       # With use_CER = false the correlation term is inactive, so every alpha4
@@ -157,16 +167,23 @@ for updates in $UPDATES_LIST; do
           n_skipped=$((n_skipped + 1))
           continue
       fi
+      # Clipping cannot bind on the no-CER arm (its LLR is log(9) = 2.20), so
+      # every clip >= 2.2 reproduces the unclipped run exactly. Emit that arm
+      # once only, at the first clip value.
+      if [ "$use_cer" = "false" ] && [ "$clip" != "${CLIP_LIST%% *}" ]; then
+          n_skipped=$((n_skipped + 1))
+          continue
+      fi
       for a3 in $ALPHA3; do
         for rep in $(seq 1 "$REPEATS"); do
-          run_tag=$(sweep_run_tag "$a4" "$a3" "$rep" "$REPEATS" "$updates" "$n_budgets")
+          run_tag=$(sweep_run_tag "$a4" "$a3" "$rep" "$REPEATS" "$updates" "$n_budgets" "$clip")
           hp_name=$(sweep_hp_name "$run_tag" "$use_cer")
 
           sweep_write_hyperparams "$BASE_HP_PATH" "$MODELS_DIR/$hp_name" true "$run_tag" \
-              "$a4" "$a3" "$use_cer" "$EPOCHS" "$BATCH_SIZE" "$updates" train "$TS"
+              "$a4" "$a3" "$use_cer" "$EPOCHS" "$BATCH_SIZE" "$updates" train "$TS" "$clip"
           sweep_registry_record "$REGISTRY" "$BASE_HP_PATH" "$run_tag" "$hp_name" \
               "$use_cer" "$a4" "$a3" "$EPOCHS" "$BATCH_SIZE" "$updates" \
-              "$NLAYERS" "$CODENAME" "$BASE_HP" train "$TS"
+              "$NLAYERS" "$CODENAME" "$BASE_HP" train "$TS" "$clip"
 
           for p in $PVALS; do
             echo "julia --project=\"./../\" neural_bp_experiments.jl --workdir \$WORKDIR_RUNTIME --codename $CODENAME --n_hidden_layers $NLAYERS --hyperparams $hp_name --correlation_strengths_file correlated_weights_p_${p}_s_${SEED}.txt --quiet true --train train_p_${p}_s_${SEED}.txt" >> "$COMMANDS"
@@ -176,6 +193,7 @@ for updates in $UPDATES_LIST; do
       done
     done
   done
+ done
 done
 
 # --------------------------------------------------------------- job array ---
@@ -293,7 +311,11 @@ chmod +x "$SLURM"
 
 n_p=$(echo $PVALS | wc -w)
 echo "[train] $n_points command(s)   (skipped $n_skipped redundant no-CER alpha4 point(s))"
-echo "  grid        -> ${n_budgets} budget(s) x use_CER {$USE_CER_VALUES} x alpha4 {$ALPHA4} x alpha3 {$ALPHA3} x ${REPEATS} repeat(s) x ${n_p} p"
+echo "  grid        -> ${n_budgets} budget(s) x clip {$CLIP_LIST} x use_CER {$USE_CER_VALUES} x alpha4 {$ALPHA4} x alpha3 {$ALPHA3} x ${REPEATS} repeat(s) x ${n_p} p"
+echo "  clip effect -> |initial LLR| cap; tanh'(clip/2) vs the 0.018 (CER, unclipped) / 0.360 (no-CER) anchors:"
+for c in $CLIP_LIST; do
+    awk -v c="$c" 'BEGIN{h=c/2; t=(exp(h)-exp(-h))/(exp(h)+exp(-h)); printf "                   clip=%-5s -> tanh(%.2f)=%.4f  gradient factor %.4f\n", c, h, t, 1-t*t}' </dev/null
+done
 echo "  ladder      -> batch $BATCH_SIZE (FIXED), $EPOCHS epochs, updates/epoch:"
 for u in $UPDATES_LIST; do
     printf "                   %-5s -> %7d samples/epoch, %8d total samples, %6d gradient steps\n" \
@@ -309,6 +331,6 @@ echo
 echo "submit with:  sbatch $SLURM"
 echo
 echo "then, once it finishes:"
-echo "  bash misc/sweep_test.sh --pvals \"$PVALS\" --use_cer \"$USE_CER_VALUES\" --alpha4 \"$ALPHA4\" --alpha3 \"$ALPHA3\" --repeats $REPEATS --updates_per_epoch \"$UPDATES_LIST\""
+echo "  bash misc/sweep_test.sh --pvals \"$PVALS\" --use_cer \"$USE_CER_VALUES\" --alpha4 \"$ALPHA4\" --alpha3 \"$ALPHA3\" --repeats $REPEATS --updates_per_epoch \"$UPDATES_LIST\" --clip \"$CLIP_LIST\""
 echo "  (only the GRID flags — sweep_test.sh reads epochs/batch_size/updates from the"
 echo "   TOMLs written above, so the training config has a single source of truth.)"

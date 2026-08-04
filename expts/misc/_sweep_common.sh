@@ -28,9 +28,17 @@ sweep_tag_of() { echo "$1" | tr '.' 'p' | tr -d '+'; }
 # without our help. Only the hyperparams FILENAME needs the marker.
 sweep_run_tag() {
     local alpha4="$1" alpha3="$2" repeat_index="$3" n_repeats="$4" updates="$5" n_budgets="$6"
+    local clip="${7:-0}"
     local tag=""
     if [ "${n_budgets:-1}" -gt 1 ]; then
         tag="_u${updates}"
+    fi
+    # `_c<clip>` appears whenever clipping is ACTIVE (not merely when several clip
+    # values are swept). That keeps unclipped runs on their original names — so
+    # the existing 126 results stay valid and comparable — while any clipped run
+    # gets a distinct model/results file instead of silently overwriting one.
+    if [ -n "$clip" ] && [ "$clip" != "0" ] && [ "$clip" != "0.0" ]; then
+        tag="${tag}_c$(sweep_tag_of "$clip")"
     fi
     tag="${tag}_a4$(sweep_tag_of "$alpha4")_a3$(sweep_tag_of "$alpha3")"
     if [ "$n_repeats" -gt 1 ]; then
@@ -77,8 +85,9 @@ sweep_write_hyperparams() {
     local base_path="$1" out_path="$2" retrain="$3" run_tag="$4"
     local alpha4="$5" alpha3="$6" use_cer="$7"
     local n_epochs="$8" batch_size="$9" n_updates="${10}" phase="${11}" stamp="${12}"
+    local clip="${13:-0}"
 
-    grep -vE '^[[:space:]]*(correlation_weight|sparsity_importance|retrain|run_tag|use_CER|n_epochs|batch_size|n_gradient_updates_per_epoch|correlation_importance|correlation_syndrome_importance)[[:space:]]*=' \
+    grep -vE '^[[:space:]]*(correlation_weight|sparsity_importance|retrain|run_tag|use_CER|n_epochs|batch_size|n_gradient_updates_per_epoch|prior_llr_clip|correlation_importance|correlation_syndrome_importance)[[:space:]]*=' \
         "$base_path" > "$out_path"
 
     cat >> "$out_path" <<EOF
@@ -107,6 +116,11 @@ correlation_weight = "${alpha4},${alpha4},0.7,up"
 # alpha3: sparsity weight — the counterweight to the correlation term's
 # one-directional push toward more predicted errors. Also CONSTANT.
 sparsity_importance = "${alpha3},${alpha3},0.8,up"
+
+# Cap on |initial LLR| (0 = disabled). CER priors give ~5.4, the no-CER fallback
+# 2.2; tanh' at those points differs ~20x, so the CER arm starts far deeper in
+# saturation and trains more slowly. Clipping equalises that conditioning.
+prior_llr_clip = ${clip}
 EOF
 }
 
@@ -126,7 +140,7 @@ sweep_disable_retrain() {
 # directory.csv: one row per generated point, every field quoted (the annealing
 # schedules contain commas). Written serially by the generator, so there is no
 # concurrent-append race.
-readonly SWEEP_REGISTRY_HEADER='"run_tag","hyperparams_file","use_CER","alpha4_correlation_weight","alpha3_sparsity_importance","llr_certainty_importance","loss_layer_temperature","n_epochs","batch_size","n_gradient_updates_per_epoch","samples_per_epoch","total_samples","total_gradient_updates","warmup_layers","online_training","learning_rate","max_grad_norm","weight_decay","adam_eps","nanskip","initial_conditions_scale","n_hidden_layers","codename","base_hyperparams","phase","created"'
+readonly SWEEP_REGISTRY_HEADER='"run_tag","hyperparams_file","use_CER","prior_llr_clip","alpha4_correlation_weight","alpha3_sparsity_importance","llr_certainty_importance","loss_layer_temperature","n_epochs","batch_size","n_gradient_updates_per_epoch","samples_per_epoch","total_samples","total_gradient_updates","warmup_layers","online_training","learning_rate","max_grad_norm","weight_decay","adam_eps","nanskip","initial_conditions_scale","n_hidden_layers","codename","base_hyperparams","phase","created"'
 
 sweep_csv_row() {
     local out="" field
@@ -161,9 +175,10 @@ sweep_registry_record() {
     local use_cer="$5" alpha4="$6" alpha3="$7"
     local n_epochs="$8" batch_size="$9" n_updates="${10}"
     local n_layers="${11}" codename="${12}" base_name="${13}" phase="${14}" stamp="${15}"
+    local clip="${16:-0}"
 
     sweep_registry_upsert "$registry" "$run_tag" "$hp_file" \
-        "$use_cer" "$alpha4" "$alpha3" \
+        "$use_cer" "$clip" "$alpha4" "$alpha3" \
         "$(sweep_toml_get "$base_path" llr_certainty_importance)" \
         "$(sweep_toml_get "$base_path" loss_layer_temperature)" \
         "$n_epochs" "$batch_size" "$n_updates" \

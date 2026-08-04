@@ -49,12 +49,13 @@ usage() { sed -n '2,33p' "$0"; }
 WORKDIR="./../data"
 CODENAME="72q_BB_cycles_1"
 BASE_HP="hyperparams_epochs_20.toml"
-PVALS="0.0005 0.0015"
-USE_CER_VALUES="true false"
+PVALS="0.0005"
+USE_CER_VALUES="true"
 ALPHA4="0 0.1"
 ALPHA3="0.5"
 REPEATS=7
-UPDATES_LIST="25 100 400"      # must match sweep_train.sh: part of the run_tag
+UPDATES_LIST="400"             # must match sweep_train.sh: part of the run_tag
+CLIP_LIST="1.5 2.5 3.5"        # must match sweep_train.sh: part of the run_tag
 NLAYERS=100
 SEED=1
 GPUS=1
@@ -80,6 +81,7 @@ while [ "$#" -gt 0 ]; do
         --alpha3)       ALPHA3="$2";         shift 2;;
         --repeats)      REPEATS="$2";        shift 2;;
         --updates_per_epoch|--updates) UPDATES_LIST="$2"; shift 2;;
+        --clip|--prior_llr_clip) CLIP_LIST="$2"; shift 2;;
         --nlayers)      NLAYERS="$2";        shift 2;;
         --seed)         SEED="$2";           shift 2;;
         --gpus)         GPUS="$2";           shift 2;;
@@ -121,15 +123,19 @@ n_missing_toml=0
 dropped_list=""
 budget_note=""
 for updates in $UPDATES_LIST; do
+ for clip in $CLIP_LIST; do
   for use_cer in $USE_CER_VALUES; do
     cer_tag=$(sweep_cer_tag_for "$use_cer")
     for a4 in $ALPHA4; do
       if [ "$use_cer" = "false" ] && [ "$a4" != "0" ]; then
           continue      # identical to alpha4 = 0 when the correlation term is off
       fi
+      if [ "$use_cer" = "false" ] && [ "$clip" != "${CLIP_LIST%% *}" ]; then
+          continue      # clipping cannot bind on the no-CER arm (LLR = 2.20)
+      fi
       for a3 in $ALPHA3; do
         for rep in $(seq 1 "$REPEATS"); do
-          run_tag=$(sweep_run_tag "$a4" "$a3" "$rep" "$REPEATS" "$updates" "$n_budgets")
+          run_tag=$(sweep_run_tag "$a4" "$a3" "$rep" "$REPEATS" "$updates" "$n_budgets" "$clip")
           hp_name=$(sweep_hp_name "$run_tag" "$use_cer")
           hp_path="$MODELS_DIR/$hp_name"
 
@@ -158,8 +164,9 @@ for updates in $UPDATES_LIST; do
       done
     done
   done
-  # keep only the first budget_note line per rung
-  budget_note=$(printf "$budget_note" | awk '!seen[$0]++' | tr '\n' '\n')
+ done
+ # keep only the first budget_note line per rung
+ budget_note=$(printf "$budget_note" | awk '!seen[$0]++' | tr '\n' '\n')
 done
 
 if [ "$n_missing_toml" -gt 0 ]; then

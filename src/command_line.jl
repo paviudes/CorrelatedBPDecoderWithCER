@@ -283,6 +283,7 @@ function parse_hyper_parameters(hyperparams_file::String=""; prefix::String="./.
     """
     default_hyperparams::Dict{String, Any} = Dict(
         "retrain" => false, # Whether to retrain the model even if trained weights are available.
+        "prior_llr_clip" => 0.0f0, # Cap on |initial LLR| (0 = disabled). Separates the CER prior's INFORMATION from its MAGNITUDE: CER rates give LLR ~ 5.4 (tanh' ~ 0.018) vs the no-CER fallback's 2.2 (tanh' ~ 0.36), a ~20x weaker gradient through the message nonlinearity. Clip to ~2.5 to equalise conditioning between the arms.
         "use_CER" => true, # Whether to use correlated-error-rate (CER) priors. If false, the correlated_weights/ folder is ignored: single-qubit priors default to p=0.1 and the correlation loss term is dropped. Outputs are tagged `_no_cer` so CER and no-CER runs don't overwrite each other.
         "learning_rate" => 1f-1, # Learning rate for training the Neural BP model using the ADAM optimizer
         "max_grad_norm" => 2f0, # Gradient clipping threshold
@@ -313,7 +314,7 @@ function parse_hyper_parameters(hyperparams_file::String=""; prefix::String="./.
         updated_hyperparams = merge(default_hyperparams, file_hyperparams)
 
         # --- Convert specific keys to Float32 ---
-        float32_keys = ["learning_rate", "max_grad_norm", "weight_decay", "adam_eps", "initial_conditions_scale"]
+        float32_keys = ["learning_rate", "max_grad_norm", "weight_decay", "adam_eps", "initial_conditions_scale", "prior_llr_clip"]
         for key in float32_keys
             if haskey(updated_hyperparams, key)
                 updated_hyperparams[key] = Float32(updated_hyperparams[key])

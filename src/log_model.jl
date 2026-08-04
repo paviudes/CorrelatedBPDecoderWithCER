@@ -1,4 +1,4 @@
-function load_base_BP_model(parity_check_matrix_file::String, logicals_file::String, n_hidden_layers::Int; correlation_strengths_file::String="", use_cer::Bool=true)
+function load_base_BP_model(parity_check_matrix_file::String, logicals_file::String, n_hidden_layers::Int; correlation_strengths_file::String="", use_cer::Bool=true, prior_llr_clip::Float32=0f0)
     """
     Load the base BP model from the parity check matrix and logical operators files.
     The parity check matrix file is a text file where each line corresponds to a row of the parity check matrix, and the entries are separated by spaces.
@@ -10,6 +10,23 @@ function load_base_BP_model(parity_check_matrix_file::String, logicals_file::Str
     (as if the correlated_weights/ folder did not exist): single-qubit priors
     default to p=0.1 and the connectivity/correlations are left empty, so the
     base's `is_correlated` is false and the correlation loss term is dropped.
+
+    `prior_llr_clip` (0 = disabled) caps |initial LLR| at that value. This exists
+    to separate the CER prior's INFORMATION from its MAGNITUDE, which the budget
+    ladder showed are confounded:
+
+      * CER single-qubit rates (p ~ 0.0044) give LLR ~ 5.41, so tanh(LLR/2) =
+        0.991 and tanh'(LLR/2) = 0.018.
+      * The no-CER fallback (p = 0.1) gives LLR = 2.20, tanh = 0.800,
+        tanh' = 0.360 — a ~20x LARGER gradient through the BP message
+        nonlinearity.
+
+    The CER arm therefore starts ~20x deeper into saturation and learns
+    correspondingly more slowly, which is exactly what was measured: the two arms
+    are indistinguishable at 250 gradient steps and the CER arm falls ~1.9x
+    behind by 4000. Clipping equalises that conditioning so the correlation
+    information can be judged on its own merits. Applied to BOTH arms for
+    symmetry — at any clip >= 2.2 it simply does not bind on the no-CER side.
     """
     # Load the parity check matrix
     parity_check_matrix = readdlm(parity_check_matrix_file, Int)
@@ -37,6 +54,14 @@ function load_base_BP_model(parity_check_matrix_file::String, logicals_file::Str
         correlation_strengths = Float32[]
         initial_llrs = convert.(Float32, log(9)) .* ones(Float32, n_bits) # Initial LLRs corresponding to p=0.1
     end
+
+    # Cap the prior magnitude (see the docstring). Sign-preserving, though these
+    # LLRs are positive for any p < 0.5. `prior_llr_clip <= 0` disables it, which
+    # is the default and reproduces every earlier run bit-for-bit.
+    if prior_llr_clip > 0f0
+        initial_llrs = clamp.(initial_llrs, -prior_llr_clip, prior_llr_clip)
+    end
+
     # Construct the NeuralBPBase model
     base = NeuralBPBase(
         parity_check_matrix,

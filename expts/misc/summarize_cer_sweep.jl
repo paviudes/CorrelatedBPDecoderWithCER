@@ -42,7 +42,11 @@ using Statistics
 
 # Matches both the sweep results and the baselines:
 #   simulation_results_test_p_<tp>_s_<ts>_nlayers_<L>_epochs_<E>_trained_using_train_p_<rp>_s_<rs>[_no_cer][_a4<A>_a3<B>].csv
-const RESULT_REGEX = r"^simulation_results_test_p_([0-9.]+)_s_(\d+)_nlayers_(\d+)_epochs_(\d+)_trained_using_train_p_([0-9.]+)_s_(\d+)(_no_cer)?(?:(?:_u(\d+))?_a4([0-9p]+)_a3([0-9p]+)(?:_r(\d+))?)?\.csv$"
+# Group 8 captures the WHOLE run_tag verbatim (e.g. "_u400_a40p1_a30p5_r7"). That
+# is what lets a result be joined back to its row in models/directory.csv, since
+# the registry is keyed on the hyperparameters filename, which is built from the
+# run_tag: hyperparams_sweep[_nocer]<run_tag>.toml
+const RESULT_REGEX = r"^simulation_results_test_p_([0-9.]+)_s_(\d+)_nlayers_(\d+)_epochs_(\d+)_trained_using_train_p_([0-9.]+)_s_(\d+)(_no_cer)?((?:_u(\d+))?(?:_c([0-9p]+))?_a4([0-9p]+)_a3([0-9p]+)(?:_r(\d+))?)?\.csv$"
 
 function untag_value(tag::AbstractString)::Float64
     """
@@ -64,11 +68,16 @@ function parse_result_filename(filename::String)
     m = match(RESULT_REGEX, filename)
     m === nothing && return nothing
 
-    has_tags = m.captures[9] !== nothing
+    has_tags = m.captures[11] !== nothing
     n_epochs = parse(Int, m.captures[4])
+    use_cer  = m.captures[7] === nothing
+    run_tag  = m.captures[8] === nothing ? "" : String(m.captures[8])
     # `_u<N>` is omitted for single-rung sweeps; fall back to NaN so those runs
     # still aggregate (they simply have one budget).
-    updates = m.captures[8] === nothing ? NaN : parse(Float64, m.captures[8])
+    updates = m.captures[9] === nothing ? NaN : parse(Float64, m.captures[9])
+    # Reconstruct the registry key. Mirrors sweep_hp_name() in _sweep_common.sh.
+    hyperparams_file = isempty(run_tag) ? "" :
+        "hyperparams_sweep" * (use_cer ? "" : "_nocer") * run_tag * ".toml"
     return (
         filename       = filename,
         test_p         = parse(Float64, m.captures[1]),
@@ -77,14 +86,109 @@ function parse_result_filename(filename::String)
         n_epochs       = n_epochs,
         train_p        = parse(Float64, m.captures[5]),
         train_seed     = parse(Int, m.captures[6]),
-        use_cer        = m.captures[7] === nothing,
+        use_cer        = use_cer,
         is_sweep       = has_tags,
+        run_tag        = run_tag,
+        hyperparams_file = hyperparams_file,
         updates_per_epoch = updates,
         gradient_steps = isnan(updates) ? NaN : updates * n_epochs,
-        alpha4         = has_tags ? untag_value(m.captures[9]) : NaN,
-        alpha3         = has_tags ? untag_value(m.captures[10]) : NaN,
-        repeat_index   = m.captures[11] === nothing ? 1 : parse(Int, m.captures[11]),
+        prior_llr_clip = m.captures[10] === nothing ? 0.0 : untag_value(m.captures[10]),
+        alpha4         = has_tags ? untag_value(m.captures[11]) : NaN,
+        alpha3         = has_tags ? untag_value(m.captures[12]) : NaN,
+        repeat_index   = m.captures[13] === nothing ? 1 : parse(Int, m.captures[13]),
     )
+end
+
+function read_run_directory(models_dir::String)::DataFrame
+    """
+    Load models/directory.csv — the registry written by sweep_train.sh recording,
+    for every run_tag, the FULL hyperparameter set that produced it.
+
+    Everything is read as String: the annealing schedules are comma-containing
+    quoted fields ("2e0,5e0,0.7,down") and there is nothing to gain from coercing
+    the numeric ones here. Returns an empty DataFrame (with a warning) if the
+    registry is absent, so the rest of the summary still works without it.
+    """
+    path = joinpath(models_dir, "directory.csv")
+    if !isfile(path)
+        @warn "no run directory at $(path) — results will not carry their hyperparameters."
+        return DataFrame()
+    end
+    return CSV.read(path, DataFrame; types = String)
+end
+
+function attach_directory_metadata(results::DataFrame, registry::DataFrame)::DataFrame
+    """
+    Left-join every result row to its registry entry on `hyperparams_file`, which
+    is the registry's natural key (it distinguishes the CER and no-CER arms that
+    share a run_tag). Registry columns already present in `results` — the ones the
+    filename itself encodes, e.g. use_CER, alpha4, n_epochs — are skipped so the
+    filename stays the single source of truth for those and any disagreement is
+    caught by `check_directory_consistency` rather than silently overwritten.
+
+    Unmatched rows (baselines from earlier campaigns, which have no run_tag) get
+    empty strings rather than being dropped.
+    """
+    joined = copy(results)
+    if nrow(registry) == 0
+        return joined
+    end
+
+    lookup = Dict{String, Int}()
+    for i in 1:nrow(registry)
+        lookup[registry[i, :hyperparams_file]] = i
+    end
+
+    row_index = Vector{Int}(undef, nrow(joined))
+    for r in 1:nrow(joined)
+        row_index[r] = get(lookup, joined[r, :hyperparams_file], 0)
+    end
+
+    for column in names(registry)
+        column in names(joined) && continue
+        joined[!, column] = [row_index[r] == 0 ? "" : registry[row_index[r], column]
+                             for r in 1:nrow(joined)]
+    end
+
+    n_matched = count(!=(0), row_index)
+    n_sweep = count(joined.is_sweep)
+    println("  registry join: $(n_matched)/$(n_sweep) sweep result(s) matched a directory.csv entry")
+    if n_matched < n_sweep
+        unmatched = unique(joined[(joined.is_sweep) .& (row_index .== 0), :hyperparams_file])
+        @warn "some results have no registry entry" missing_keys=first(unmatched, 5)
+    end
+    return joined
+end
+
+function check_directory_consistency(joined::DataFrame)
+    """
+    Cross-check the two independent sources of truth: what the FILENAME says a run
+    was, and what directory.csv says it was configured as. They are produced by
+    different code paths (src/train.jl builds the filename; _sweep_common.sh writes
+    the registry), so agreement is real evidence the join is sound — and a
+    mismatch would mean a result is being attributed to the wrong settings.
+    """
+    ("alpha4_correlation_weight" in names(joined)) || return nothing
+    checked = joined[joined.is_sweep .& (joined.alpha4_correlation_weight .!= ""), :]
+    nrow(checked) == 0 && return nothing
+
+    mismatches = 0
+    for row in eachrow(checked)
+        registry_alpha4 = tryparse(Float64, row.alpha4_correlation_weight)
+        registry_alpha3 = tryparse(Float64, row.alpha3_sparsity_importance)
+        registry_updates = tryparse(Float64, row.n_gradient_updates_per_epoch)
+        registry_alpha4 === nothing && continue
+        agrees = isapprox(registry_alpha4, row.alpha4; atol = 1e-9) &&
+                 isapprox(registry_alpha3, row.alpha3; atol = 1e-9) &&
+                 (isnan(row.updates_per_epoch) || isapprox(registry_updates, row.updates_per_epoch; atol = 1e-9))
+        agrees || (mismatches += 1)
+    end
+    if mismatches == 0
+        println("  consistency: filename and directory.csv agree on (alpha4, alpha3, updates) for all $(nrow(checked)) row(s)")
+    else
+        @warn "filename and directory.csv DISAGREE on $(mismatches) row(s) — results may be mis-attributed"
+    end
+    return nothing
 end
 
 function read_results_dir(results_dir::String)::DataFrame
@@ -485,6 +589,12 @@ if abspath(PROGRAM_FILE) == @__FILE__
     println("  parsed $(nrow(results)) result file(s): $(n_sweep) sweep point(s), " *
             "$(nrow(results) - n_sweep) baseline(s)")
 
+    # Join every result to the full hyperparameter set that produced it.
+    models_dir = joinpath(work_dir, codename, "models")
+    registry = read_run_directory(models_dir)
+    results = attach_directory_metadata(results, registry)
+    check_directory_consistency(results)
+
     sweep = build_comparison_table(results)
     print_pivot_tables(sweep, results)
 
@@ -494,7 +604,8 @@ if abspath(PROGRAM_FILE) == @__FILE__
 
     output_csv = joinpath(results_dir, "cer_sweep_summary.csv")
     CSV.write(output_csv, sweep)
-    println("  per-run CSV -> $(output_csv)")
+    println("  per-run CSV -> $(output_csv)   ($(ncol(sweep)) columns, incl. every " *
+            "hyperparameter from directory.csv)")
 
     arms_csv = joinpath(results_dir, "cer_sweep_arms.csv")
     CSV.write(arms_csv, aggregated)
