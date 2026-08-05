@@ -32,19 +32,30 @@ N_HIDDEN_LAYERS=100
 TRAIN_FILE="train_p_0.0005_s_1.txt"
 TEST_FILE="test_p_0.0005_s_1.txt"
 
-# Source CER file (lives in <workdir>/<codename>/correlated_weights/).
-CER_FILE="correlated_weights_p_0_0005_s_1.txt"
+# CER file to use, as supplied. Lives in
+# <workdir>/<codename>/correlated_weights/. This script does NOT modify it.
+CER_FILE="correlated_weights_p_0.0005_s_1_priors_only_normalized.txt"
 
 # Base hyperparameters TOML to clone (in <workdir>/<codename>/models/).
 BASE_TOML="hyperparams_epochs_20.toml"
 
 # Tag for this arm. Appended to the weights JSON and the results CSV, so this
-# run cannot collide with the baseline. Keep the leading underscore.
-RUN_TAG="_priors_only"
+# run cannot collide with the other arms. Keep the leading underscore.
+RUN_TAG="_normalized"
 
 # Set to "1" to use the GPU for the testing stage. Training is run on CPU
 # first (matching the current workflow), then the GPU is enabled for testing.
 USE_GPU_FOR_TEST="1"
+
+# Arms to report side by side at the end, as "tag:label". The first entry is
+# the baseline for the ratio and z columns. Results CSVs are located by
+# swapping the tag into the standard results filename; arms whose CSV is
+# absent are reported as missing rather than failing the run.
+COMPARE_ARMS=(
+    "_REF:no-CER"
+    "_priors_only:CER priors"
+    "_normalized:normalized priors"
+)
 
 # ============================================================================
 # PATHS
@@ -60,17 +71,33 @@ MODELS_DIR="${WORKDIR}/${CODENAME}/models"
 RESULTS_DIR="${WORKDIR}/${CODENAME}/results"
 
 CER_SRC="${CER_DIR}/${CER_FILE}"
-CER_PRIORS_ONLY_NAME="${CER_FILE%.txt}${RUN_TAG}.txt"
-CER_PRIORS_ONLY="${CER_DIR}/${CER_PRIORS_ONLY_NAME}"
 
-TOML_SRC="${MODELS_DIR}/${BASE_TOML}"
-TOML_NAME="${BASE_TOML%.toml}${RUN_TAG}.toml"
-TOML_RUN="${MODELS_DIR}/${TOML_NAME}"
+RESULTS_STEM="simulation_results_${TEST_STEM}_nlayers_${N_HIDDEN_LAYERS}_epochs_${EPOCHS}_trained_using_${TRAIN_STEM}"
 
-TRAIN_STEM="${TRAIN_FILE%.txt}"
-TEST_STEM="${TEST_FILE%.txt}"
-EPOCHS="$(sed -n 's/.*epochs_\([0-9]\+\).*/\1/p' <<<"${BASE_TOML}")"
-RESULTS_CSV="${RESULTS_DIR}/simulation_results_${TEST_STEM}_nlayers_${N_HIDDEN_LAYERS}_epochs_${EPOCHS}_trained_using_${TRAIN_STEM}${RUN_TAG}.csv"
+# Results CSV for a given run tag.
+results_csv_for() { printf '%s/%s%s.csv' "${RESULTS_DIR}" "${RESULTS_STEM}" "$1"; }
+
+RESULTS_CSV="$(results_csv_for "${RUN_TAG}")"
+
+# Extract "<num_failures> <num_samples_per_error_rate>" from a results CSV.
+# Columns are located by header name, and CRLF line endings are tolerated.
+read_counts() {
+    awk -F',' '
+        NR == 1 {
+            for (i = 1; i <= NF; i++) {
+                h = $i; gsub(/^[ \t"]+|[ \t"\r]+$/, "", h); col[h] = i
+            }
+            if (!("num_failures" in col) || !("num_samples_per_error_rate" in col)) exit 1
+            next
+        }
+        NF > 1 {
+            f = $(col["num_failures"]);               gsub(/[ \t"\r]/, "", f)
+            n = $(col["num_samples_per_error_rate"]); gsub(/[ \t"\r]/, "", n)
+            print f, n
+            exit
+        }
+    ' "$1"
+}
 
 banner() { printf '\n=== %s ===\n' "$1"; }
 
@@ -112,26 +139,42 @@ echo "run tag        : ${RUN_TAG}"
 echo "expected CSV   : ${RESULTS_CSV}"
 
 # ============================================================================
-# BLOCK 1 -- build the priors-only CER file
+# BLOCK 1 -- inspect the supplied CER file
 # ============================================================================
 
-banner "Block 1: stripping two-qubit entries from the CER file"
+banner "Block 1: inspecting ${CER_FILE}"
 
-# Two-qubit lines are exactly those beginning with "(". Everything else (the
-# `index : value` single-qubit lines) is kept.
-grep -v '^[[:space:]]*(' "${CER_SRC}" >"${CER_PRIORS_ONLY}"
-
-n_singles_src=$(grep -cv '^[[:space:]]*(' "${CER_SRC}" || true)
-n_pairs_src=$(grep -c '^[[:space:]]*(' "${CER_SRC}" || true)
-n_singles_out=$(wc -l <"${CER_PRIORS_ONLY}")
-
-echo "source  : ${n_singles_src} single-qubit lines, ${n_pairs_src} pair lines"
-echo "written : ${CER_PRIORS_ONLY_NAME} (${n_singles_out} single-qubit lines, 0 pair lines)"
-
-if [[ "${n_singles_out}" -ne "${n_singles_src}" ]]; then
-    echo "ERROR: single-qubit line count changed while stripping pairs" >&2
-    exit 1
-fi
+# The file is used exactly as supplied; nothing is modified. This block only
+# reports what the decoder will be initialised with, so a wrong or stale file
+# is obvious before an hour of training is spent on it.
+awk '
+    function is_pair(l) { return l ~ /^[[:space:]]*\(/ }
+    function llr(p)     { return log((1 - p) / p) }
+    /^[[:space:]]*$/ { next }
+    {
+        if (is_pair($0)) { n_pairs++; next }
+        i = index($0, ":"); if (i == 0) next
+        v = substr($0, i + 1) + 0
+        if (v <= 0 || v >= 1) {
+            printf "ERROR: rate out of range on line %d: %s\n", FNR, $0 > "/dev/stderr"
+            bad = 1; exit
+        }
+        n++; sum += v
+        l = llr(v); sum_l += l
+        if (n == 1) { lo = hi = l }
+        if (l < lo) lo = l
+        if (l > hi) hi = l
+    }
+    END {
+        if (bad) exit 1
+        if (n == 0) { print "ERROR: no single-qubit rates found" > "/dev/stderr"; exit 1 }
+        printf "priors  : %d qubits, mean rate %.6f\n", n, sum / n
+        printf "          LLR mean %.3f  [%.3f, %.3f]  spread %.3f\n", sum_l / n, lo, hi, hi - lo
+        printf "          (preset p=0.1 corresponds to LLR %.3f)\n", log(0.9 / 0.1)
+        printf "pairs   : %d two-qubit entries%s\n", n_pairs + 0, \
+               (n_pairs > 0 ? "  (correlation term ACTIVE)" : "  (correlation term inactive)")
+    }
+' "${CER_SRC}"
 
 # ============================================================================
 # BLOCK 2 -- clone and configure the hyperparameters TOML
@@ -158,7 +201,7 @@ julia --project="./../" neural_bp_experiments.jl \
     --codename "${CODENAME}" \
     --n_hidden_layers "${N_HIDDEN_LAYERS}" \
     --hyperparams "${TOML_NAME}" \
-    --correlation_strengths_file "${CER_PRIORS_ONLY_NAME}" \
+    --correlation_strengths_file "${CER_FILE}" \
     --quiet false \
     --train "${TRAIN_FILE}"
 
@@ -185,7 +228,7 @@ julia --project="./../" neural_bp_experiments.jl \
     --codename "${CODENAME}" \
     --n_hidden_layers "${N_HIDDEN_LAYERS}" \
     --hyperparams "${TOML_NAME}" \
-    --correlation_strengths_file "${CER_PRIORS_ONLY_NAME}" \
+    --correlation_strengths_file "${CER_FILE}" \
     --quiet false \
     --train "${TRAIN_FILE}" \
     --test "${TEST_FILE}"
@@ -194,7 +237,7 @@ julia --project="./../" neural_bp_experiments.jl \
 # BLOCK 5 -- report
 # ============================================================================
 
-banner "Block 5: result"
+banner "Block 5: comparison"
 
 if [[ ! -f "${RESULTS_CSV}" ]]; then
     echo "ERROR: expected results file not found:" >&2
@@ -204,25 +247,47 @@ if [[ ! -f "${RESULTS_CSV}" ]]; then
     exit 1
 fi
 
-awk -F',' '
-    NR == 1 {
-        for (i = 1; i <= NF; i++) {
-            h = $i
-            gsub(/^[ \t"]+|[ \t"\r]+$/, "", h)
-            col[h] = i
-        }
-        if (!("num_failures" in col) || !("num_samples_per_error_rate" in col)) {
-            print "ERROR: required columns not found in CSV header" > "/dev/stderr"
-            exit 1
-        }
-        next
-    }
-    NF > 1 {
-        f = $(col["num_failures"]);           gsub(/[ \t"\r]/, "", f)
-        n = $(col["num_samples_per_error_rate"]); gsub(/[ \t"\r]/, "", n)
-        print f " failures out of " n
-    }
-' "${RESULTS_CSV}"
+# Collect every arm, then print one table. The first arm with data is the
+# baseline for the ratio and z columns.
+rows=""
+base_f=""; base_n=""
+
+for arm in "${COMPARE_ARMS[@]}"; do
+    tag="${arm%%:*}"
+    label="${arm#*:}"
+    csv="$(results_csv_for "${tag}")"
+
+    if [[ ! -f "${csv}" ]]; then
+        rows+="${label}|-|-|missing"$'\n'
+        continue
+    fi
+
+    read -r f n < <(read_counts "${csv}") || true
+    if [[ -z "${f:-}" ]]; then
+        rows+="${label}|-|-|unparseable"$'\n'
+        continue
+    fi
+
+    if [[ -z "${base_f}" ]]; then
+        base_f="${f}"; base_n="${n}"
+        rows+="${label}|${f}|${n}|baseline"$'\n'
+    else
+        stat=$(awk -v f1="${f}" -v n1="${n}" -v f2="${base_f}" -v n2="${base_n}" '
+            BEGIN {
+                p1 = f1 / n1; p2 = f2 / n2
+                pp = (f1 + f2) / (n1 + n2)
+                se = sqrt(pp * (1 - pp) * (1 / n1 + 1 / n2))
+                z  = (se > 0) ? (p1 - p2) / se : 0
+                printf "%.2fx  z=%+.2f  %s", p1 / p2, z, \
+                       (z > 2 ? "WORSE" : (z < -2 ? "BETTER" : "n.s."))
+            }')
+        rows+="${label}|${f}|${n}|${stat}"$'\n'
+    fi
+done
+
+printf '\n  %-22s %10s %12s   %s\n' "arm" "failures" "samples" "vs baseline"
+printf '  %s\n' "----------------------------------------------------------------------"
+printf '%s' "${rows}" | awk -F'|' '{ printf "  %-22s %10s %12s   %s\n", $1, $2, $3, $4 }'
 
 echo
 echo "CSV: ${RESULTS_CSV}"
