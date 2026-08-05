@@ -264,10 +264,32 @@ export JULIA_HEAP_SIZE_HINT=${HEAP_HINT:-4G}
 
 cd \$SLURM_SUBMIT_DIR
 
-# Precompile ONCE, ON THE GPU NODE, before fanning out. Doing it here rather
-# than on a login node is also what lets CUDA_Runtime_jll see a real driver —
-# precompiling CUDA.jl without one bakes in "no CUDA runtime found".
-julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
+# Precompile ON THE GPU NODE, before fanning out. Unlike the train phase this
+# genuinely cannot move to a login node: CUDA_Runtime_jll must see a real driver
+# at precompile time, or "no CUDA runtime found" gets baked into the cache.
+#
+# OFFLINE: compute nodes have no internet, so an instantiate() that decides it
+# needs the package server blocks on TCP connects until the kernel gives up —
+# minutes of state-`I`, zero-CPU stall per attempt. Offline mode makes that an
+# immediate error instead. The depot must therefore already be warm; run
+# `bash misc/precompile_depot.sh` on a login node first.
+export JULIA_PKG_OFFLINE=true
+
+# STAGGER: every array task shares one Lustre depot and would otherwise hit the
+# precompile pidfile lock simultaneously. The holder's PID is on another node, so
+# a waiter cannot validate its staleness and just sits there. 90 s apart is more
+# than enough to serialise the CUDA-side cache writes cleanly.
+if [ "\${SLURM_ARRAY_TASK_ID:-0}" -gt 0 ]; then
+    STAGGER=\$(( SLURM_ARRAY_TASK_ID * 90 ))
+    echo "[depot] task \$SLURM_ARRAY_TASK_ID staggering \${STAGGER}s to avoid the shared-depot lock"
+    sleep \$STAGGER
+fi
+
+if ! timeout 1800 julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'; then
+    echo "ERROR: precompilation failed or timed out after 30 min." >&2
+    echo "       Warm the depot on a LOGIN node first: bash misc/precompile_depot.sh" >&2
+    exit 1
+fi
 export JULIA_PKG_PRECOMPILE_AUTO=0
 
 # Report what CUDA sees, so a silent CPU fallback is visible in the log instead

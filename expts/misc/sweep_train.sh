@@ -355,9 +355,27 @@ export JULIA_HEAP_SIZE_HINT=${HEAP_HINT:-2G}
 
 cd \$SLURM_SUBMIT_DIR
 
-# Precompile ONCE before fanning out so the workers don't race on the depot lock.
-julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
+# NO Pkg.instantiate()/Pkg.precompile() HERE. Warm the depot on a LOGIN node with
+#     bash misc/precompile_depot.sh
+# before submitting. In-job precompilation has two ways to hang for the whole
+# walltime, and BOTH are active once the array has more than one task:
+#   - compute nodes have no internet, so instantiate() blocks on TCP connects;
+#   - all \$N_TASKS tasks share one Lustre depot and serialise on a pidfile lock
+#     whose holder is on another node, so its staleness cannot be validated.
+# Offline mode turns the first into an immediate error instead of a stall.
+export JULIA_PKG_OFFLINE=true
 export JULIA_PKG_PRECOMPILE_AUTO=0
+
+# Verify instead of build: this is exactly what a worker does on startup, so if
+# it succeeds the workers will too. Fails in seconds, not hours.
+echo "[depot] verifying (offline, no precompilation)..."
+if ! timeout 600 julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using CorrelatedBPDecoderWithCER; println("[depot] load OK")'; then
+    echo "ERROR: the package could not be loaded from \$JULIA_DEPOT_PATH." >&2
+    echo "       The depot is stale (did src/ change?) or incomplete." >&2
+    echo "       Fix it ON A LOGIN NODE, then resubmit:" >&2
+    echo "           cd \$SLURM_SUBMIT_DIR && bash misc/precompile_depot.sh" >&2
+    exit 1
+fi
 
 LOCAL_WORK_DIR="\$SLURM_TMPDIR/$CODENAME"
 echo "staging $CODENAME -> \$SLURM_TMPDIR"
@@ -462,6 +480,11 @@ printf  "                   pool       %3dG   headroom %dG (%.1fx)\n" \
 printf  "                   node       %3dG   (Narval standard, usable)\n" "$((NODE_MB/1024))"
 echo "                 previous run: 42 workers x 5.4G = 227G in a 226G pool -> 1% CPU"
 echo "  heap        -> --heap-size-hint=$HEAP_HINT per worker (the only real per-process cap)"
+echo
+echo "FIRST, on a LOGIN node (only needed after src/ changes, but always safe):"
+echo "    bash misc/precompile_depot.sh"
+echo "  The job no longer precompiles: compute nodes are offline and all $N_TASKS task(s)"
+echo "  share one Lustre depot, so in-job precompilation can stall for the walltime."
 echo
 echo "submit with:  sbatch $SLURM"
 echo
