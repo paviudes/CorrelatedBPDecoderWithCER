@@ -1,4 +1,11 @@
-function load_base_BP_model(parity_check_matrix_file::String, logicals_file::String, n_hidden_layers::Int; correlation_strengths_file::String="", use_cer::Bool=true, prior_llr_clip::Float32=0f0)
+function load_base_BP_model(
+    parity_check_matrix_file::String,
+    logicals_file::String,
+    n_hidden_layers::Int;
+    correlation_strengths_file::String="",
+    use_cer::Bool=true,
+    prior_llr_clip::Float32=0f0,
+)
     """
     Load the base BP model from the parity check matrix and logical operators files.
     The parity check matrix file is a text file where each line corresponds to a row of the parity check matrix, and the entries are separated by spaces.
