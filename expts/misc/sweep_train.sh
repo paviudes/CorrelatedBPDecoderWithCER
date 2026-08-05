@@ -98,15 +98,54 @@ UPDATES_LIST="400"             # TOML key: n_gradient_updates_per_epoch (400 x 1
 CLIP_LIST="1.5 2.5 3.5"
 NLAYERS=100
 SEED=1
-JOBS=64                        # parallel slots == cores per array task (one Narval node)
-MAX_NODES=4                    # cap on the SLURM array size
+JOBS=21                        # parallel slots == cores per array task. 42 points
+                               # over 21 slots => 2 array tasks (2 nodes). Halving
+                               # the per-node concurrency is what pays for the
+                               # larger HEAP_HINT below; see the note there.
+TARGET_NODES=2                 # if set, JOBS is RECOMPUTED as ceil(n_points/NODES)
+                               # once the grid size is known, so `--nodes 2` does
+                               # the right thing whatever the grid turns out to be.
+MAX_NODES=4                    # hard cap on the SLURM array size
 WALLTIME="8:00:00"             # set by the SLOWEST rung: u=400 is 200,000 total
                                # samples, i.e. the same sample count as the
                                # original 20-epoch runs (~6h). Slack so a timeout
                                # doesn't cost the top rung.
-MEM_PER_CPU="3G"               # 64 x 3G = 192G. A Narval standard node has 249G
-                               # usable, so 4G/core (256G) would only fit on the
-                               # scarce 498G nodes and sit in the queue.
+MEM_PER_CPU="6G"               # NOTE: --mem-per-cpu is a POOLED cgroup limit for
+                               # the whole array task, = MEM_PER_CPU x CPUS_PER_TASK,
+                               # shared by every worker in it. It is NOT a per-process
+                               # cap: with 21 slots this is a 126G pool, and one
+                               # worker may use 20G if its neighbours use less.
+                               # 21 x 6G = 126G of a 249G node.
+# --------------------------------------------------------------- heap hint ---
+# THE SINGLE MOST IMPORTANT SETTING WHEN RUNNING MANY JULIAS ON ONE NODE.
+#
+# Julia's GC sizes its heap against TOTAL PHYSICAL MEMORY, not against this
+# process's share of it. On a 251 GB node every one of the N concurrent workers
+# independently concludes it has room to spare and simply never runs a full
+# collection, so each one's RSS parks at its allocation high-water mark instead
+# of at its live set. Per training run that is:
+#
+#     live set        ~108 MB   (72 x 1e6 Bool errors + 36 x 1e6 Bool syndromes)
+#     transient       ~1.4 GB   (144 MB file string -> 576 MB Int64 from readdlm
+#                                -> 288 MB H*E Int64 -> 288 MB mod copy)
+#     observed RSS     ~5.4 GB
+#
+# 42 x 5.4 GB = 227 GB on a 251 GB node => ~1.7 GB free, the page cache
+# collapses, and the mmap'd Julia depot (on Lustre) has to be refaulted over the
+# network on every call. The result is 0% CPU, D-state everywhere, ~20% iowait.
+#
+# --heap-size-hint tells the GC to collect at this size instead.
+#
+# This is the ONE knob that actually bounds per-process memory; --mem-per-cpu only
+# sets a pooled ceiling that the job dies at, it does not make the GC behave.
+#
+# Set GENEROUSLY, not tightly. A hint near the live set means constant full
+# collections and lost CPU; a hint far above it means the GC almost never runs.
+# At 21 workers/node there is room to be generous:
+#     4G hint -> RSS ~4.6 GB x 21 = ~97 GB of the 126 GB pool
+# versus 2G at 42 workers/node, which would have been ~109 GB of the same pool
+# but with twice the collection frequency. Same memory, fewer GC pauses.
+HEAP_HINT="4G"                 # per-worker GC target; "" disables the flag
 ACCOUNT="def-jemerson"
 EMAIL="pavithran.sridhar@gmail.com"
 JULIA_MODULE="julia/1.12.5"
@@ -127,10 +166,12 @@ while [ "$#" -gt 0 ]; do
         --clip|--prior_llr_clip) CLIP_LIST="$2"; shift 2;;
         --nlayers)    NLAYERS="$2";        shift 2;;
         --seed)       SEED="$2";           shift 2;;
-        --jobs)       JOBS="$2";           shift 2;;
+        --jobs)       JOBS="$2"; TARGET_NODES=""; shift 2;;
+        --nodes)      TARGET_NODES="$2";   shift 2;;
         --max_nodes)  MAX_NODES="$2";      shift 2;;
         --walltime)   WALLTIME="$2";       shift 2;;
         --mem)        MEM_PER_CPU="$2";    shift 2;;
+        --heap_hint)  HEAP_HINT="$2";      shift 2;;
         --account)    ACCOUNT="$2";        shift 2;;
         --email)      EMAIL="$2";          shift 2;;
         -h|--help)    usage; exit 0;;
@@ -146,6 +187,10 @@ REGISTRY="$MODELS_DIR/directory.csv"
 [ -d "$MODELS_DIR" ]   || { echo "no models dir: $MODELS_DIR (run this from expts/)" >&2; exit 1; }
 [ -f "$BASE_HP_PATH" ] || { echo "no base hyperparams: $BASE_HP_PATH" >&2; exit 1; }
 mkdir -p "$CLUSTER_DIR"
+
+# Flag fragment spliced into every worker's julia invocation (empty => omitted).
+HEAP_FLAG=""
+[ -n "$HEAP_HINT" ] && HEAP_FLAG=" --heap-size-hint=$HEAP_HINT"
 
 TS=$(date +%Y-%m-%d_%H-%M-%S)
 COMMANDS="$CLUSTER_DIR/sweep_commands_train_${TS}.txt"
@@ -186,7 +231,7 @@ for updates in $UPDATES_LIST; do
               "$NLAYERS" "$CODENAME" "$BASE_HP" train "$TS" "$clip"
 
           for p in $PVALS; do
-            echo "julia --project=\"./../\" neural_bp_experiments.jl --workdir \$WORKDIR_RUNTIME --codename $CODENAME --n_hidden_layers $NLAYERS --hyperparams $hp_name --correlation_strengths_file correlated_weights_p_${p}_s_${SEED}.txt --quiet true --train train_p_${p}_s_${SEED}.txt" >> "$COMMANDS"
+            echo "julia --project=\"./../\"${HEAP_FLAG} neural_bp_experiments.jl --workdir \$WORKDIR_RUNTIME --codename $CODENAME --n_hidden_layers $NLAYERS --hyperparams $hp_name --correlation_strengths_file correlated_weights_p_${p}_s_${SEED}.txt --quiet true --train train_p_${p}_s_${SEED}.txt" >> "$COMMANDS"
             n_points=$((n_points + 1))
           done
         done
@@ -199,6 +244,15 @@ done
 # --------------------------------------------------------------- job array ---
 # Same split as submission/slurm.jl: each array task owns a contiguous chunk of
 # the commands file and runs it with GNU parallel across its own cores.
+# --nodes N: now that the grid size is known, size each task to n_points/N so the
+# array comes out at exactly N tasks. Done here rather than at flag-parse time
+# because n_points depends on the whole grid.
+if [ -n "$TARGET_NODES" ]; then
+    [ "$TARGET_NODES" -ge 1 ] || { echo "--nodes must be >= 1" >&2; exit 2; }
+    JOBS=$(( (n_points + TARGET_NODES - 1) / TARGET_NODES ))
+    [ "$JOBS" -lt 1 ] && JOBS=1
+fi
+
 N_TASKS=$(( (n_points + JOBS - 1) / JOBS ))
 [ "$N_TASKS" -lt 1 ] && N_TASKS=1
 [ "$N_TASKS" -gt "$MAX_NODES" ] && N_TASKS=$MAX_NODES
@@ -209,6 +263,42 @@ CHUNK=$(( (n_points + N_TASKS - 1) / N_TASKS ))
 CPUS_PER_TASK=$JOBS
 [ "$CHUNK" -lt "$CPUS_PER_TASK" ] && CPUS_PER_TASK=$CHUNK
 SLOTS=$CPUS_PER_TASK
+
+# ------------------------------------------------------- memory preflight ---
+# Everything in MB so "6G" and "5500M" both work.
+to_mb() {
+    case "$1" in
+        *G|*g) echo $(( ${1%[Gg]} * 1024 )) ;;
+        *M|*m) echo $(( ${1%[Mm]} )) ;;
+        *)     echo $(( $1 * 1024 )) ;;   # bare number: assume GB
+    esac
+}
+MEM_MB=$(to_mb "$MEM_PER_CPU")
+POOL_MB=$(( MEM_MB * CPUS_PER_TASK ))
+NODE_MB=$(( 249 * 1024 ))                 # Narval standard node, usable
+HINT_MB=0
+[ -n "$HEAP_HINT" ] && HINT_MB=$(to_mb "$HEAP_HINT")
+# Julia runtime + pkgimages sit OUTSIDE the GC heap the hint governs (~600 MB,
+# Enzyme dominating), so predicted RSS per worker is hint + that.
+RSS_MB=$(( HINT_MB + 600 ))
+PRED_MB=$(( RSS_MB * SLOTS ))
+
+if [ "$POOL_MB" -gt "$NODE_MB" ]; then
+    echo "ERROR: ${CPUS_PER_TASK} cpu x ${MEM_PER_CPU} = $((POOL_MB/1024))G exceeds a Narval node's 249G." >&2
+    echo "       Raise --nodes (fewer workers per node) or lower --mem." >&2
+    exit 1
+fi
+if [ "$HINT_MB" -gt 0 ] && [ "$PRED_MB" -gt "$POOL_MB" ]; then
+    echo "ERROR: predicted RSS $((PRED_MB/1024))G (${SLOTS} workers x $((RSS_MB/1024))G) exceeds the" >&2
+    echo "       $((POOL_MB/1024))G cgroup pool. This is the configuration that just gave you 1% CPU." >&2
+    echo "       Lower --heap_hint, raise --mem, or raise --nodes." >&2
+    exit 1
+fi
+if [ "$HINT_MB" -eq 0 ]; then
+    echo "WARNING: no --heap_hint. Julia's GC will size against the node's 251G and" >&2
+    echo "         every worker will park at its high-water mark. This is exactly how" >&2
+    echo "         the previous run collapsed the page cache." >&2
+fi
 
 # ----------------------------------------------------------- SLURM script ---
 cat > "$SLURM" <<EOF
@@ -255,6 +345,14 @@ export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export JULIA_NUM_PRECOMPILE_TASKS=1
 
+# Belt and braces alongside the per-worker --heap-size-hint flag: Julia's GC
+# otherwise sizes its heap against the NODE's 251 GB, so $SLOTS concurrent
+# workers each balloon to their allocation high-water mark (~5.4 GB measured)
+# instead of their ~108 MB live set, exhaust the cgroup, collapse the page cache
+# and then refault the Lustre-hosted depot on every call. Symptom: 0% CPU,
+# D-state, high iowait.
+export JULIA_HEAP_SIZE_HINT=${HEAP_HINT:-2G}
+
 cd \$SLURM_SUBMIT_DIR
 
 # Precompile ONCE before fanning out so the workers don't race on the depot lock.
@@ -264,7 +362,10 @@ export JULIA_PKG_PRECOMPILE_AUTO=0
 LOCAL_WORK_DIR="\$SLURM_TMPDIR/$CODENAME"
 echo "staging $CODENAME -> \$SLURM_TMPDIR"
 STAGE_IN_START=\$(date +%s)
-tar -cf - -C "\$(dirname $WORKDIR/$CODENAME)" "\$(basename $WORKDIR/$CODENAME)" | tar -xf - -C "\$SLURM_TMPDIR"
+# The train phase never opens testing_data/ (no --test is emitted), and that
+# directory is ~2.7 GB of 144 MB files. Excluding it cuts the stage-in copy and,
+# more importantly, stops those files from competing for page cache.
+tar -cf - --exclude=testing_data -C "\$(dirname $WORKDIR/$CODENAME)" "\$(basename $WORKDIR/$CODENAME)" | tar -xf - -C "\$SLURM_TMPDIR"
 echo "[stage-in] done in \$(( \$(date +%s) - STAGE_IN_START ))s"
 
 # This array task's slice of the command list (1-based, inclusive).
@@ -287,8 +388,16 @@ stage_out() {
         [ -d "\$LOCAL_WORK_DIR/\$d" ] && DIRS+=("\$d")
     done
     if [ \${#DIRS[@]} -gt 0 ]; then
-        tar -cf - -C "\$LOCAL_WORK_DIR" "\${DIRS[@]}" | tar -xf - -C "$WORKDIR/$CODENAME"
-        echo "[stage-out] copied: \${DIRS[*]}"
+        # With a multi-task array every task holds an IDENTICAL staged-in copy of
+        # directory.csv and of all hyperparams_sweep*.toml. Both tasks finishing
+        # near the same moment would then untar the same files onto each other on
+        # the shared filesystem — a torn write on directory.csv would lose the
+        # run_tag -> hyperparameter mapping the whole analysis depends on.
+        # The generator owns those files and the training run never modifies them,
+        # so exclude them. Only the newly written weights JSONs need to come back.
+        tar -cf - --exclude=directory.csv --exclude='hyperparams_sweep*.toml' \\
+            -C "\$LOCAL_WORK_DIR" "\${DIRS[@]}" | tar -xf - -C "$WORKDIR/$CODENAME"
+        echo "[stage-out] copied: \${DIRS[*]} (registry + sweep TOMLs excluded: generator owns them)"
     else
         echo "[stage-out] nothing to copy."
     fi
@@ -296,6 +405,23 @@ stage_out() {
 term_handler() { stage_out; exit 0; }
 trap term_handler TERM
 trap stage_out EXIT
+
+# Memory watchdog. Samples every 5 min so a repeat of the thrash is visible in
+# the .out file without having to ssh to the node and run top. Healthy looks
+# like: total_rss well under the cgroup limit, and free memory NOT near zero.
+(
+  while true; do
+    # NOTE: ps UNIONS its selection flags, so \`-u \$USER -C julia\` would also
+    # count other users' julia processes. Filter on comm within our own list.
+    rss_kb=\$(ps -o rss=,comm= -u "\$USER" 2>/dev/null | awk '\$2=="julia"{s+=\$1; n++} END{print (s+0)" "(n+0)}')
+    nproc_julia=\${rss_kb#* }; rss_kb=\${rss_kb%% *}
+    read -r _ memfree _ < <(grep MemAvailable /proc/meminfo)
+    echo "[mem \$(date '+%T')] julia procs=\${nproc_julia}  total_rss=\$((rss_kb/1024/1024))G  node_avail=\$((memfree/1024/1024))G"
+    sleep 300
+  done
+) &
+MEM_WATCH_PID=\$!
+trap 'kill \$MEM_WATCH_PID 2>/dev/null; stage_out' EXIT
 
 # Background + wait so the TERM trap fires immediately; a FOREGROUND parallel
 # would defer it and the walltime SIGKILL would wipe \$SLURM_TMPDIR with every
@@ -326,7 +452,16 @@ echo "  registry    -> $REGISTRY"
 echo "  commands    -> $COMMANDS"
 echo "  slurm       -> $SLURM"
 echo "  array       -> ${N_TASKS} task(s) x up to ${CHUNK} command(s), ${JOBS} slots each"
-echo "  resources   -> ${CPUS_PER_TASK} CPUs/task x ${MEM_PER_CPU} = $((CPUS_PER_TASK * ${MEM_PER_CPU%G}))G/task, $WALLTIME, USE_GPU=0"
+echo "  resources   -> ${CPUS_PER_TASK} CPUs/task x ${MEM_PER_CPU} = $((POOL_MB/1024))G cgroup pool/task, $WALLTIME, USE_GPU=0"
+echo "  memory      -> pool is SHARED by all ${SLOTS} workers in the task, not per-process:"
+printf  "                   predicted  %3dG  (%d workers x %sG heap + 0.6G runtime)\n" \
+        "$((PRED_MB/1024))" "$SLOTS" "$((HINT_MB/1024))"
+printf  "                   pool       %3dG   headroom %dG (%.1fx)\n" \
+        "$((POOL_MB/1024))" "$(((POOL_MB-PRED_MB)/1024))" \
+        "$(awk -v a="$POOL_MB" -v b="$PRED_MB" 'BEGIN{printf "%.1f", a/b}')"
+printf  "                   node       %3dG   (Narval standard, usable)\n" "$((NODE_MB/1024))"
+echo "                 previous run: 42 workers x 5.4G = 227G in a 226G pool -> 1% CPU"
+echo "  heap        -> --heap-size-hint=$HEAP_HINT per worker (the only real per-process cap)"
 echo
 echo "submit with:  sbatch $SLURM"
 echo

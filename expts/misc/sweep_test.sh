@@ -63,6 +63,12 @@ GPU_TYPE="a100_3g.20gb"        # Narval A100 50% MIG: 6 cores, 62 GB
 JOBS=""                        # defaults to GPUS (one command per GPU)
 CPUS_PER_GPU=6                 # bundle ratio for a100_3g.20gb
 MEM_PER_CPU="10G"              # 6 x 10G = 60G, just inside the 62 GB bundle
+# Julia GC target per worker. Far less critical here than in sweep_train.sh
+# (few concurrent workers, 60 GB bundle), but predict.jl does the same
+# `convert.(Bool, readdlm(f, Int))` on a 144 MB test file -> a transient 576 MB
+# Int64 matrix, and there is no reason to let that sit resident for the whole
+# 10^6-sample forward pass. 4G leaves ample room for the GPU-side staging.
+HEAP_HINT="4G"                 # per-worker GC target; "" disables the flag
 MAX_NODES=4                    # SLURM array size: each task gets its own GPU
 WALLTIME="6:00:00"
 ACCOUNT="def-jemerson"
@@ -90,6 +96,7 @@ while [ "$#" -gt 0 ]; do
         --max_nodes)    MAX_NODES="$2";      shift 2;;
         --cpus_per_gpu) CPUS_PER_GPU="$2";   shift 2;;
         --mem)          MEM_PER_CPU="$2";    shift 2;;
+        --heap_hint)    HEAP_HINT="$2";      shift 2;;
         --walltime)     WALLTIME="$2";       shift 2;;
         --account)      ACCOUNT="$2";        shift 2;;
         --email)        EMAIL="$2";          shift 2;;
@@ -109,6 +116,10 @@ CLUSTER_DIR="$WORKDIR/$CODENAME/cluster"
 # the settings a model was TRAINED with, which testing does not change.
 [ -d "$MODELS_DIR" ] || { echo "no models dir: $MODELS_DIR (run this from expts/)" >&2; exit 1; }
 mkdir -p "$CLUSTER_DIR"
+
+# Flag fragment spliced into every worker's julia invocation (empty => omitted).
+HEAP_FLAG=""
+[ -n "$HEAP_HINT" ] && HEAP_FLAG=" --heap-size-hint=$HEAP_HINT"
 
 TS=$(date +%Y-%m-%d_%H-%M-%S)
 COMMANDS="$CLUSTER_DIR/sweep_commands_test_${TS}.txt"
@@ -157,7 +168,7 @@ for updates in $UPDATES_LIST; do
                 dropped_list="$dropped_list\n    $(basename "$weights")"
                 continue
             fi
-            echo "julia --project=\"./../\" neural_bp_experiments.jl --workdir \$WORKDIR_RUNTIME --codename $CODENAME --n_hidden_layers $NLAYERS --hyperparams $hp_name --correlation_strengths_file correlated_weights_p_${p}_s_${SEED}.txt --quiet true --train ${train_source}.txt --test test_p_${p}_s_${SEED}.txt" >> "$COMMANDS"
+            echo "julia --project=\"./../\"${HEAP_FLAG} neural_bp_experiments.jl --workdir \$WORKDIR_RUNTIME --codename $CODENAME --n_hidden_layers $NLAYERS --hyperparams $hp_name --correlation_strengths_file correlated_weights_p_${p}_s_${SEED}.txt --quiet true --train ${train_source}.txt --test test_p_${p}_s_${SEED}.txt" >> "$COMMANDS"
             n_points=$((n_points + 1))
           done
         done
@@ -246,6 +257,10 @@ export OPENBLAS_NUM_THREADS=1
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export JULIA_NUM_PRECOMPILE_TASKS=1
+
+# Julia's GC sizes its heap against total physical memory, not this job's cgroup
+# share, so without a hint every worker parks at its allocation high-water mark.
+export JULIA_HEAP_SIZE_HINT=${HEAP_HINT:-4G}
 
 cd \$SLURM_SUBMIT_DIR
 
