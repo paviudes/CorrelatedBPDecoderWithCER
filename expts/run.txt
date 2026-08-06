@@ -1,0 +1,1 @@
+julia --project="./../" neural_bp_experiments.jl --workdir ./../data --codename 72q_BB_cycles_1 --n_hidden_layers 100 --hyperparams hyperparams_epochs_20_priors_only.toml --correlation_strengths_file correlated_weights_p_0.0005_s_1_priors_only_normalized.txt --quiet false --train train_p_0.0005_s_1.txt --test test_p_0.0005_s_1.txt

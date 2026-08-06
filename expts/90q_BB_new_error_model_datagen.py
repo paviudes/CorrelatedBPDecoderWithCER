@@ -15,11 +15,11 @@ import matplotlib.pyplot as plt
 # Geometry: Ladder grid R x C
 R, C = 2, 45 #change to 2,45 for 90 qubits and change file names accordingly
 n_qubits = R * C
-output_dir_training_errors = f"data/90q_BB_p_0.010_q_0.001_std_0.03_data/training_data"
-output_dir_testing_errors = f"data/90q_BB_p_0.010_q_0.001_std_0.03_data/testing_data"
-output_dir_CER = f"data/90q_BB_p_0.010_q_0.001_std_0.03_data/correlated_weights"
-output_dir_prob = f"data/90q_BB_p_0.010_q_0.001_std_0.03_data/assigned_probabilities"
-output_dir_plots = f"data/90q_BB_p_0.010_q_0.001_std_0.03_data/plots"
+output_dir_training_errors = f"data/90q_BB_p_0.010_q_0.001_std_0.01_data/training_data"
+output_dir_testing_errors = f"data/90q_BB_p_0.010_q_0.001_std_0.01_data/testing_data"
+output_dir_CER = f"data/90q_BB_p_0.010_q_0.001_std_0.01_data/correlated_weights"
+output_dir_prob = f"data/90q_BB_p_0.010_q_0.001_std_0.01_data/assigned_probabilities"
+output_dir_plots = f"data/90q_BB_p_0.010_q_0.001_std_0.01_data/plots"
 os.makedirs(output_dir_training_errors, exist_ok=True)
 os.makedirs(output_dir_testing_errors, exist_ok=True)
 os.makedirs(output_dir_CER, exist_ok=True)
@@ -27,11 +27,11 @@ os.makedirs(output_dir_prob, exist_ok=True)
 os.makedirs(output_dir_plots, exist_ok=True)
 
 p_means=[0.010]
-p_std=0.03
+p_std=0.01
 q_means=[0.001]
-q_std=0.03
+q_std=0.01
 n_samples=1
-num_patterns=100000
+num_patterns=1000000
 
 def idx(r, c):
     return r * C + c + 1  # qubit labels from 1
@@ -376,13 +376,13 @@ for p_value in p_means:
             # Generate error patterns
             # Generate error patterns
             train_error_patterns = generate_error_patterns(num_patterns, independent_error_prob, conditional_nb_flip_prob)
-            test_error_patterns = generate_error_patterns(num_patterns, independent_error_prob, conditional_nb_flip_prob)
+            #test_error_patterns = generate_error_patterns(num_patterns, independent_error_prob, conditional_nb_flip_prob)
 
             # Save errors
             train_error_file = os.path.join(output_dir_training_errors, f"train_ballistic_p_{p_value}_q_{q_value}_s_{s}.txt")
             np.savetxt(train_error_file, np.array(train_error_patterns).T, fmt="%d")
-            test_error_file = os.path.join(output_dir_testing_errors, f"test_ballistic_p_{p_value}_q_{q_value}_s_{s}.txt")
-            np.savetxt(test_error_file, np.array(test_error_patterns).T, fmt="%d")
+            #test_error_file = os.path.join(output_dir_testing_errors, f"test_ballistic_p_{p_value}_q_{q_value}_s_{s}.txt")
+            #np.savetxt(test_error_file, np.array(test_error_patterns).T, fmt="%d")
             print(f"Completed sample {s} for p={p_value}, q_mean={q_value}. CER and error patterns saved.")
 
 

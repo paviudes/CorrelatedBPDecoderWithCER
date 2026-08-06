@@ -14,12 +14,14 @@ from tqdm import tqdm
 # Parameters
 p_values  = [0.01]
 q_means   = [0.001]
-n_samples = 56
+n_samples = 64
 n_qubits  = 72
 n_errors  = 100000
-PCM_Z=np.loadtxt("data/72q_BB_p_0.010_q_0.001_std_0.01_data/72q_BB_code/HZ.txt", dtype=int)
-Log_Z=np.loadtxt("data/72q_BB_p_0.010_q_0.001_std_0.01_data/72q_BB_code/LZ.txt", dtype=int)
-
+PCM_Z=np.loadtxt("data/72q_BB_p_0.010_std_0.01_q_0.001_std_0.01_data/code/HZ.txt", dtype=int)
+Log_Z=np.loadtxt("data/72q_BB_p_0.010_std_0.01_q_0.001_std_0.01_data/code/LZ.txt", dtype=int)
+results_dir = "data/72q_BB_p_0.010_std_0.01_q_0.001_std_0.01_data/results"
+os.makedirs(results_dir, exist_ok=True)
+test_data_dir = "data/72q_BB_p_0.010_std_0.01_q_0.001_std_0.01_data/testing_data"
 total_files = len(p_values) * len(q_means) * n_samples  
 
 # Decoder (initialized once)
@@ -46,7 +48,7 @@ with tqdm(total=total_files, desc="Decoding", unit="file") as pbar:
         for q_mean in q_means:
             for sample in range(1, n_samples + 1):
 
-                filename = f"data/72q_BB_p_0.010_q_0.001_std_0.01_data/testing_data/test_ballistic_p_{p_value}_q_{q_mean}_s_{sample}.txt"
+                filename = f"{test_data_dir}/test_p_{p_value}_q_{q_mean}_s_{sample}.txt"
 
                 # Load errors (shape: n_errors x n_qubits)
                 sample_errors_x = np.loadtxt(filename, dtype=int).T
@@ -75,10 +77,10 @@ with tqdm(total=total_files, desc="Decoding", unit="file") as pbar:
 results = np.array(results)
 
 np.savetxt(
-    "data/72q_BB_p_0.010_q_0.001_std_0.01_data/72q_BB_BP+OSD_failure_rates_OSD_E_order_2.txt",
+    f"{results_dir}/72q_BB_BP+OSD_failure_rates_OSD_E_order_2.txt",
     results,
     header="p_value  q_mean  sample  logical_failures",
     fmt=["%.3f", "%.3f", "%d", "%d"]
 )
 
-print("Results saved to 72q_BB_p_0.010_q_0.001_std_0.01_data/72q_BB_BP+OSD_failure_rates_OSD_E_order_2.txt")
+print("Results saved to 72q_BB_p_0.010_std_0.01_q_0.001_std_0.01_data/72q_BB_BP+OSD_failure_rates_OSD_E_order_2.txt")

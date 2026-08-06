@@ -15,19 +15,24 @@ import matplotlib.pyplot as plt
 # Geometry: Ladder grid R x C
 R, C = 2, 36 #change to 2,45 for 90 qubits and change file names accordingly
 n_qubits = R * C
-output_dir_errors = f"data/72q_BB_p_0.010_q_0.001_std_0.01_data/testing_data"
-output_dir_CER = f"data/72q_BB_p_0.010_q_0.001_std_0.01_data/correlated_weights"
-output_dir_prob = f"data/72q_BB_p_0.010_q_0.001_std_0.01_data/assigned_probabilities"
+output_dir_errors = f"data/72q_BB_p_0.010_std_0.01_q_0.001_std_0.01_data/testing_data"
+output_dir_CER = f"data/72q_BB_p_0.010_std_0.01_q_0.001_std_0.01_data/correlated_weights"
+output_dir_prob = f"data/72q_BB_p_0.010_std_0.01_q_0.001_std_0.01_data/assigned_probabilities"
+output_dir_plots = f"data/72q_BB_p_0.010_std_0.01_q_0.001_std_0.01_data/plots"
+training_dir = f"data/72q_BB_p_0.010_std_0.01_q_0.001_std_0.01_data/training_data"
+os.makedirs(training_dir, exist_ok=True)
 os.makedirs(output_dir_errors, exist_ok=True)
 os.makedirs(output_dir_CER, exist_ok=True)
 os.makedirs(output_dir_prob, exist_ok=True)
+os.makedirs(output_dir_plots, exist_ok=True)
 
 p_means=[0.010]
 p_std=0.01
 q_means=[0.001]
 q_std=0.01
-n_samples=56
-num_patterns=100000
+n_samples=64
+num_patterns_test=100000
+num_patterns_train=100000
 
 def idx(r, c):
     return r * C + c + 1  # qubit labels from 1
@@ -237,7 +242,7 @@ def plot_one_qubit_marginals(one_marginals, R, C):
     plt.tight_layout()
     
     #save as pdf
-    plt.savefig("data/72q_BB_p_0.010_q_0.001_std_0.01_data/one_qubit_marginals_bar_s_1.pdf")
+    plt.savefig(f"{output_dir_plots}/one_qubit_marginals_bar_s_1.pdf")
     plt.show()
 
 
@@ -276,7 +281,7 @@ def plot_two_qubit_marginals(two_marginals):
     plt.title("Two-qubit marginal for each nearest-neighbor edge")
     plt.tight_layout()
     #save as pdf
-    plt.savefig("data/72q_BB_p_0.010_q_0.001_std_0.01_data/two_qubit_marginals_bar_s_1.pdf")
+    plt.savefig(f"{output_dir_plots}/two_qubit_marginals_bar_s_1.pdf")
     plt.show()
 
     # Print largest few edges
@@ -348,16 +353,16 @@ for p_value in p_means:
                 f.write("\nConditional Neighbor Flip Probabilities:\n")
                 for key, val in conditional_nb_flip_prob.items():
                     f.write(f"Pair {key} : {val}\n")
-
             one_qubit_marginals = compute_one_qubit_marginals(independent_error_prob, conditional_nb_flip_prob,neighbors)
             two_qubit_marginals = compute_two_qubit_marginals_all_edge(independent_error_prob, conditional_nb_flip_prob,neighbors)
+
+            
             #make plot for one qubit and two qubit marginal spatial distribution for first sample
-            if s==1:
+            if s==1:  
                 plot_one_qubit_marginals(one_qubit_marginals, R, C)
                 plot_two_qubit_marginals(two_qubit_marginals)
                 compare_one_and_two_qubit_marginals(one_qubit_marginals, two_qubit_marginals)
-            
-            
+
             cer_file = os.path.join(output_dir_CER, f"correlated_weights_p_{p_value}_q_{q_value}_s_{s}.txt")
             with open(cer_file, "w") as f:
                 #f.write("One-qubit Marginals:\n")
@@ -366,18 +371,27 @@ for p_value in p_means:
                 #f.write("\nTwo-qubit Marginals:\n")
                 for key, val in two_qubit_marginals.items():
                     f.write(f"{key} : {val}\n")
+            
+            #Making a single training file with 10^6 patterns.           
 
+            train_error_patterns = generate_error_patterns(num_patterns_train, independent_error_prob, conditional_nb_flip_prob)
+            # Save training errors
+            np.savetxt(os.path.join(training_dir, f"train_p_{p_value}_q_{q_value}_s_{s}.txt"), np.array(train_error_patterns).T, fmt="%d")
+
+            
             # Generate error patterns
-            # Generate error patterns
-            error_patterns = generate_error_patterns(num_patterns, independent_error_prob, conditional_nb_flip_prob)
+            test_error_patterns = generate_error_patterns(num_patterns_test, independent_error_prob, conditional_nb_flip_prob)
 
             # Save errors
-            error_file = os.path.join(output_dir_errors, f"test_ballistic_p_{p_value}_q_{q_value}_s_{s}.txt")
-            np.savetxt(error_file, np.array(error_patterns).T, fmt="%d")
+            error_file = os.path.join(output_dir_errors, f"test_p_{p_value}_q_{q_value}_s_{s}.txt")
+            np.savetxt(error_file, np.array(test_error_patterns).T, fmt="%d")
             print(f"Completed sample {s} for p={p_value}, q_mean={q_value}. CER and error patterns saved.")
-            
 
 
+
+
+
+'''''
 # Create training data directory sampling from testing data
 training_dir = f"data/72q_BB_p_0.010_q_0.001_std_0.01_data/training_data"
 os.makedirs(training_dir, exist_ok=True)
@@ -418,6 +432,6 @@ for p_value in p_means:
 
             print(f"Saved: {savefile}")
 
-          
+ '''         
 
              
