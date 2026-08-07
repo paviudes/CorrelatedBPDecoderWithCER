@@ -159,7 +159,7 @@ function generate_batch_runs(;
             n_hidden_layers  = n_hidden_layers,
             hyperparams_file = hyperparams_file,
             julia_project    = "./../",
-            commands_file    = "commands.txt",
+            commands_file    = "",  # "" => auto commands_<timestamp>.txt (see batch_commands.jl)
             output_file      = "simulation_results.log",
             working_dir      = "$(data_dir)",
             ncpus            = n_cpus,

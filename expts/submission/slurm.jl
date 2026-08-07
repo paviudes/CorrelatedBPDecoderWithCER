@@ -69,6 +69,19 @@ function run_on_SLURM(
     output_file = joinpath(commands_dir, "$(script_prefix)_$(timestamp).out")
     error_file  = joinpath(commands_dir, "$(script_prefix)_$(timestamp).err")
 
+    # Per-task chunk filenames are DERIVED FROM THE COMMANDS FILENAME, not from
+    # this function's own timestamp. The two must identify the same submission,
+    # and deriving guarantees it: `commands_2026-08-07_15-30-00.txt` yields
+    # `commands_2026-08-07_15-30-00_chunk_<task>.txt`.
+    #
+    # The chunk is written to the SHARED filesystem when the job STARTS, not at
+    # submit time. With the old fixed `commands_chunk_<task>.txt`, two array jobs
+    # from different submissions holding the same task ID raced on one path — and
+    # since stage-in tars the whole codename directory afterwards, a job could
+    # pick up another submission's chunk and silently run its commands.
+    commands_stem = splitext(basename(commands_file))[1]
+    chunk_basename = "$(commands_stem)_chunk_\${SLURM_ARRAY_TASK_ID}.txt"
+
     # In test mode each parallel job owns a GPU, so the concurrency limit per
     # node is `n_gpus_per_node`, not `n_cpus`.
     jobs_per_node = is_test_mode ? n_gpus_per_node : n_cpus
@@ -258,7 +271,7 @@ function run_on_SLURM(
             "END=\$((START + $(commands_per_node) - 1))",
             "",
             "# Extract commands for this node and write them to the network target directory",
-            "sed -n \"\${START},\${END}p\" $(commands_file) > $(commands_dir)/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt",
+            "sed -n \"\${START},\${END}p\" $(commands_file) > $(commands_dir)/$(chunk_basename)",
             "",
             "# Load necessary modules and set up environment",
         ],
@@ -326,7 +339,7 @@ function run_on_SLURM(
             "echo \"[stage-in] done in \$(( \$(date +%s) - STAGE_IN_START ))s\"",
             "",
             "# Dynamically replace whatever string follows --workdir with the fast local path.",
-            "sed -i \"s|--workdir [^ ]*|--workdir \$SLURM_TMPDIR|g\" \$LOCAL_WORK_DIR/cluster/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt",
+            "sed -i \"s|--workdir [^ ]*|--workdir \$SLURM_TMPDIR|g\" \$LOCAL_WORK_DIR/cluster/$(chunk_basename)",
             "",
             "######################################################################",
             "# 2. COMPUTE",
@@ -419,8 +432,8 @@ function run_on_SLURM(
             # swallow the signal until it finished. `wait` also propagates the
             # backgrounded exit status, so a genuine failure still fails the job.
             is_test_mode && n_gpus_per_node > 1 ?
-                "parallel --jobs $(jobs_per_node) --results \$LOCAL_LOGS 'CUDA_VISIBLE_DEVICES=\$(echo \"\$SLURM_CUDA_VISIBLE_DEVICES\" | cut -d, -f{%}) bash -c {}' :::: \$LOCAL_WORK_DIR/cluster/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt &" :
-                "parallel --jobs $(jobs_per_node) --results \$LOCAL_LOGS < \$LOCAL_WORK_DIR/cluster/commands_chunk_\${SLURM_ARRAY_TASK_ID}.txt &",
+                "parallel --jobs $(jobs_per_node) --results \$LOCAL_LOGS 'CUDA_VISIBLE_DEVICES=\$(echo \"\$SLURM_CUDA_VISIBLE_DEVICES\" | cut -d, -f{%}) bash -c {}' :::: \$LOCAL_WORK_DIR/cluster/$(chunk_basename) &" :
+                "parallel --jobs $(jobs_per_node) --results \$LOCAL_LOGS < \$LOCAL_WORK_DIR/cluster/$(chunk_basename) &",
             "wait \$!",
             "",
             "# NOTE: stage-out is NOT done inline here.  The `stage_out` bash",

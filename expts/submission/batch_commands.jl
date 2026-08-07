@@ -34,6 +34,7 @@
 # ============================================================================
 
 using Printf
+using Dates      # timestamped commands filenames, so concurrent submissions can't collide
 import TOML
 
 """
@@ -84,7 +85,7 @@ function generate_parallel_commands_Ising(
     hyperparams_file::String="default_hyperparams.toml",
     # File paths and project settings for running the commands
     julia_project::String="./../",
-    commands_file::String="commands.txt",
+    commands_file::String="",
     output_file::String="simulation_results.log",
     working_dir::String=joinpath(@__DIR__, ".."),
     # Cluster settings.
@@ -160,7 +161,7 @@ function generate_parallel_commands_Circuit(
     hyperparams_file::String="default_hyperparams.toml",
     # File paths and project settings for running the commands
     julia_project::String="./../",
-    commands_file::String="commands.txt",
+    commands_file::String="",
     output_file::String="simulation_results.log",
     working_dir::String=joinpath(@__DIR__, ".."),
     # Cluster settings.
@@ -267,7 +268,7 @@ function generate_parallel_commands(
     n_hidden_layers::Int=100,
     hyperparams_files::AbstractVector{<:String}=["default_hyperparams.toml"],
     julia_project::String="./../",
-    commands_file::String="commands.txt",
+    commands_file::String="",
     output_file::String="simulation_results.log",
     working_dir::String=joinpath(@__DIR__, ".."),
     ncpus::Int=10,
@@ -324,6 +325,25 @@ function generate_parallel_commands(
             error("[$(codename)] submit preflight: every test case is missing its trained model under $(models_dir) — nothing to run. Train those models first, or submit in train mode.")
         end
         command_tuples = kept_tuples
+    end
+
+    # ------------------------------------------------------------------------
+    # UNIQUE COMMANDS FILE PER SUBMISSION.
+    #
+    # This used to be a fixed `commands.txt`. The SLURM script does not read it
+    # at SUBMIT time — it reads it when the job STARTS, possibly hours later:
+    #
+    #     sed -n "${START},${END}p" <commands_file> > .../commands_chunk_${TASK}.txt
+    #
+    # So submitting a second run against the same codename overwrote the file
+    # out from under the first job, and BOTH queued jobs then executed the
+    # second submission's commands. The first submission silently never ran.
+    #
+    # An empty `commands_file` (the default) therefore auto-names by timestamp.
+    # An explicit name is honoured verbatim — the caller has taken ownership.
+    # ------------------------------------------------------------------------
+    if isempty(commands_file)
+        commands_file = "commands_$(Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")).txt"
     end
 
     commands_file_path = joinpath(commands_dir, commands_file)
