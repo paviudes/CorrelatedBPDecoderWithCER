@@ -2,9 +2,10 @@ function load_base_BP_model(
     parity_check_matrix_file::String,
     logicals_file::String,
     n_hidden_layers::Int;
-    correlation_strengths_file::String="",
+    cer_data_file::String="",
     use_cer::Bool=true,
     prior_llr_clip::Float32=0f0,
+    single_qubit_rescale::Float32=0f0,
 )
     """
     Load the base BP model from the parity check matrix and logical operators files.
@@ -46,7 +47,13 @@ function load_base_BP_model(
     # the correlation strengths and connectivity matrix from the file. Otherwise
     # (no file, or use_cer=false) use empty values + preset p=0.1 priors.
     if use_cer
-        (connectivity_matrix, correlation_strengths, single_qubit_error_rates) = parse_cer_data(correlation_strengths_file; verbose=false)
+        (connectivity_matrix, correlation_strengths, single_qubit_error_rates) = parse_cer_data(cer_data_file; verbose=false)
+        # Inference temperature on the SINGLE-QUBIT rates only; the couplings are
+        # left exactly as parsed. Disabled (and a no-op) when the median is 0.
+        single_qubit_error_rates = rescale_single_qubit_error_rates(
+            single_qubit_error_rates,
+            single_qubit_rescale,
+        )
         initial_llrs = zeros(Float32, n_bits)
         for qubit in 1:n_bits
             if haskey(single_qubit_error_rates, qubit)
@@ -104,7 +111,11 @@ function load_trained_neuralbp_model(weights_filename::String, bpnn::NachmaniNeu
     return loaded_bpnn
 end
 
-function save_trained_neuralbp_model(weights_filename::String, bpnn::NeuralBP)
+function save_trained_neuralbp_model(
+    weights_filename::String,
+    bpnn::NeuralBP;
+    seed::Union{Int, Nothing} = nothing
+)::Nothing
     """
     Save the trained version of the NeuralBP model to a file.
     The file will contain the weights that specify the forward pass of the NeuralBP model.
@@ -113,14 +124,26 @@ function save_trained_neuralbp_model(weights_filename::String, bpnn::NeuralBP)
     2. weights_llrs
     3. weights_c2v_readout
     They will be stored in a dictionary with the corresponding keys. The values will be vectorized versions of the weight matrices.
+
+    `seed` records the RNG seed the model was trained with, so the file is
+    self-describing: the filename already carries `_seed_<n>`, but a file that has
+    been renamed, copied or collected still says how it was produced. Omitted
+    entirely when unset, so an unseeded run writes exactly the JSON it always did.
+
+    `load_trained_weights` reads only the three weight keys into a fresh dict, so
+    the extra key is inert on load and old model files stay readable.
     """
     # Create a dictionary to store the weights
     weights_data = Dict{String, Any}()
     weights_data["weights_c2v_v2c"] = vec(bpnn.weights_c2v_v2c)
     weights_data["weights_llrs"] = vec(bpnn.weights_llrs)
     weights_data["weights_c2v_readout"] = vec(bpnn.weights_c2v_readout)
+    if seed !== nothing
+        weights_data["seed"] = seed
+    end
     # Save the weights to the file
     fp = open(weights_filename, "w")
     JSON.print(fp, weights_data)
     close(fp)
+    return nothing
 end

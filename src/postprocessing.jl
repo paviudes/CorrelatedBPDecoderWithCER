@@ -123,23 +123,133 @@ function NeuralBPDecoderStatistics(df::DataFrame)::NeuralBPDecoderStatistics
     return stats
 end
 
-function record_decoder_statistics(stats, output_filename::String="./../data/decoder_statistics.csv")::DataFrame
+function record_decoder_statistics(
+    stats,
+    output_filename::String = "./../data/decoder_statistics.csv";
+    extra_columns::AbstractVector = Pair{String, Any}[]
+)::DataFrame
     """
-    Print the statistics in a JSON format so that they can be easily printed into a file using GNU `parallel`.
+    Write the decoder statistics to `output_filename` as CSV and return them as a
+    DataFrame.
 
     Works for any decoder-statistics struct (e.g. `NeuralBPDecoderStatistics` or
     the legacy `StandardBPDecoderStatistics`): the CSV columns are taken from the
     struct's own field names, so each decoder writes its own schema.
+
+    Deliberately SILENT. This used to `println(JSON.json(stats_dict))` so results
+    could be scraped from a GNU `parallel` log, but nothing depends on that now
+    and a ten-key JSON blob per run is unreadable across a sweep. Callers that
+    want console output should use `print_simulation_results_to_console` on the
+    returned DataFrame; the CSV still carries every field.
+
+    `extra_columns` appends provenance the statistics struct does not carry — a
+    vector of `"name" => value` pairs, each broadcast down the frame. It is how
+    the RNG `seed` reaches the results CSV without adding a field to every
+    decoder-statistics struct (which would make CSVs written before that field
+    existed unreadable by `NeuralBPDecoderStatistics(::DataFrame)`).
+
+    Pass nothing and the CSV is byte-for-byte what it always was.
     """
-    stats_dict = Dict(
+    stats_dict::Dict{Symbol, Any} = Dict(
         name => getfield(stats, name) for name in fieldnames(typeof(stats))
     )
-    println(JSON.json(stats_dict)) # Ensure a newline after the JSON object
 
     # Save the statistics to a CSV file
-    stats_dataframe = DataFrame(stats_dict)
+    stats_dataframe::DataFrame = DataFrame(stats_dict)
+    n_records::Int = nrow(stats_dataframe)
+    for (column_name, column_value) in extra_columns
+        stats_dataframe[!, Symbol(column_name)] = fill(column_value, n_records)
+    end
     CSV.write(output_filename, stats_dataframe)
     return stats_dataframe
+end
+
+"""
+    write_failure_diagnostics(diagnosis, results_file) -> NamedTuple
+
+Persist a `--diagnose` run's per-sample detail as TWO small files instead of one
+enormous one, named by swapping the `simulation_results_` prefix of
+`results_file`:
+
+  - `per_sample_failures_<suffix>.csv` — ONE ROW PER FAILED SAMPLE:
+    `sample_index`, `failure_kind` ("coset"/"convergence"), `committed_layer`,
+    `min_syndrome_weight`, `error_weight`.
+  - `layer_profile_<suffix>.csv` — the committed-layer histogram over the
+    ~99.97% of samples that did NOT fail, split by outcome:
+    `committed_layer`, `n_correct`, `n_coset_failures`.
+
+WHY NOT THE FULL PER-SAMPLE VECTORS. Writing all 10^6 rows costs ~16 MB per run
+(~2 GB across a 126-run sweep) to record, overwhelmingly, "sample succeeded at
+layer k" — which the histogram captures exactly. The paired McNemar comparison
+that motivated persisting anything needs only the DISCORDANT pairs, and those are
+recoverable from two failure INDEX SETS:
+
+    b = |failures(B) \\ failures(A)|      (A correct, B wrong)
+    c = |failures(A) \\ failures(B)|      (A wrong,   B correct)
+
+so failures-only loses no statistical power, provided the sample count is known —
+it is, as `num_samples_per_error_rate` in the paired results CSV.
+
+`sample_index` is 1-based into the test file. PAIRING IS ONLY VALID across
+configurations that ran on the SAME test file with the same ordering; the test
+filename is part of `results_file`, and hence of both names here, so a mismatch
+is visible rather than silent.
+
+The full per-sample vectors remain available in memory from
+`predict_and_diagnose_neuralbp` for anyone who wants them.
+"""
+function write_failure_diagnostics(diagnosis::NamedTuple, results_file::String)::NamedTuple
+    failures_file::String = replace(results_file, "simulation_results_" => "per_sample_failures_")
+    layer_profile_file::String = replace(results_file, "simulation_results_" => "layer_profile_")
+
+    # ---- one row per failed sample ----------------------------------------
+    failed_indices::Vector{Int} = findall(.!diagnosis.is_correct)
+    failure_kinds::Vector{String} = String[]
+    for index in failed_indices
+        kind::String = "convergence"
+        if diagnosis.syndrome_cleared[index]
+            kind = "coset"
+        end
+        push!(failure_kinds, kind)
+    end
+
+    failures_dataframe::DataFrame = DataFrame(
+        sample_index        = failed_indices,
+        failure_kind        = failure_kinds,
+        committed_layer     = diagnosis.committed_layer[failed_indices],
+        min_syndrome_weight = diagnosis.min_syndrome_weight[failed_indices],
+        error_weight        = diagnosis.error_weight[failed_indices],
+    )
+    CSV.write(failures_file, failures_dataframe)
+
+    # ---- committed-layer histogram, split by outcome ----------------------
+    correct_per_layer::Vector{Int} = zeros(Int, diagnosis.n_layers)
+    coset_failures_per_layer::Vector{Int} = zeros(Int, diagnosis.n_layers)
+    for sample_index in 1:diagnosis.n_samples
+        layer::Int = diagnosis.committed_layer[sample_index]
+        if layer == 0
+            continue    # convergence failure: no layer committed to
+        end
+        if diagnosis.is_correct[sample_index]
+            correct_per_layer[layer] += 1
+        else
+            coset_failures_per_layer[layer] += 1
+        end
+    end
+
+    layer_profile_dataframe::DataFrame = DataFrame(
+        committed_layer  = collect(1:diagnosis.n_layers),
+        n_correct        = correct_per_layer,
+        n_coset_failures = coset_failures_per_layer,
+    )
+    CSV.write(layer_profile_file, layer_profile_dataframe)
+
+    written_files::NamedTuple = (
+        failures_file      = failures_file,
+        layer_profile_file = layer_profile_file,
+        n_failure_rows     = nrow(failures_dataframe),
+    )
+    return written_files
 end
 
 function compute_std_assuming_bernoulli(μ::Float64, n::Int)::Float64
@@ -181,7 +291,11 @@ function collect_decoder_statistics(simulation_out_files::Vector{String})::DataF
         empty_df = DataFrame()
         return empty_df
     end
-    combined = reduce(vcat, frames)
+    # `cols = :union` so frames with different column sets stack instead of
+    # throwing: results written before the `seed` column existed have no such
+    # column, and seeded/unseeded runs differ by it too. Absent entries become
+    # `missing`, which is the honest value — that run recorded no seed.
+    combined = reduce((left, right) -> vcat(left, right; cols = :union), frames)
     return combined
 end
 

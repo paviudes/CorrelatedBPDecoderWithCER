@@ -231,7 +231,7 @@ for updates in $UPDATES_LIST; do
               "$NLAYERS" "$CODENAME" "$BASE_HP" train "$TS" "$clip"
 
           for p in $PVALS; do
-            echo "julia --project=\"./../\"${HEAP_FLAG} neural_bp_experiments.jl --workdir \$WORKDIR_RUNTIME --codename $CODENAME --n_hidden_layers $NLAYERS --hyperparams $hp_name --correlation_strengths_file correlated_weights_p_${p}_s_${SEED}.txt --quiet true --train train_p_${p}_s_${SEED}.txt" >> "$COMMANDS"
+            echo "julia --project=\"./../\"${HEAP_FLAG} neural_bp_experiments.jl --workdir \$WORKDIR_RUNTIME --codename $CODENAME --n_hidden_layers $NLAYERS --hyperparams $hp_name --cer_data correlated_weights_p_${p}_s_${SEED}.txt --quiet true --train train_p_${p}_s_${SEED}.txt" >> "$COMMANDS"
             n_points=$((n_points + 1))
           done
         done

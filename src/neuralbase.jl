@@ -414,3 +414,121 @@ function parse_cer_data(correlation_strengths_file::String; verbose::Bool = true
 
     return (connectivity_matrix, correlation_strengths, single_qubit_error_rates)
 end
+
+# ============================================================================
+#              Single-qubit prior rescaling (an INFERENCE TEMPERATURE)
+# ============================================================================
+# THIS IS NOT A CALIBRATION FIX. Measured on 72q_BB_cycles_1 at p = 0.0005, the
+# raw CER single-qubit rates have median 0.004239 against an empirical per-qubit
+# error rate of 0.004259 in the test data — correct to 0.5%. Rescaling them to
+# median 0.1 makes the prior 23.6x WRONG, and that is the version that decodes
+# 12.5x better (3788 -> 303 failures out of 10^6, same couplings, same seed).
+#
+# The reason is BP's message dynamics, not the physics: at LLR 5.46 the initial
+# messages sit where tanh' = 0.018, so 30 layers cannot move them and the decoder
+# never clears the syndrome (99.4% of that arm's failures were convergence
+# failures). Softening the prior lets BP actually iterate. The knob is therefore
+# a temperature, and there is no privileged value for it — 0.1 was a guess that
+# happened to work.
+#
+# ONLY the single-qubit rates are touched. The two-qubit couplings J_ik are
+# log-odds, not probabilities, and are left exactly as parsed.
+# ============================================================================
+
+"""
+    rescale_single_qubit_error_rates(single_qubit_error_rates, target_median;
+                                     max_permitted_rate) -> Dict{Int, Float32}
+
+Multiply every single-qubit error rate by a constant so the MEDIAN lands on
+`target_median`. Returns a new Dict; the input is not modified.
+
+`target_median` does double duty, which is why there is only one knob:
+
+  - it is the TARGET the median is scaled to, and
+  - it is the SKIP THRESHOLD: if `maximum(rates) >= target_median` the rates are
+    returned untouched.
+
+Read it as "put the priors at this scale, unless they already reach it". One
+consequence worth knowing: the rule can only ever SOFTEN. Asking for a target
+below the current maximum is a no-op, so this knob cannot accidentally push the
+priors back into the saturated regime it exists to escape.
+
+Multiplicative, so it is (near enough) an ADDITIVE SHIFT in LLR space: the
+per-qubit spread survives. On this data the LLR spread goes 0.2512 -> 0.2782,
+i.e. all the CER information is preserved. That is the crucial difference from
+`prior_llr_clip`, which CLAMPS: every raw LLR here is 5.33..5.58, so any clip
+below 5.33 collapses all 72 qubits to one constant and destroys precisely the
+information under test.
+
+THE SKIP HEURISTIC. If `maximum(rates) >= target_median` the rates are returned
+UNCHANGED. The rescaling exists to stop BP saturating; if some qubit is already
+that error-prone, the priors are soft enough and inflating them further risks
+pushing rates toward the 0.5 boundary for no benefit. Evaluated on the RAW
+maximum, before any scaling. This is a heuristic, not a derived rule — and note
+it keys on the MAXIMUM while the saturation mechanism is driven by the TYPICAL
+LLR, so data with a low median and one high outlier will skip despite being
+saturated overall.
+
+`target_median <= 0` disables rescaling entirely, which is the default.
+
+Raises rather than silently capping when the rescale would push the maximum to
+`max_permitted_rate` or above (default 0.5, where the LLR changes sign and the
+prior would assert that an error is more likely than not). Silently capping would
+let two different sweep points collapse into one identical run — a failure mode
+this project has already paid for once.
+"""
+function rescale_single_qubit_error_rates(
+    single_qubit_error_rates::Dict{Int, Float32},
+    target_median::Float32;
+    max_permitted_rate::Float32 = 0.5f0,
+    verbose::Bool = true
+)::Dict{Int, Float32}
+    if target_median <= 0f0
+        return single_qubit_error_rates
+    end
+    if isempty(single_qubit_error_rates)
+        return single_qubit_error_rates
+    end
+
+    observed_rates::Vector{Float32} = collect(values(single_qubit_error_rates))
+    observed_maximum::Float32 = maximum(observed_rates)
+    observed_median::Float32 = median(observed_rates)
+
+    if observed_maximum >= target_median
+        if verbose
+            @info "rescale_single_qubit_error_rates: max rate $(observed_maximum) already >= " *
+                  "the requested $(target_median); priors are soft enough, leaving them unchanged."
+        end
+        return single_qubit_error_rates
+    end
+
+    if observed_median <= 0f0
+        throw(ArgumentError(
+            "rescale_single_qubit_error_rates: median single-qubit rate is $(observed_median); " *
+            "cannot rescale to a target median."))
+    end
+
+    scale_factor::Float32 = target_median / observed_median
+    rescaled_maximum::Float32 = observed_maximum * scale_factor
+    if rescaled_maximum >= max_permitted_rate
+        throw(ArgumentError(
+            "rescale_single_qubit_error_rates: rescaling to median $(target_median) " *
+            "(factor $(scale_factor)) would put the maximum rate at $(rescaled_maximum), " *
+            "at or above the permitted $(max_permitted_rate). Above 0.5 the LLR changes " *
+            "sign and the prior asserts an error is more likely than not. Lower " *
+            "`single_qubit_rescale`, or raise `max_permitted_rate` deliberately."))
+    end
+
+    rescaled_rates::Dict{Int, Float32} = Dict{Int, Float32}()
+    for (qubit, error_rate) in single_qubit_error_rates
+        rescaled_rates[qubit] = error_rate * scale_factor
+    end
+
+    if verbose
+        @info "rescale_single_qubit_error_rates: median $(observed_median) -> $(target_median) " *
+              "(x$(scale_factor)); max $(observed_maximum) -> $(rescaled_maximum); " *
+              "median LLR $(round(log((1-observed_median)/observed_median), digits=3)) -> " *
+              "$(round(log((1-target_median)/target_median), digits=3)). Couplings J untouched."
+    end
+    return rescaled_rates
+end

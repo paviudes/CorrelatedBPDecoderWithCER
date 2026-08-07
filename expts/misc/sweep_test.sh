@@ -60,6 +60,13 @@ NLAYERS=100
 SEED=1
 GPUS=1
 GPU_TYPE="a100_3g.20gb"        # Narval A100 50% MIG: 6 cores, 62 GB
+GPU_MEMORY="20G"               # VRAM of ONE $GPU_TYPE. Exported as GPU_MEMORY so
+                               # predict.jl can size the prediction batch from it
+                               # instead of the hard-coded 16384. We do not request
+                               # --mem-per-gpu (the bundle is sized by --mem-per-cpu),
+                               # so SLURM_MEM_PER_GPU is not set for us and this is
+                               # how the number reaches the job. Change it with the
+                               # GPU type: a100_1g.5gb -> 5G, a100 (full) -> 40G.
 JOBS=""                        # defaults to GPUS (one command per GPU)
 CPUS_PER_GPU=6                 # bundle ratio for a100_3g.20gb
 MEM_PER_CPU="10G"              # 6 x 10G = 60G, just inside the 62 GB bundle
@@ -97,6 +104,7 @@ while [ "$#" -gt 0 ]; do
         --cpus_per_gpu) CPUS_PER_GPU="$2";   shift 2;;
         --mem)          MEM_PER_CPU="$2";    shift 2;;
         --heap_hint)    HEAP_HINT="$2";      shift 2;;
+        --gpu_memory)   GPU_MEMORY="$2";     shift 2;;
         --walltime)     WALLTIME="$2";       shift 2;;
         --account)      ACCOUNT="$2";        shift 2;;
         --email)        EMAIL="$2";          shift 2;;
@@ -168,7 +176,7 @@ for updates in $UPDATES_LIST; do
                 dropped_list="$dropped_list\n    $(basename "$weights")"
                 continue
             fi
-            echo "julia --project=\"./../\"${HEAP_FLAG} neural_bp_experiments.jl --workdir \$WORKDIR_RUNTIME --codename $CODENAME --n_hidden_layers $NLAYERS --hyperparams $hp_name --correlation_strengths_file correlated_weights_p_${p}_s_${SEED}.txt --quiet true --train ${train_source}.txt --test test_p_${p}_s_${SEED}.txt" >> "$COMMANDS"
+            echo "julia --project=\"./../\"${HEAP_FLAG} neural_bp_experiments.jl --workdir \$WORKDIR_RUNTIME --codename $CODENAME --n_hidden_layers $NLAYERS --hyperparams $hp_name --cer_data correlated_weights_p_${p}_s_${SEED}.txt --quiet true --train ${train_source}.txt --test test_p_${p}_s_${SEED}.txt" >> "$COMMANDS"
             n_points=$((n_points + 1))
           done
         done
@@ -261,6 +269,11 @@ export JULIA_NUM_PRECOMPILE_TASKS=1
 # Julia's GC sizes its heap against total physical memory, not this job's cgroup
 # share, so without a hint every worker parks at its allocation high-water mark.
 export JULIA_HEAP_SIZE_HINT=${HEAP_HINT:-4G}
+
+# VRAM of one $GPU_TYPE. predict.jl derives the prediction batch size from this
+# (see resolve_prediction_batch_size), so changing the GPU type no longer means
+# editing src/predict.jl and paying for a recompile.
+export GPU_MEMORY="$GPU_MEMORY"
 
 cd \$SLURM_SUBMIT_DIR
 

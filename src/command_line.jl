@@ -197,8 +197,14 @@ function parse_command_line_args_NN()::Dict{String, Any}
 			help = "Number of samples to use for training. Use all available samples if set to -1."
 			arg_type = Int
 			default = -1
-		"--correlation_strengths_file"
-			help = "File containing the correlation strengths for the additional loss term for correlations. The file should contain a vector of correlation strengths corresponding to the rows of the connectivity matrix."
+		"--cer_data", "--correlation_strengths_file"
+			# `--correlation_strengths_file` is kept as a DEPRECATED ALIAS: the file
+			# holds single-qubit marginals as well as pairwise couplings, so the old
+			# name undersold it — but ~180 occurrences across generated command files
+			# and shell scripts still use it, and silently breaking them is worse than
+			# a second name. ArgParse keys the result on the FIRST long name, so this
+			# lands in args_dict["cer_data"].
+			help = "CER data file: single-qubit error rates and two-qubit couplings J_ij, read from <codename>/correlated_weights/. (Formerly --correlation_strengths_file, still accepted.)"
 			arg_type = String
 			default = "unspecified.txt"
 		"--hyperparams"
@@ -221,6 +227,16 @@ function parse_command_line_args_NN()::Dict{String, Any}
 			help = "Suppress progress bars."
 			arg_type = Bool
 			default = false
+		"--diagnose"
+			help = "Split decode failures into COSET failures (syndrome cleared, wrong logical coset) and CONVERGENCE failures (no layer ever cleared the syndrome). Adds four columns to the results CSV, writes one row per FAILED sample to `per_sample_failures_*.csv`, and writes the committed-layer histogram of the successes to `layer_profile_*.csv`. Costs no extra forward pass."
+			arg_type = Bool
+			default = false
+		"--seed"
+			help = "RNG seed for a reproducible training run. Overrides `seed` in the hyperparameters TOML. When neither is given the global RNG is left untouched, which is the historical (non-deterministic) behaviour."
+			arg_type = Int
+			# NO `default` on purpose: ArgParse then yields `nothing` when the flag
+			# is absent, which is the only way to distinguish "unset" from any
+			# particular integer the user might legitimately want as a seed.
 	end
 	args_dict = parse_args(settings)
 	return args_dict
@@ -280,10 +296,22 @@ function parse_hyper_parameters(hyperparams_file::String=""; prefix::String="./.
 
     # Returns
     - `Dict{String, Any}`: Dictionary of hyperparameters.
+
+    # The `seed` key
+    `seed` (integer) makes a training run reproducible: it seeds the global RNG
+    before the initial weights are drawn and before any batch is sampled, and it
+    is appended to the weights / results / debug filenames as `_seed_<n>` so runs
+    that differ only in seed cannot overwrite one another.
+
+    It is deliberately ABSENT from `default_hyperparams`. When it is unset the
+    global RNG is not touched at all, so existing runs keep their historical,
+    non-deterministic behaviour rather than silently becoming `seed = 0`. Use
+    `hyperparameter_seed`, `seed_tag_for` and `apply_training_seed!` to read it.
     """
     default_hyperparams::Dict{String, Any} = Dict(
         "retrain" => false, # Whether to retrain the model even if trained weights are available.
-        "prior_llr_clip" => 0.0f0, # Cap on |initial LLR| (0 = disabled). Separates the CER prior's INFORMATION from its MAGNITUDE: CER rates give LLR ~ 5.4 (tanh' ~ 0.018) vs the no-CER fallback's 2.2 (tanh' ~ 0.36), a ~20x weaker gradient through the message nonlinearity. Clip to ~2.5 to equalise conditioning between the arms.
+        "single_qubit_rescale" => 0.0f0, # Put the CER SINGLE-QUBIT rates at this scale: rescale them so their MEDIAN lands here, UNLESS their maximum already reaches it, in which case leave them exactly as parsed. 0 (the default) disables it entirely. One value, two roles — read it as "priors at this scale, unless they already get there". It can therefore only ever SOFTEN, never sharpen. This is an INFERENCE TEMPERATURE, not a calibration fix: the raw rates were measured correct to 0.5%, and deliberately softening them to median 0.1 decoded 12.5x better because BP cannot iterate out of a prior at LLR 5.46. Couplings J_ij are never touched. Prefer this to `prior_llr_clip`, which clamps and therefore flattens all qubits to one constant when every raw LLR exceeds the clip.
+        "prior_llr_clip" => 0.0f0, # Cap on |initial LLR| (0 = disabled). SUPERSEDED for CER data by `single_qubit_rescale`: every raw CER LLR here is 5.33..5.58, so any clip below that collapses all 72 qubits to a single constant and destroys the per-qubit information. Separates the CER prior's INFORMATION from its MAGNITUDE: CER rates give LLR ~ 5.4 (tanh' ~ 0.018) vs the no-CER fallback's 2.2 (tanh' ~ 0.36), a ~20x weaker gradient through the message nonlinearity. Clip to ~2.5 to equalise conditioning between the arms.
         "use_CER" => true, # Whether to use correlated-error-rate (CER) priors. If false, the correlated_weights/ folder is ignored: single-qubit priors default to p=0.1 and the correlation loss term is dropped. Outputs are tagged `_no_cer` so CER and no-CER runs don't overwrite each other.
         "learning_rate" => 1f-1, # Learning rate for training the Neural BP model using the ADAM optimizer
         "max_grad_norm" => 2f0, # Gradient clipping threshold
@@ -291,6 +319,8 @@ function parse_hyper_parameters(hyperparams_file::String=""; prefix::String="./.
         "nanskip" => 5, # Number of consecutive NaN occurrences in the loss before skipping the batch during training
         "adam_eps" => 1f-4, # Epsilon parameter for the ADAM optimizer to improve numerical stability
         "batch_size" => 100, # Batch size for training
+        "gpu_memory" => "", # GPU memory available for TESTING, e.g. "16G" or "20480M". Used to size the prediction batch without editing predict.jl (which would force a recompile). Empty = fall back to ENV["GPU_MEMORY"], then SLURM_MEM_PER_GPU (exported automatically by --mem-per-gpu), then the built-in 16384. Has no effect on training.
+        "prediction_batch_size" => 0, # Explicit prediction batch size. Overrides `gpu_memory` when > 0; 0 = derive it.
         "n_epochs" => 5, # Number of training epochs
 		"warmup_layers" => 10, # First number of layers to leave unconstrained in the loss function.
 		"online_training" => false, # If true, we will generate training samples on the fly instead of reading from a file. However, right now we don't have an implementation for this, so we will simply read a random subset of `batch_size` samples from the training dataset to simulate the online training scenario. Important: when this is set to true, explicitly make sure that the batch size divides the number of samples in the training dataset.
@@ -314,10 +344,22 @@ function parse_hyper_parameters(hyperparams_file::String=""; prefix::String="./.
         updated_hyperparams = merge(default_hyperparams, file_hyperparams)
 
         # --- Convert specific keys to Float32 ---
-        float32_keys = ["learning_rate", "max_grad_norm", "weight_decay", "adam_eps", "initial_conditions_scale", "prior_llr_clip"]
+        float32_keys = ["learning_rate", "max_grad_norm", "weight_decay", "adam_eps", "initial_conditions_scale",
+                        "prior_llr_clip", "single_qubit_rescale"]
         for key in float32_keys
             if haskey(updated_hyperparams, key)
                 updated_hyperparams[key] = Float32(updated_hyperparams[key])
+            end
+        end
+
+        # --- Convert specific keys to Int -------------------------------------
+        # `seed` must stay an integer: `Random.seed!` takes an Integer, and a
+        # Float32 seed would also produce a filename tag like `_seed_7.0`.
+        # `Int(7.5)` throws rather than silently truncating, which is what we want.
+        integer_keys = ["seed"]
+        for key in integer_keys
+            if haskey(updated_hyperparams, key) && updated_hyperparams[key] !== nothing
+                updated_hyperparams[key] = Int(updated_hyperparams[key])
             end
         end
 		
@@ -357,6 +399,119 @@ function parse_hyper_parameters(hyperparams_file::String=""; prefix::String="./.
 
         return default_hyperparams
     end
+end
+
+# ============================================================================
+#                        Reproducible runs: the `seed` key
+# ============================================================================
+# Training draws from the global RNG in four places — `random_values_around_one`
+# for the three weight vectors (expts/neural_bp_experiments.jl, and the fallback
+# inside `train_Nachmani_neuralbp`), the `randn` fallbacks in the
+# `NachmaniNeuralBP`/`NeuralBP` constructors, `rand(1:n_samples, batch_size)` in
+# the online-training path, and `randperm` in the fixed-dataset path.
+#
+# Left unseeded, two runs of a provably identical configuration were measured at
+# 309 and 620 logical failures out of 10^6 — a factor of two from RNG alone,
+# which is larger than any effect this project is trying to resolve. Seeding
+# makes a run a function of (config, seed) so comparisons can be pooled over a
+# fixed set of seeds.
+#
+# These three helpers exist so the seed is read, applied, and turned into a
+# filename tag in exactly ONE place each. In particular `seed_tag_for` is used by
+# both the weights filename and the results filename; if they disagreed, a
+# `retrain = false` run would load weights that do not correspond to its results.
+# ============================================================================
+
+"""
+    hyperparameter_seed(hyperparameters) -> Union{Int, Nothing}
+
+The `seed` hyperparameter as an `Int`, or `nothing` when it is unset.
+
+`nothing` means "do not touch the global RNG" — NOT "seed with 0". Keeping those
+distinct is what lets existing, unseeded runs behave exactly as they did before.
+"""
+function hyperparameter_seed(hyperparameters::Dict)::Union{Int, Nothing}
+    if !haskey(hyperparameters, "seed")
+        return nothing
+    end
+    raw_seed_value = hyperparameters["seed"]
+    if raw_seed_value === nothing
+        return nothing
+    end
+    seed::Int = Int(raw_seed_value)
+    return seed
+end
+
+"""
+    rescale_tag_for(hyperparameters) -> String
+
+`"_sqres<value>"` when single-qubit rescaling is requested, `""` otherwise, with
+the decimal point written as `p` so it is filename-safe (`0.05` -> `0p05`).
+
+Tags the REQUESTED value, not whether the skip heuristic fired. Two requested
+values that happen to produce the same model then get distinct filenames holding
+identical content — which is visible to a hash, unlike two configurations
+silently sharing one file. That is the failure that turned the `corr` arm into a
+copy of `no_cer`.
+"""
+function rescale_tag_for(hyperparameters::Dict)::String
+    target_median::Float32 = Float32(get(hyperparameters, "single_qubit_rescale", 0.0f0))
+    rescale_tag::String = ""
+    if target_median > 0f0
+        rescale_tag = "_sqres" * replace(string(target_median), "." => "p")
+    end
+    return rescale_tag
+end
+
+"""
+    seed_tag_for(hyperparameters) -> String
+
+`"_seed_<n>"` when a seed is set, `""` otherwise.
+
+The empty string matters as much as the tag: with no seed every filename this
+package writes is byte-identical to what it wrote before `seed` existed, so old
+results stay addressable and the sweep scripts keep matching.
+"""
+function seed_tag_for(hyperparameters::Dict)::String
+    seed::Union{Int, Nothing} = hyperparameter_seed(hyperparameters)
+    seed_tag::String = ""
+    if seed !== nothing
+        seed_tag = "_seed_$(seed)"
+    end
+    return seed_tag
+end
+
+"""
+    apply_training_seed!(hyperparameters) -> Union{Int, Nothing}
+
+Seed the global RNG from the `seed` hyperparameter and return the seed applied,
+or `nothing` if none was set (in which case the RNG is left alone).
+
+Call this BEFORE anything random happens. It is called in two places, and both
+are necessary:
+
+  - `expts/neural_bp_experiments.jl`, before it builds `initial_conditions` —
+    those weight draws happen in the script, so seeding only inside the library
+    would leave the initial weights non-reproducible;
+  - the top of `train_Nachmani_neuralbp`, so a caller using the package directly
+    (without the script) still gets a reproducible run.
+
+Calling it twice is harmless: re-seeding restarts the same stream, so the run
+remains a pure function of (config, seed). It does mean the batch-sampling draws
+begin at the same stream position as the weight draws did, which is of no
+practical consequence — they consume different distributions for different
+purposes.
+
+The global RNG is the right target here rather than a threaded-through RNG
+object, because nothing in the training path is multi-threaded (there is no
+`@threads`/`ThreadsX` in it). See the note in the README about BLAS threads.
+"""
+function apply_training_seed!(hyperparameters::Dict)::Union{Int, Nothing}
+    seed::Union{Int, Nothing} = hyperparameter_seed(hyperparameters)
+    if seed !== nothing
+        Random.seed!(seed)
+    end
+    return seed
 end
 
 function disable_retrain_in_hyperparams(hyperparams_file::String)

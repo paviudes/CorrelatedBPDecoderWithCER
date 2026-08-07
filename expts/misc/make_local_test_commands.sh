@@ -127,7 +127,7 @@ for weights_path in "${weights[@]}"; do
     # The TRAIN phase leaves retrain = true; testing must LOAD, not retrain.
     sweep_disable_retrain "$hp_path"
 
-    printf 'julia --project="./../" neural_bp_experiments.jl --workdir %s --codename %s --n_hidden_layers %s --hyperparams %s --correlation_strengths_file %s --quiet false --train train_p_%s_s_%s.txt --test %s\n' \
+    printf 'julia --project="./../" neural_bp_experiments.jl --workdir %s --codename %s --n_hidden_layers %s --hyperparams %s --cer_data %s --quiet false --train train_p_%s_s_%s.txt --test %s\n' \
         "$WORKDIR" "$CODENAME" "$n_layers" "$hp_name" "$cer_file" "$train_p" "$seed" "$test_file" >> "$tmp_body"
     n_emitted=$((n_emitted + 1))
 done

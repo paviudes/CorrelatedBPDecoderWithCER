@@ -67,6 +67,7 @@ julia --project="./../" neural_bp_experiments.jl \
 | `training_errors_file` | String | File containing training errors (located in `training_data/`). |
 | `testing_errors_file` | String | File containing testing errors (located in `testing_data/`). |
 | `retrain` | Bool | Whether to retrain the model (`true`/`false`). |
+| `seed` | Int | **Optional.** RNG seed for a reproducible training run (hyperparameters TOML key, or `--seed <n>` which overrides it). Seeds the global RNG before the initial weights are drawn and before any batch is sampled, and appends `_seed_<n>` to the weights JSON, the results CSV and the debug CSVs so runs differing only in seed never collide. **Unset by default**, in which case the RNG is not touched and behaviour is exactly as before. Two unseeded runs of an identical configuration measured 309 vs 620 logical failures out of 10^6 — a 2× spread from RNG alone — so fix a set of seeds and pool across them rather than comparing single runs. Reproducibility assumes single-threaded BLAS: `src/CorrelatedBPDecoderWithCER.jl` calls `BLAS.set_num_threads(Threads.nthreads())`, so keep `JULIA_NUM_THREADS=1` (as the sweep scripts do) if you need bit-identical results. |
 | `learning_rate` | Float | Learning rate for training. |
 | `max_grad_norm` | Float | Maximum gradient norm for clipping during training. |
 

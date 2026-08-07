@@ -306,3 +306,158 @@ function sparse_multiply!(
 
     return nothing
 end
+
+# ============================================================================
+#                        GPU memory -> prediction batch size
+# ============================================================================
+
+"Accepted memory spellings: an optionally fractional number, an optional binary
+unit, and an optional trailing `B`. No sign, so a parsed value is never negative."
+const MEMORY_SPECIFICATION_PATTERN = r"^([0-9]*\.?[0-9]+)\s*([KMGT]?)B?$"
+
+"Megabytes reserved for the GPU driver/context before any of our own allocations."
+const DRIVER_CONTEXT_OVERHEAD_MB = 512
+
+"Multiplier from each binary unit to megabytes. The empty unit is a bare number,
+which SLURM reports in MB."
+const MEGABYTES_PER_MEMORY_UNIT = Dict{String, Float64}(
+    ""  => 1.0,
+    "K" => 1.0 / 1024,
+    "M" => 1.0,
+    "G" => 1024.0,
+    "T" => 1024.0 * 1024,
+)
+
+"""
+    parse_memory(memory_description_string) -> Int   (megabytes)
+
+Parse a SLURM-style memory string into MEGABYTES.
+
+    parse_memory("16G")     == 16384
+    parse_memory("1024M")   == 1024
+    parse_memory("16GB")    == 16384
+    parse_memory("2T")      == 2097152
+    parse_memory("512")     == 512      # bare number: MB, as SLURM reports it
+
+The bare-number case follows SLURM's own convention: `--mem-per-gpu=16G` is
+exported to the job as `SLURM_MEM_PER_GPU=16384`, i.e. already in MB. Binary
+units throughout (1G = 1024M), again matching SLURM.
+
+Throws `ArgumentError` on anything unparseable rather than guessing — silently
+defaulting a bad memory string would produce a batch size that OOMs deep into a
+10^6-sample run.
+"""
+function parse_memory(memory_description_string::AbstractString)::Int
+    normalised_memory::String = uppercase(strip(String(memory_description_string)))
+    if isempty(normalised_memory)
+        throw(ArgumentError("parse_memory: empty memory string."))
+    end
+
+    # `match` returns `nothing` when the string does not parse, so the honest
+    # annotation is a Union. Declaring this `::String` would fail on every
+    # SUCCESSFUL match (a RegexMatch does not convert to String) and would also
+    # make the `.captures` accesses below invalid.
+    memory_match::Union{RegexMatch, Nothing} = match(MEMORY_SPECIFICATION_PATTERN, normalised_memory)
+    if memory_match === nothing
+        throw(
+            ArgumentError(
+                "parse_memory: cannot parse \"$(memory_description_string)\". " *
+                "Expected forms: \"16G\", \"16GB\", \"1024M\", \"2T\", or a bare number of MB."
+            )
+        )
+    end
+
+    # Both groups always participate when the pattern matches: group 1 requires at
+    # least one digit, and group 2 can match the empty string.
+    numeric_value::Float64 = parse(Float64, memory_match.captures[1])
+    unit_symbol::String = String(memory_match.captures[2])
+
+    megabytes::Int = max(1, round(Int, numeric_value * MEGABYTES_PER_MEMORY_UNIT[unit_symbol]))
+    return megabytes
+end
+
+"""
+    compute_optimal_batch_size_for(memory_in_mb; n_bits, n_layers, nb_neurons, ...) -> Int
+
+Conservative prediction batch size that fits in `memory_in_mb` megabytes of GPU
+memory.
+
+THE MEMORY MODEL. Per sample, `_forward_pass_gpu_chunk` holds, in Float32:
+
+  - the output tensor `posterior_3d_gpu`, `n_bits x batch x n_layers`  <- dominant
+  - `initial_llrs_gpu` (`n_bits`), `messages_c2v` and `syndromes_routed`
+    (`nb_neurons` each)
+  - the per-layer temporaries inside `_compute_layer_gpu` and its two helpers
+    (m_v2c, scaled_llrs, the tanh split's four arrays, m_c2v_mag, parity_fp,
+    combined, the atanh helper's four, ...), each `nb_neurons x batch`.
+    `layer_temporaries` counts them; the default is deliberately generous
+    because GPU allocators pool rather than free eagerly.
+
+so
+
+    bytes/sample = 4 * (n_bits * n_layers + n_bits + layer_temporaries * nb_neurons)
+
+Batch-INDEPENDENT allocations (the per-layer weight tensor
+`nb_neurons^2 x n_layers`, the four adjacency matrices, and the driver context)
+are subtracted off first as `fixed_overhead_mb`.
+
+The result is then scaled by `headroom_fraction` and rounded DOWN to a power of
+two, which alone gives up to a further 2x margin. With the defaults the estimate
+is deliberately pessimistic; raise `headroom_fraction` if you have measured
+headroom on your device.
+
+Pass `fixed_overhead_mb` explicitly to override the derived overhead; a negative
+value (the default) means derive it.
+
+NOTE ON THE TWO BATCHING LEVELS. This sizes the OUTER loop in
+`predict_and_check_neuralbp`, which also governs host-side memory (each chunk's
+posterior tensor comes back to the CPU). `forward_pass_gpu` independently
+sub-chunks on the device from `CUDA.available_memory()`, so this value is an
+upper bound on device residency, not the only guard. Larger outer batches also
+mean fewer `build_gpu_state` rebuilds (which re-upload the weight tensor every
+call), so bigger is faster until host memory complains — hence `max_batch_size`.
+"""
+function compute_optimal_batch_size_for(
+    memory_in_mb::Int;
+    n_bits::Int = 72,
+    n_layers::Int = 100,
+    nb_neurons::Int = 216,
+    layer_temporaries::Int = 24,
+    headroom_fraction::Float64 = 0.25,
+    fixed_overhead_mb::Int = -1,
+    min_batch_size::Int = 256,
+    max_batch_size::Int = 262144,
+)::Int
+    if memory_in_mb <= 0
+        throw(ArgumentError("compute_optimal_batch_size_for: memory must be positive, got $(memory_in_mb) MB."))
+    end
+
+    # Batch-independent device allocations, in MB: the per-layer weight tensor
+    # dominates, plus four adjacency matrices, plus ~512 MB of driver/context.
+    # A negative `fixed_overhead_mb` means "derive it from the geometry".
+    resolved_fixed_overhead_mb::Int = fixed_overhead_mb
+    if fixed_overhead_mb < 0
+        weight_tensor_mb::Int = (nb_neurons^2 * n_layers * 4) ÷ (1024 * 1024)
+        adjacency_matrices_mb::Int = (4 * nb_neurons^2 * 4) ÷ (1024 * 1024)
+        resolved_fixed_overhead_mb = DRIVER_CONTEXT_OVERHEAD_MB + weight_tensor_mb + adjacency_matrices_mb
+    end
+
+    usable_mb::Float64 = (memory_in_mb - resolved_fixed_overhead_mb) * headroom_fraction
+    if usable_mb <= 0
+        @warn "compute_optimal_batch_size_for: $(memory_in_mb) MB does not cover the " *
+              "$(resolved_fixed_overhead_mb) MB of batch-independent overhead; falling back to " *
+              "min_batch_size = $(min_batch_size)."
+        return min_batch_size
+    end
+
+    bytes_per_sample::Int = 4 * (n_bits * n_layers + n_bits + layer_temporaries * nb_neurons)
+    unrounded_batch_size::Int = floor(Int, usable_mb * 1024 * 1024 / bytes_per_sample)
+    if unrounded_batch_size < min_batch_size
+        return min_batch_size
+    end
+
+    # Round DOWN to a power of two: tidy in logs, and worth up to 2x of extra margin.
+    rounded_batch_size::Int = 1 << floor(Int, log2(unrounded_batch_size))
+    batch_size::Int = clamp(rounded_batch_size, min_batch_size, max_batch_size)
+    return batch_size
+end

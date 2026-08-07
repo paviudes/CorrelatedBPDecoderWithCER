@@ -116,7 +116,7 @@ export ErrorModel, IIDErrorModel, sample_error, print_error_model_info,
 # Data collection and postprocessing
 include("postprocessing.jl")
 export NeuralBPDecoderStatistics, collect_decoder_statistics, collect_standard_decoder_statistics,
-       save_decoder_dataframe, record_decoder_statistics
+       save_decoder_dataframe, record_decoder_statistics, write_failure_diagnostics
 
 # Visualization and plotting are intentionally NOT part of this module — see
 # the note under "Visualization" above and the header of src/plot.jl.
@@ -138,11 +138,13 @@ export BPSettings, print_bp_settings, belief_propagation_decoder,
 
 # Command line interface
 include("command_line.jl")
-export parse_command_line_args_BP, parse_command_line_args_NN, print_arguments, generate_runs, parse_hyper_parameters, disable_retrain_in_hyperparams
+export parse_command_line_args_BP, parse_command_line_args_NN, print_arguments, generate_runs, parse_hyper_parameters, disable_retrain_in_hyperparams,
+       hyperparameter_seed, seed_tag_for, apply_training_seed!, rescale_tag_for
 
 # Neural belief propagation
 include("neuralbase.jl")
-export NeuralBPBase, NeuralBP, add_soft_constraints_to_neuralbpbase, parse_cer_data
+export NeuralBPBase, NeuralBP, add_soft_constraints_to_neuralbpbase, parse_cer_data,
+       rescale_single_qubit_error_rates
 
 # Nachmani Neural BP model
 include("nachmani.jl")
@@ -162,9 +164,16 @@ export forward_pass, c2v_to_v2c, v2c_to_c2v, readout,
        extract_collected_data, collect_decoder_statistics_correlated,
        collect_standard_decoder_statistics_correlated
 
+# Console output. `print_info` is the one to use: a plain print, safe alongside
+# Enzyme. `BracketedConsoleLogger` is defined but NOT installed — installing a
+# custom global logger breaks `Enzyme.autodiff` (world age); see the file header.
+include("logging.jl")
+export print_info, print_bracketed_record, log_level_label, log_level_color,
+       BracketedConsoleLogger, install_bracketed_logger!
+
 # Print functions for Neural BP models
 include("printfuns.jl")
-export print_neuralbp_info, print_neuralbp_summary
+export print_neuralbp_info, print_neuralbp_summary, print_simulation_results_to_console, print_console_rule
 
 # Load and save Neural BP models
 include("log_model.jl")
@@ -186,12 +195,16 @@ export train_neuralbp!, train_neuralbp_enzyme!, train_Nachmani_neuralbp
 
 # Predictions with trained models
 include("predict.jl")
-export predict_neuralbp, check_bp_solutions, predict_and_check_neuralbp, neuralbp_test_predictions
+export predict_neuralbp, check_bp_solutions, predict_and_check_neuralbp, neuralbp_test_predictions,
+       resolve_prediction_batch_size,
+       count_syndrome_satisfactions, predict_and_diagnose_neuralbp, concatenate_diagnoses,
+       mean_committed_layer
 
 # Utility functions
 include("utils.jl")
 export safe_atanh_exp_signed, safe_atanh_exp_signed!, safe_log_tanh_split, safe_log_tanh_split!, random_values_around_one, compute_std_assuming_bernoulli,
-       debug_log_tanh_split, xor_affine!, sparse_multiply!, sigmoid, binary_entropy, binary_entropy_of_sigmoid, fmt_probs
+       debug_log_tanh_split, xor_affine!, sparse_multiply!, sigmoid, binary_entropy, binary_entropy_of_sigmoid, fmt_probs,
+       parse_memory, compute_optimal_batch_size_for
 
 #===============================================================================
                                END OF MODULE

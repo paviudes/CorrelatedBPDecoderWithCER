@@ -334,7 +334,7 @@ function generate_parallel_commands(
                 --codename $(codename) \
                 --n_hidden_layers $(n_hidden_layers) \
                 --hyperparams $(hyperparams_file) \
-                --correlation_strengths_file $(cer_file) \
+                --cer_data $(cer_file) \
                 --quiet true \
                 --train $(train_file)"""
 

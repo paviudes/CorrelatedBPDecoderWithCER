@@ -69,8 +69,46 @@ INVOCATION_DIR="${PWD}"
 CER_DIR="${WORKDIR}/${CODENAME}/correlated_weights"
 MODELS_DIR="${WORKDIR}/${CODENAME}/models"
 RESULTS_DIR="${WORKDIR}/${CODENAME}/results"
+TRAIN_DIR="${WORKDIR}/${CODENAME}/training_data"
+TEST_DIR="${WORKDIR}/${CODENAME}/testing_data"
 
 CER_SRC="${CER_DIR}/${CER_FILE}"
+
+TOML_NAME="${BASE_TOML%.toml}${RUN_TAG}.toml"
+TOML_SRC="${MODELS_DIR}/${BASE_TOML}"
+TOML_RUN="${MODELS_DIR}/${TOML_NAME}"
+
+TRAIN_STEM="${TRAIN_FILE%.txt}"
+TEST_STEM="${TEST_FILE%.txt}"
+
+# Epoch count. Read from the TOML contents (`n_epochs = 20`), which is what
+# the results filename is built from; fall back to the TOML filename. Both
+# patterns are POSIX, so this works with BSD sed/awk on macOS as well as GNU.
+EPOCHS=""
+if [[ -f "${TOML_SRC}" ]]; then
+    EPOCHS="$(awk -F'=' '
+        /^[[:space:]]*n_epochs[[:space:]]*=/ {
+            v = $2; gsub(/[^0-9]/, "", v)
+            if (v != "") { print v; exit }
+        }' "${TOML_SRC}")"
+fi
+
+EPOCHS_FROM_NAME="$(printf '%s' "${BASE_TOML}" | sed -n 's/.*epochs_\([0-9][0-9]*\).*/\1/p')"
+
+if [[ -z "${EPOCHS}" ]]; then
+    EPOCHS="${EPOCHS_FROM_NAME}"
+elif [[ -n "${EPOCHS_FROM_NAME}" && "${EPOCHS}" != "${EPOCHS_FROM_NAME}" ]]; then
+    echo "WARNING: n_epochs=${EPOCHS} in ${BASE_TOML} but the filename says ${EPOCHS_FROM_NAME}." >&2
+    echo "         Using ${EPOCHS} (the value the results filename is built from)." >&2
+fi
+
+if [[ -z "${EPOCHS}" ]]; then
+    echo "ERROR: could not determine the epoch count." >&2
+    echo "  Looked for 'n_epochs = <N>' in ${TOML_SRC}" >&2
+    echo "  and for 'epochs_<N>' in BASE_TOML='${BASE_TOML}'." >&2
+    echo "  Set EPOCHS by hand in the CONFIG block if the naming differs." >&2
+    exit 1
+fi
 
 RESULTS_STEM="simulation_results_${TEST_STEM}_nlayers_${N_HIDDEN_LAYERS}_epochs_${EPOCHS}_trained_using_${TRAIN_STEM}"
 
@@ -127,7 +165,7 @@ if [[ ! -f "neural_bp_experiments.jl" ]]; then
     exit 1
 fi
 
-for f in "${CER_SRC}" "${TOML_SRC}" "${WORKDIR}/${CODENAME}/${TRAIN_FILE}"; do
+for f in "${CER_SRC}" "${TOML_SRC}" "${TRAIN_DIR}/${TRAIN_FILE}" "${TEST_DIR}/${TEST_FILE}"; do
     [[ -f "${f}" ]] || { echo "ERROR: missing ${f} (resolved from cwd ${INVOCATION_DIR})" >&2; exit 1; }
 done
 command -v julia >/dev/null || { echo "ERROR: julia not on PATH" >&2; exit 1; }

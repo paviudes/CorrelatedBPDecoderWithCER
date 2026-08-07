@@ -25,6 +25,12 @@ if abspath(PROGRAM_FILE) == @__FILE__
         exit(1)
     end
 
+    # NOTE: deliberately NO `install_bracketed_logger!()` here. Replacing the
+    # global logger breaks `Enzyme.autodiff` with a world-age MethodError on
+    # `min_enabled_level`, and this script trains. Messages we control use
+    # `print_info`, which is a plain print and cannot interact with Enzyme.
+    # See the header of src/logging.jl.
+
     # Parse command-line arguments
     args_dict = parse_command_line_args_NN()
 
@@ -33,18 +39,39 @@ if abspath(PROGRAM_FILE) == @__FILE__
     prefix = "$(work_dir)/$(args_dict["codename"])"
     parity_check_matrix_file = "$(prefix)/code/HZ.txt"
     logicals_file = "$(prefix)/code/LZ.txt"
-    correlation_strengths_file = "$(prefix)/correlated_weights/$(args_dict["correlation_strengths_file"])"
+    # ArgParse keys this on the first long name, so `--correlation_strengths_file`
+    # (still accepted as a deprecated alias) also lands here.
+    cer_data_file = "$(prefix)/correlated_weights/$(args_dict["cer_data"])"
     training_errors_file = "$(prefix)/training_data/$(args_dict["train"])"
     n_hidden_layers = args_dict["n_hidden_layers"]
     n_samples = args_dict["n_samples"]
     is_debug = args_dict["isdebug"]
     is_quiet = args_dict["quiet"]
 
-    # Extract hyperparameters from file or use defaults
+    # Extract hyperparameters from file or use defaults (has to be done before loading Neural BP model)
     hyperparams_file = args_dict["hyperparams"]
     hyperparams = parse_hyper_parameters(hyperparams_file; prefix=prefix)
     n_epochs = hyperparams["n_epochs"]
     online_training = hyperparams["online_training"]
+
+    # `--seed` beats the TOML, so a seed sweep needs no TOML per seed.
+    # ArgParse yields `nothing` when the flag is absent, which is why the flag is
+    # declared without a default: any sentinel integer would be a legal seed.
+    if args_dict["seed"] !== nothing
+        hyperparams["seed"] = args_dict["seed"]
+    end
+
+    # Seed HERE, before `initial_conditions` is drawn below — those draws happen
+    # in this script, so seeding only inside train_Nachmani_neuralbp would leave
+    # the initial weights non-reproducible. No-op when `seed` is unset, which
+    # keeps the historical non-deterministic behaviour exactly as it was.
+    training_seed = apply_training_seed!(hyperparams)
+    seed_tag = seed_tag_for(hyperparams)
+    rescale_tag = rescale_tag_for(hyperparams)
+    if training_seed !== nothing
+        print_info("Seeded the global RNG with seed = $(training_seed). " *
+                   "Weights, results and debug files are tagged `$(seed_tag)`.")
+    end
 
     # CER switch (default true). When false, behave as if correlated_weights/ did
     # not exist: preset p=0.1 priors, correlation loss dropped, and every output
@@ -72,7 +99,13 @@ if abspath(PROGRAM_FILE) == @__FILE__
     end
 
     # Train the Neural BP model
-    base = load_base_BP_model(parity_check_matrix_file, logicals_file, n_hidden_layers; correlation_strengths_file=correlation_strengths_file, use_cer=use_CER, prior_llr_clip=prior_llr_clip)
+    base = load_base_BP_model(
+        parity_check_matrix_file, logicals_file, n_hidden_layers;
+        cer_data_file=cer_data_file,
+        use_cer=use_CER,
+        prior_llr_clip=prior_llr_clip,
+        single_qubit_rescale=Float32(get(hyperparams, "single_qubit_rescale", 0.0f0)),
+    )
     initial_conditions = Dict{String, Vector{Float32}}(
         "weights_c2v_v2c" => random_values_around_one([base.nb_weights_c2v_v2c * base.n_layers]; scale=hyperparams["initial_conditions_scale"]),
         "weights_llrs" => random_values_around_one([base.code_n_bits * base.n_layers]; scale=hyperparams["initial_conditions_scale"]),
@@ -88,7 +121,10 @@ if abspath(PROGRAM_FILE) == @__FILE__
         is_debug=is_debug,
         is_quiet=is_quiet,
         online_training=online_training, # Set to true if you want to simulate online training by generating random batches of training samples on the fly instead of reading from a file. Note: we don't have an actual implementation for online training yet, so this will just read random batches from the training dataset to simulate the online training scenario.
-        n_gradient_updates_per_epoch = hyperparams["n_gradient_updates_per_epoch"]
+        n_gradient_updates_per_epoch = hyperparams["n_gradient_updates_per_epoch"],
+        # A missing weights file is unremarkable in a training-only run; it is
+        # worth reporting only when we were about to test that model.
+        will_test = args_dict["test"] != ""
     )
 
     # Test the Neural BP model predictions
@@ -111,19 +147,33 @@ if abspath(PROGRAM_FILE) == @__FILE__
     results_file = "$(results_dir)/simulation_results_$(testing_source)_" *
                "nlayers_$(n_hidden_layers)_" *
                "epochs_$(n_epochs)_" *
-               "trained_using_$(training_source)$(cer_tag)$(run_tag).csv"
+               "trained_using_$(training_source)$(cer_tag)$(run_tag)$(rescale_tag)$(seed_tag).csv"
     
     if isfile(results_file)
         println("Results file already exists: $(results_file). Skipping testing of the Neural BP model and loading results from file.")
         results_df = collect_decoder_statistics(results_file)
-        println(results_df)
+        print_simulation_results_to_console(results_df)
         exit(0)
     end
-    
-    is_correct = neuralbp_test_predictions(bpnn, test_errors_file)
-    failures = collect(.!is_correct)
 
-    println("Out of ", size(is_correct), " test samples, ", sum(is_correct), " were correctly decoded.")
+    # `--diagnose` splits failures into coset vs convergence failures. It replaces
+    # the normal scoring path rather than adding to it, so there is still exactly
+    # one forward pass.
+    diagnose = args_dict["diagnose"]
+    prediction_outcome = neuralbp_test_predictions(
+        bpnn, test_errors_file;
+        batch_size = Int(get(hyperparams, "prediction_batch_size", 0)),
+        gpu_memory = String(get(hyperparams, "gpu_memory", "")),
+        diagnose = diagnose
+    )
+
+    diagnosis = nothing
+    is_correct = prediction_outcome
+    if diagnose
+        diagnosis = prediction_outcome
+        is_correct = diagnosis.is_correct
+    end
+    failures = collect(.!is_correct)
 
     runtime = time() - start
 
@@ -159,8 +209,45 @@ if abspath(PROGRAM_FILE) == @__FILE__
         runtime = runtime
     )
 
-    # Save the decoder statistics to a CSV file for later analysis.
-    results_df = record_decoder_statistics(stats, results_file)
+    # Save the decoder statistics to a CSV file for later analysis. The CSV keeps
+    # every field; the console gets the five-column summary.
+    #
+    # The seed is recorded as an extra column so a results file says which RNG
+    # stream produced it, not just which configuration. Taking it from
+    # `hyperparams` is sound even when the model was loaded rather than trained:
+    # the seed is part of the weights filename, so the model that was loaded is
+    # necessarily the one trained with this seed. Omitted when unset, leaving
+    # unseeded runs' CSV schema untouched.
+    extra_result_columns = Pair{String, Any}[]
+    if training_seed !== nothing
+        push!(extra_result_columns, "seed" => training_seed)
+    end
+
+    # Diagnostic aggregates. `num_failures` (already recorded) is the sum of
+    # num_coset_failures and num_convergence_failures; splitting it is the whole
+    # point, because the two implicate opposite fixes.
+    if diagnosis !== nothing
+        push!(extra_result_columns, "num_syndrome_cleared" => diagnosis.n_syndrome_cleared)
+        push!(extra_result_columns, "num_coset_failures" => diagnosis.n_coset_failures)
+        push!(extra_result_columns, "num_convergence_failures" => diagnosis.n_convergence_failures)
+        push!(extra_result_columns, "mean_committed_layer" => mean_committed_layer(diagnosis))
+    end
+    results_df = record_decoder_statistics(stats, results_file; extra_columns=extra_result_columns)
+
+    # Per-sample detail for the FAILURES only, plus a committed-layer histogram
+    # for everything else. Enumerating all 10^6 samples would cost ~16 MB a run to
+    # record "succeeded at layer k" a million times; the histogram says the same
+    # thing, and the paired McNemar comparison needs only the failure index sets.
+    # See `write_failure_diagnostics`.
+    if diagnosis !== nothing
+        written_files = write_failure_diagnostics(diagnosis, results_file)
+        print_info("Failure detail  -> $(basename(written_files.failures_file)) " *
+                   "($(written_files.n_failure_rows) rows: " *
+                   "$(diagnosis.n_coset_failures) coset, $(diagnosis.n_convergence_failures) convergence)")
+        print_info("Layer histogram -> $(basename(written_files.layer_profile_file)) " *
+                   "($(diagnosis.n_layers) layers; covers the $(diagnosis.n_correct) successes)")
+    end
+    print_simulation_results_to_console(results_df)
 end
 #=
 For batch runs, copy paste the following command in the terminal.

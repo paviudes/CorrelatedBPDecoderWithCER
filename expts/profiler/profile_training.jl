@@ -57,7 +57,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     prefix                     = "./../data/$(args_dict["codename"])"
     parity_check_matrix_file   = "$(prefix)/code/HZ.txt"
     logicals_file              = "$(prefix)/code/LZ.txt"
-    correlation_strengths_file = "$(prefix)/correlated_weights/$(args_dict["correlation_strengths_file"])"
+    correlation_strengths_file = "$(prefix)/correlated_weights/$(args_dict["cer_data"])"
     training_errors_file       = "$(prefix)/training_data/$(args_dict["train"])"
     n_hidden_layers            = args_dict["n_hidden_layers"]
     n_samples_override         = args_dict["n_samples"]   # -1 = use all
@@ -87,7 +87,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
         parity_check_matrix_file,
         logicals_file,
         n_hidden_layers;
-        correlation_strengths_file = correlation_strengths_file,
+        cer_data_file = correlation_strengths_file,
     )
 
     initial_conditions = Dict{String, Vector{Float32}}(
