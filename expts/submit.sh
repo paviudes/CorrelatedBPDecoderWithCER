@@ -84,7 +84,7 @@ cat > "$SETTINGS_FILE" <<'EOF'
 
 # --- data & experiment ---
 workdir          = "./../data"
-dirnames         = ["18q_BB_cycles_1"]
+dirnames         = ["72q_BB_cycles_1"]
 # pvals / qvals: TOML arrays like [0.001, 0.005], OR a QUOTED Julia range
 # shorthand "start:step:stop", e.g. pvals = "0.0001:0.0002:0.0009". The quotes
 # are required — bare 0.0001:0.0002:0.0009 is not valid TOML. You can also mix:
@@ -102,7 +102,7 @@ error_model      = "Circuit"
 
 # --- Parameters for the neural BP model ---
 # The hyperparams TOML file should be placed in the same directory as the <workdir>/<dirnames>/<models> folder.
-hyperparams_file = "hyperparams_epochs_10_corrs.toml"
+hyperparams_file = "hyperparams_epochs_10_corrs_rescale_0.2.toml"
 n_hidden_layers  = 100
 
 # --- backend selection ---
