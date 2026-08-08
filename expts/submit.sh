@@ -102,7 +102,7 @@ error_model      = "Circuit"
 
 # --- Parameters for the neural BP model ---
 # The hyperparams TOML file should be placed in the same directory as the <workdir>/<dirnames>/<models> folder.
-hyperparams_file = "hyperparams_epochs_20_no_cer.toml"
+hyperparams_file = "hyperparams_epochs_10_corrs.toml"
 n_hidden_layers  = 100
 
 # --- backend selection ---
@@ -138,24 +138,24 @@ cluster_backend  = "SLURM"
 # ----------------------------------------------------------------------------
 
 # --- HPC resources (ignored on non-SLURM backends) ---
-account          = "def-jemerson"
+account          = "def-jemerson_gpu"
 
 # Size per test-mode invocation. For train mode (test=false, no GPU), you can
 # safely go up to 32–48 cores with 4G–8G/core on a CPU node.
-n_cpus           = 19
-mem_per_cpu      = "8G"
+n_cpus           = 1
+mem_per_cpu      = "16G"
 
-wall_time        = "6:00:00"
+wall_time        = "3:00:00"
 max_nodes        = 1
 email            = "pavithran.sridhar@gmail.com"
 
 # --- test mode ---
 # When true: flips retrain = false in the hyperparams TOML, emits a test-mode
 # script (GPU on SLURM+CUDA, Metal on Mac local, CPU fallback otherwise).
-test             = false
+test             = true
 
 # --- GPU knobs (used when test = true) ---
-n_gpus_per_node  = 1
+n_gpus_per_node  = 2
 
 # Alliance Canada GPU model specifier. Pick a MIG instance for small tests
 # (near-zero queue wait); pick "a100" only if you actually need the full GPU.
@@ -164,7 +164,7 @@ n_gpus_per_node  = 1
 #            "a100_3g.20gb" (MIG 50%),           "a100"          (whole GPU)
 #   Fir/Nibi/Rorqual/Trillium:  "h100" and its "h100_*g.*gb" MIG variants
 # See the ratios table linked in the header comment above.
-gpu_type         = "a100_1g.5gb"
+gpu_type         = "a100_3g.20gb"
 
 # Cluster's CUDA module name (used only on SLURM test mode).
 cuda_module      = "cuda"
@@ -174,7 +174,7 @@ cuda_module      = "cuda"
 # For MIG instances it's usually simpler to set mem_per_cpu = "<bundle mem>"
 # and leave this empty. Only use mem_per_gpu when you request multiple GPUs
 # per node and want the memory scaled per-GPU rather than per-CPU.
-mem_per_gpu      = ""
+mem_per_gpu      = "16G"
 
 EOF
 
