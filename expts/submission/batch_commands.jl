@@ -244,19 +244,46 @@ function _expected_weights_path(models_dir::String, hyperparams_file::String, n_
         @warn "submit preflight: hyperparams file not found ($(hyperparams_path)); cannot verify the model for $(training_source), keeping it."
         return nothing
     end
-    n_epochs = 0
-    use_cer = true
+    # Declared out here because `try` opens its own scope in Julia — anything
+    # first assigned inside the block is invisible after it.
+    n_epochs::Int = 0
+    use_cer::Bool = true
+    run_tag::String = ""
+    seed_tag::String = ""
     try
         parsed_hyperparams = TOML.parsefile(hyperparams_path)
         n_epochs = Int(parsed_hyperparams["n_epochs"])
         use_cer = get(parsed_hyperparams, "use_CER", true)
+        run_tag = String(get(parsed_hyperparams, "run_tag", ""))
+        seed_value = get(parsed_hyperparams, "seed", nothing)
+        if seed_value !== nothing
+            seed_tag = "_seed_$(Int(seed_value))"
+        end
     catch parse_error
         @warn "submit preflight: could not read n_epochs from $(hyperparams_path) ($(parse_error)); cannot verify the model for $(training_source), keeping it."
         return nothing
     end
-    cer_tag = use_cer ? "" : "_no_cer"
-    weights_filename = "neuralbp_weights_nlayers_$(n_hidden_layers)_epochs_$(n_epochs)_trained_using_$(training_source)$(cer_tag).json"
-    weights_path = joinpath(models_dir, weights_filename)
+    # MUST mirror `train.jl`'s weights_filename EXACTLY:
+    #   ..._trained_using_<source><cer_tag><run_tag><seed_tag>.json
+    #
+    # `run_tag` and `seed` were previously omitted here, so any run that set
+    # either one had its model looked for under a name that could never exist —
+    # the preflight then "helpfully" dropped every such test case and aborted
+    # with "nothing to run", while the models sat right there on disk.
+    #
+    # The tag logic is DUPLICATED rather than imported for the same reason
+    # `fmt_probs` is: this file must stay loadable on an Alliance login node
+    # without `using CorrelatedBPDecoderWithCER` and its heavy precompile. Keep
+    # the two in sync — see the comment above `fmt_probs`.
+    cer_tag::String = ""
+    if !use_cer
+        cer_tag = "_no_cer"
+    end
+
+    weights_filename::String =
+        "neuralbp_weights_nlayers_$(n_hidden_layers)_epochs_$(n_epochs)_" *
+        "trained_using_$(training_source)$(cer_tag)$(run_tag)$(seed_tag).json"
+    weights_path::String = joinpath(models_dir, weights_filename)
     return weights_path
 end
 
@@ -305,6 +332,11 @@ function generate_parallel_commands(
         models_dir = joinpath(working_dir, codename, "models")
         kept_tuples = eltype(command_tuples)[]
         dropped_sources = String[]
+        # Keep one example of what we LOOKED FOR. Without it, a tag mismatch
+        # between this reconstruction and train.jl's is indistinguishable from
+        # genuinely-untrained models, and the message sends you off to retrain
+        # models that already exist.
+        example_missing_path = ""
         for command_tuple in command_tuples
             (cer_file, train_file, test_file, hyperparams_file) = command_tuple
             training_source = splitext(basename(train_file))[1]
@@ -312,6 +344,9 @@ function generate_parallel_commands(
             model_missing = weights_path !== nothing && !isfile(weights_path)
             if model_missing
                 push!(dropped_sources, training_source)
+                if isempty(example_missing_path)
+                    example_missing_path = weights_path
+                end
             else
                 push!(kept_tuples, command_tuple)
             end
@@ -319,10 +354,25 @@ function generate_parallel_commands(
         if !isempty(dropped_sources)
             @warn "[$(codename)] submit preflight: no trained model for $(length(dropped_sources)) test case(s) — EXCLUDING them from commands.txt to avoid silently retraining. " *
                   "Dropped (training source): $(dropped_sources). " *
+                  "Looked for e.g.: $(example_missing_path). " *
+                  "If models DO exist under a similar name, the tag reconstruction here disagrees with train.jl (cer_tag / run_tag / seed_tag). " *
                   "To force one, add its line back to $(joinpath(commands_dir, commands_file)) by hand."
         end
         if isempty(kept_tuples)
-            error("[$(codename)] submit preflight: every test case is missing its trained model under $(models_dir) — nothing to run. Train those models first, or submit in train mode.")
+            existing_models = String[]
+            if isdir(models_dir)
+                existing_models = sort(filter(f -> endswith(f, ".json"), readdir(models_dir)))
+            end
+            model_hint = "  (none present)"
+            if !isempty(existing_models)
+                shown = first(existing_models, min(3, length(existing_models)))
+                model_hint = "  present instead, e.g.:\n    " * join(shown, "\n    ")
+            end
+            error("[$(codename)] submit preflight: every test case is missing its trained model under $(models_dir) — nothing to run.\n" *
+                  "  looked for e.g.: $(example_missing_path)\n" *
+                  model_hint * "\n" *
+                  "  If those look like the same runs under a different suffix, the hyperparameters TOML's " *
+                  "`run_tag` / `seed` / `use_CER` do not match what the models were trained with.")
         end
         command_tuples = kept_tuples
     end
