@@ -67,7 +67,6 @@ if abspath(PROGRAM_FILE) == @__FILE__
     # keeps the historical non-deterministic behaviour exactly as it was.
     training_seed = apply_training_seed!(hyperparams)
     seed_tag = seed_tag_for(hyperparams)
-    rescale_tag = rescale_tag_for(hyperparams)
     if training_seed !== nothing
         print_info("Seeded the global RNG with seed = $(training_seed). " *
                    "Weights, results and debug files are tagged `$(seed_tag)`.")
@@ -147,7 +146,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     results_file = "$(results_dir)/simulation_results_$(testing_source)_" *
                "nlayers_$(n_hidden_layers)_" *
                "epochs_$(n_epochs)_" *
-               "trained_using_$(training_source)$(cer_tag)$(run_tag)$(rescale_tag)$(seed_tag).csv"
+               "trained_using_$(training_source)$(cer_tag)$(run_tag)$(seed_tag).csv"
     
     if isfile(results_file)
         println("Results file already exists: $(results_file). Skipping testing of the Neural BP model and loading results from file.")

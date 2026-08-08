@@ -443,27 +443,6 @@ function hyperparameter_seed(hyperparameters::Dict)::Union{Int, Nothing}
 end
 
 """
-    rescale_tag_for(hyperparameters) -> String
-
-`"_sqres<value>"` when single-qubit rescaling is requested, `""` otherwise, with
-the decimal point written as `p` so it is filename-safe (`0.05` -> `0p05`).
-
-Tags the REQUESTED value, not whether the skip heuristic fired. Two requested
-values that happen to produce the same model then get distinct filenames holding
-identical content — which is visible to a hash, unlike two configurations
-silently sharing one file. That is the failure that turned the `corr` arm into a
-copy of `no_cer`.
-"""
-function rescale_tag_for(hyperparameters::Dict)::String
-    target_median::Float32 = Float32(get(hyperparameters, "single_qubit_rescale", 0.0f0))
-    rescale_tag::String = ""
-    if target_median > 0f0
-        rescale_tag = "_sqres" * replace(string(target_median), "." => "p")
-    end
-    return rescale_tag
-end
-
-"""
     seed_tag_for(hyperparameters) -> String
 
 `"_seed_<n>"` when a seed is set, `""` otherwise.

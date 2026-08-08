@@ -659,14 +659,17 @@ function train_Nachmani_neuralbp(
     # silently load the first's weights — which is precisely the comparison the
     # seed exists to make possible.
     cer_tag = get(hyperparameters, "use_CER", true) ? "" : "_no_cer"
+    # NOTE: `single_qubit_rescale` deliberately does NOT contribute a filename
+    # tag. Only `run_tag` (and the seed) may extend the name, so the suffix stays
+    # something the caller chooses explicitly and the test-side preflight can
+    # reconstruct. Put `_sqres0p1` in `run_tag` yourself if you want it.
     run_tag = String(get(hyperparameters, "run_tag", ""))
-    rescale_tag = rescale_tag_for(hyperparameters)
     seed_tag = seed_tag_for(hyperparameters)
     weights_filename =
         "$(models_dir)/neuralbp_weights_" *
         "nlayers_$(base.n_layers)_" *
         "epochs_$(n_epochs)_" *
-        "trained_using_$(training_source)$(cer_tag)$(run_tag)$(rescale_tag)$(seed_tag).json"
+        "trained_using_$(training_source)$(cer_tag)$(run_tag)$(seed_tag).json"
     
     if isfile(weights_filename) && !hyperparameters["retrain"]
         # println("Loading existing weights from file: $weights_filename")
@@ -689,7 +692,7 @@ function train_Nachmani_neuralbp(
             # `seed_tag` here too, so seeded debug logs don't overwrite each other.
             # (NOTE: this path carries no cer_tag/run_tag, so sweep points already
             # share one debug file. Pre-existing; out of scope for this change.)
-            debugging_logfile="$(prefix)/logs/debugging_$(training_source)$(rescale_tag)$(seed_tag)",
+            debugging_logfile="$(prefix)/logs/debugging_$(training_source)$(seed_tag)",
             is_debug=is_debug,
             is_quiet=is_quiet,
             online_training=online_training,
