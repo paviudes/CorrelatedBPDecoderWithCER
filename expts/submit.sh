@@ -102,7 +102,7 @@ error_model      = "Circuit"
 
 # --- Parameters for the neural BP model ---
 # The hyperparams TOML file should be placed in the same directory as the <workdir>/<dirnames>/<models> folder.
-hyperparams_file = "hyperparams_epochs_10_corrs.toml"
+hyperparams_file = "hyperparams_epochs_10_no_cer.toml"
 n_hidden_layers  = 100
 
 # --- backend selection ---
