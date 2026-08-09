@@ -84,7 +84,7 @@ cat > "$SETTINGS_FILE" <<'EOF'
 
 # --- data & experiment ---
 workdir          = "./../data"
-dirnames         = ["18q_BB_cycles_1"]
+dirnames         = ["72q_BB_cycles_1"]
 # pvals / qvals: TOML arrays like [0.001, 0.005], OR a QUOTED Julia range
 # shorthand "start:step:stop", e.g. pvals = "0.0001:0.0002:0.0009". The quotes
 # are required — bare 0.0001:0.0002:0.0009 is not valid TOML. You can also mix:
@@ -102,7 +102,7 @@ error_model      = "Circuit"
 
 # --- Parameters for the neural BP model ---
 # The hyperparams TOML file should be placed in the same directory as the <workdir>/<dirnames>/<models> folder.
-hyperparams_file = "hyperparams_epochs_10_no_cer.toml"
+hyperparams_file = "hyperparams_epochs_10_corrs_rescale_0.2.toml"
 n_hidden_layers  = 100
 
 # --- backend selection ---
@@ -142,8 +142,8 @@ account          = "def-jemerson"
 
 # Size per test-mode invocation. For train mode (test=false, no GPU), you can
 # safely go up to 32–48 cores with 4G–8G/core on a CPU node.
-n_cpus           = 19
-mem_per_cpu      = "8G"
+n_cpus           = 1
+mem_per_cpu      = "16G"
 
 wall_time        = "3:00:00"
 max_nodes        = 1
@@ -152,10 +152,10 @@ email            = "pavithran.sridhar@gmail.com"
 # --- test mode ---
 # When true: flips retrain = false in the hyperparams TOML, emits a test-mode
 # script (GPU on SLURM+CUDA, Metal on Mac local, CPU fallback otherwise).
-test             = false
+test             = true
 
 # --- GPU knobs (used when test = true) ---
-n_gpus_per_node  = 1
+n_gpus_per_node  = 2
 
 # Alliance Canada GPU model specifier. Pick a MIG instance for small tests
 # (near-zero queue wait); pick "a100" only if you actually need the full GPU.
@@ -174,7 +174,7 @@ cuda_module      = "cuda"
 # For MIG instances it's usually simpler to set mem_per_cpu = "<bundle mem>"
 # and leave this empty. Only use mem_per_gpu when you request multiple GPUs
 # per node and want the memory scaled per-GPU rather than per-CPU.
-mem_per_gpu      = ""
+mem_per_gpu      = "16G"
 
 EOF
 
