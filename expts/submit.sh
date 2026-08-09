@@ -138,7 +138,7 @@ cluster_backend  = "SLURM"
 # ----------------------------------------------------------------------------
 
 # --- HPC resources (ignored on non-SLURM backends) ---
-account          = "def-jemerson"
+account          = "def-jemerson_gpu"
 
 # Size per test-mode invocation. For train mode (test=false, no GPU), you can
 # safely go up to 32–48 cores with 4G–8G/core on a CPU node.
