@@ -689,10 +689,11 @@ function train_Nachmani_neuralbp(
             training_syndromes,
             expected_recoveries,
             hyperparameters;
-            # `seed_tag` here too, so seeded debug logs don't overwrite each other.
-            # (NOTE: this path carries no cer_tag/run_tag, so sweep points already
-            # share one debug file. Pre-existing; out of scope for this change.)
-            debugging_logfile="$(prefix)/logs/debugging_$(training_source)$(seed_tag)",
+            # `cer_tag`/`run_tag`/`seed_tag` all belong here, for the same reason
+            # they belong in the weights and results names: without them every
+            # point of a sweep writes to ONE debug file and all but the last is
+            # lost. A four-point sweep silently left one usable log.
+            debugging_logfile="$(prefix)/logs/debugging_$(training_source)$(cer_tag)$(run_tag)$(seed_tag)",
             is_debug=is_debug,
             is_quiet=is_quiet,
             online_training=online_training,
