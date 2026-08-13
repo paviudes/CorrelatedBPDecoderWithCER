@@ -248,16 +248,23 @@ function print_comparison(comparison::DataFrame)::Nothing
     return nothing
 end
 
-if abspath(PROGRAM_FILE) == @__FILE__
+"""
+    main(arguments) -> Nothing
+
+A FUNCTION, not a bare `if` block: at top-level script scope a `while` loop opens
+a soft scope, so `argument_index += 1` inside it becomes a new local and the
+script dies with `UndefVarError: argument_index not defined in local scope`.
+"""
+function main(arguments::Vector{String})::Nothing
     results_dir::String = DEFAULT_RESULTS_DIR
     output_csv::String = ""
     argument_index::Int = 1
-    while argument_index <= length(ARGS)
-        if ARGS[argument_index] == "--csv"
-            output_csv = ARGS[argument_index + 1]
+    while argument_index <= length(arguments)
+        if arguments[argument_index] == "--csv"
+            output_csv = arguments[argument_index + 1]
             argument_index += 2
         else
-            results_dir = ARGS[argument_index]
+            results_dir = arguments[argument_index]
             argument_index += 1
         end
     end
@@ -267,7 +274,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     end
     println("[cer_vs_no_cer] reading $(results_dir)\n")
 
-    comparison = build_comparison(results_dir)
+    comparison::DataFrame = build_comparison(results_dir)
     if nrow(comparison) == 0
         error("no paired (_no_cer, _corr) results found in $(results_dir)")
     end
@@ -278,4 +285,9 @@ if abspath(PROGRAM_FILE) == @__FILE__
     end
     CSV.write(output_csv, comparison)
     println("\n  table written to $(output_csv)")
+    return nothing
+end
+
+if abspath(PROGRAM_FILE) == @__FILE__
+    main(ARGS)
 end

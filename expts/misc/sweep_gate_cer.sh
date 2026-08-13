@@ -104,6 +104,8 @@ HEAP_HINT="4G"
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --setup)        SETUP=1;          shift;;
+        --collect)      COLLECT=1;        shift;;
+        --outdir)       OUTDIR="$2";      shift 2;;
         --pval)         PVAL="$2"; CER_DATA="correlated_weights_p_${PVAL}_s_1.txt"; shift 2;;
         --seeds)        SEEDS="$2";       shift 2;;
         --tau)          GATE_TAU="$2";    shift 2;;
@@ -115,6 +117,17 @@ while [ "$#" -gt 0 ]; do
         *) echo "unknown flag: $1" >&2; exit 2;;
     esac
 done
+
+# --------------------------------------------------------------- --collect ---
+# Gather every diagnostic the sweep produced into three CSVs and print the
+# contrast table. Reads results/ and logs/; writes nothing else.
+if [ "${COLLECT:-0}" = "1" ]; then
+    results_dir="$WORKDIR/$CODENAME/results"
+    [ -d "$results_dir" ] || { echo "no results dir: $results_dir (run from expts/)" >&2; exit 1; }
+    extra=""
+    [ -n "${OUTDIR:-}" ] && extra="--outdir ${OUTDIR}"
+    exec julia --project="$SCRIPT_DIR/../../" "$SCRIPT_DIR/collect_gate_cer.jl" "$results_dir" $extra
+fi
 
 if [ "${SETUP:-0}" = "1" ]; then
     src="$WORKDIR/$SOURCE_CODENAME"; dst="$WORKDIR/$CODENAME"

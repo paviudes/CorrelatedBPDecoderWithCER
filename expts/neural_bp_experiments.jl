@@ -104,6 +104,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
         use_cer=use_CER,
         prior_llr_clip=prior_llr_clip,
         single_qubit_rescale=Float32(get(hyperparams, "single_qubit_rescale", 0.0f0)),
+        require_correlations=Bool(get(hyperparams, "require_correlations", false)),
     )
     initial_conditions = Dict{String, Vector{Float32}}(
         "weights_c2v_v2c" => random_values_around_one([base.nb_weights_c2v_v2c * base.n_layers]; scale=hyperparams["initial_conditions_scale"]),

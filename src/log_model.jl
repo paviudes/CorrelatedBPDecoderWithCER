@@ -6,6 +6,7 @@ function load_base_BP_model(
     use_cer::Bool=true,
     prior_llr_clip::Float32=0f0,
     single_qubit_rescale::Float32=0f0,
+    require_correlations::Bool=false,
 )
     """
     Load the base BP model from the parity check matrix and logical operators files.
@@ -47,7 +48,41 @@ function load_base_BP_model(
     # the correlation strengths and connectivity matrix from the file. Otherwise
     # (no file, or use_cer=false) use empty values + preset p=0.1 priors.
     if use_cer
-        (connectivity_matrix, correlation_strengths, single_qubit_error_rates) = parse_cer_data(cer_data_file; verbose=false)
+        (connectivity_matrix, correlation_strengths, single_qubit_error_rates) = parse_cer_data(cer_data_file; verbose=true)
+
+        # HARD ERROR ON A SILENT FALLBACK.
+        #
+        # With `use_cer = true` and an empty marginals dict, every qubit used to
+        # fall through to `log(9)` below — exactly the `use_cer = false` preset —
+        # and the connectivity came back empty, so the correlation term was
+        # inactive too. The result was an arm LABELLED "CER" whose weights JSON
+        # was byte-identical (same SHA-256) to the no-CER arm, from a genuinely
+        # separate run. It was caught only because seeding made the collision
+        # exact rather than merely similar.
+        #
+        # Triggered by omitting `--cer_data` (the default `unspecified.txt` does
+        # not exist) or pointing it at an unreadable file. Refuse instead.
+        if isempty(single_qubit_error_rates)
+            throw(ArgumentError(
+                "load_base_BP_model: use_cer = true but no single-qubit error rates " *
+                "were parsed from \"$(cer_data_file)\". Silently falling back to the " *
+                "p = 0.1 preset would produce an arm labelled CER that is " *
+                "bit-identical to no-CER. Check the --cer_data path (the default " *
+                "\"unspecified.txt\" does not exist), or set use_CER = false " *
+                "deliberately."))
+        end
+
+        # `require_correlations` is opt-in because a PAIR-FREE file is legitimate:
+        # it is how the single-qubit-priors-only arm is built. A sweep whose entire
+        # content is the correlation term should set it, so a missing-pairs file
+        # cannot masquerade as a null result.
+        if require_correlations && size(connectivity_matrix, 1) == 0
+            throw(ArgumentError(
+                "load_base_BP_model: require_correlations = true but " *
+                "\"$(cer_data_file)\" yielded no two-qubit couplings. The " *
+                "correlation term would be inactive and the run would be " *
+                "indistinguishable from a single-qubit-priors arm."))
+        end
         # Inference temperature on the SINGLE-QUBIT rates only; the couplings are
         # left exactly as parsed. Disabled (and a no-op) when the median is 0.
         single_qubit_error_rates = rescale_single_qubit_error_rates(
