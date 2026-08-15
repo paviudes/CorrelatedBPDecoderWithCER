@@ -1,273 +1,418 @@
 #!/usr/bin/env bash
 # ============================================================================
-# sweep_correlation_weight.sh — sweep alpha4 (correlation_weight) x alpha3
-#                               (sparsity_importance) for the CER ablation
+# sweep_correlation_weight.sh — CER vs no-CER across p, with the REVISED J
+#                               convention and sparsity switched OFF
 # ============================================================================
-# TWO PHASES, mirroring the main pipeline:
+# RUN FROM expts/ :
 #
-#   bash misc/sweep_correlation_weight.sh train   # CPU, trains one model per point
-#   bash misc/sweep_correlation_weight.sh test    # GPU, tests those models
+#     bash misc/sweep_correlation_weight.sh --setup      # once: create the codename
+#     bash misc/sweep_correlation_weight.sh --check      # verify the CER files only
+#     bash misc/sweep_correlation_weight.sh --probe      # 1 p, 1 seed, both arms
+#     bash misc/sweep_correlation_weight.sh              # primary: 3 p x 2 arms x 3 seeds
+#     bash misc/sweep_correlation_weight.sh --ungated    # contrast: historical tau = -1
+#     bash misc/sweep_correlation_weight.sh --collect    # summarise
 #
-# Run `train` first, wait for it to finish, then run `test`. Both must be run
-# FROM the expts/ directory, and the emitted script must be sbatch'ed from there
-# too (all paths inside are relative, e.g. ./../data/...).
+#     sbatch ../data/72q_BB_cycles_1_debug/cluster/cw_<mode>_<timestamp>.sh
 #
-# WHY THE SPLIT: training is Enzyme reverse-mode AD, which runs on the CPU
-# regardless of USE_GPU (Metal/CUDA array allocation is not differentiable), so
-# a GPU allocation during training would idle. Testing is a pure forward pass
-# over 10^6 samples and is ~25x faster on a GPU.
+# ---------------------------------------------------------------------------
+# WHY THIS SWEEP EXISTS — TWO CHANGES SINCE THE LAST CER RUN
 #
-# WHY THE SWEEP: the correlation term
-#     L_corr = -(1/(N*|C|)) sum_C J_ik sigma_i sigma_k
-# is monotonically decreasing in sigma wherever J > 0, so it always argues for
-# MORE predicted errors and has no internal counterweight. In the full log prior
-# that counterweight is the single-qubit field term, whose role here is played by
-# `sparsity_penalty` (alpha3). So alpha4 alone is not the knob — the alpha3/alpha4
-# BALANCE is. This sweeps both.
+# (1) THE J CONVENTION WAS CORRECTED.
 #
-# alpha4 = 0 is the key control: CER priors ON, correlation term OFF. Comparing
-# it against the existing no-CER run separates the prior-scale effect from the
-# correlation-term effect (the two things `use_CER = false` changes at once).
+# For binary e_i, e_j in {0,1}, the pairwise log-linear (Ising) prior is
 #
-# WHAT IT DOES
-#   1. writes one hyperparameters TOML per (alpha4, alpha3) point into
-#      <workdir>/<codename>/models/, derived from a base TOML, with:
-#        - correlation_weight  = "A,A,0.7,up"   (min == max => CONSTANT, no anneal)
-#        - sparsity_importance = "B,B,0.8,up"   (constant)
-#        - retrain  = true in TRAIN mode / false in TEST mode
-#        - run_tag  = "_a4<A>_a3<B>"
-#      `run_tag` is appended to the model AND results filenames, so sweep points
-#      never overwrite each other (or the existing baseline runs).
-#   2. writes a commands file (one julia invocation per point per p), and
-#   3. writes a self-contained SLURM script that runs them with GNU parallel.
-#      This deliberately bypasses submit.sh / batch_run.jl.
+#     log P(e_i, e_j) = c + h_i e_i + h_j e_j + J_ik e_i e_k
 #
-# In TEST mode it first checks that every point's trained weights file exists,
-# and drops (with a warning) any point whose model is missing — so a partial
-# training run can still be tested rather than silently retraining on the GPU.
+# Reading off the four cells and eliminating c, h_i, h_j gives, uniquely,
 #
-# USAGE
-#   bash misc/sweep_correlation_weight.sh train
-#   bash misc/sweep_correlation_weight.sh test
-#   bash misc/sweep_correlation_weight.sh train --pvals "0.0005" --jobs 8
-#   bash misc/sweep_correlation_weight.sh test  --gpus 2 --jobs 2
-# then:
-#   sbatch ../data/<codename>/cluster/sweep_<mode>_<timestamp>.sh
+#     J_ik = log P11 - log P10 - log P01 + log P00
+#          = log[ P00 * P11 / (P01 * P10) ]          <-- the 2x2 log ODDS RATIO
 #
-# NOTE ON NORMALISATION: dividing the correlation term by n_edges (as the loss
-# does) is exactly degenerate with alpha4 — if you switch the loss to `/ n_samples`
-# alone, multiply these alpha4 values by ~1/n_edges (~540 for the 72q code).
+# That is the only combination of the four cell probabilities in which c, h_i
+# and h_j all cancel, i.e. the only one that isolates the INTERACTION from the
+# single-qubit fields. It is what `src/loss.jl` documents and what the loss term
+#
+#     L_corr = -(1/(N|C|)) sum_C J_ik sigma_i sigma_k
+#
+# requires, because the single-qubit fields h_i are already carried separately
+# by `initial_llrs = log((1-p_i)/p_i)`.
+#
+# The previously supplied J was the pointwise mutual information,
+# log[P11 / (P_i P_j)]. It is a legitimate association measure and it vanishes
+# under independence exactly as the log odds ratio does — but it still contains
+# -log P_i - log P_j, i.e. marginal information that `initial_llrs` has already
+# supplied. Adding it as a PAIRWISE coupling double-counts the marginals.
+#
+# HOW MUCH DID IT ACTUALLY CHANGE? Measured on the three files, old vs new:
+#
+#     p        old mean   new mean   mean delta   Spearman(old,new)   sign flips
+#     0.0005    +1.806     +2.011      +0.205         0.99986           29/540
+#     0.0007    +1.639     +1.817      +0.178         0.99991           14/540
+#     0.0019    +1.131     +1.284      +0.153         0.99995            1/540
+#
+# The single-qubit rates are byte-identical between the two vintages; only the
+# pair block moved. The shift is a near-uniform +0.15..+0.21 (about +10%) with
+# rank order essentially preserved. Analytically that is expected: the two
+# differ by log P00 - log(1 - P11/P_i) - log(1 - P11/P_j), which is small and
+# positive whenever P11 << P_i, P_j.
+#
+# CONSEQUENCE, STATED PLAINLY: the convention error was real but numerically
+# minor. It does NOT explain the previous null results, and it does not
+# retroactively invalidate them — a term contributing 0.05% of the total loss
+# does not become decisive under a 10% rescale. Expect this sweep to reproduce
+# the null unless (2) below is what was actually binding.
+#
+# (2) SPARSITY IS PINNED TO ZERO.
+#
+# `sparsity_importance` was previously annealed into the 0.3-0.5 band, where it
+# is ~400x the correlation term's contribution. Since sparsity penalises
+# predicted errors and the correlation term rewards co-occurring ones, they pull
+# opposite ways and sparsity wins by three orders of magnitude. Removing it is
+# the cleanest test of whether the couplings do anything once nothing is
+# actively cancelling them.
+#
+#   NOTE: the base TOML hyperparams_epochs_5_corrs.toml ALREADY carries
+#   sparsity_importance = "0,0,0.8,up". This script pins it explicitly anyway so
+#   the sweep is self-describing and survives edits to the base file.
+#
+# (3) THE GATE IS ON BY DEFAULT (tau = 0.5). THIS IS NOT WHAT THE BASE TOML DOES.
+#
+# The base TOML omits `syndrome_gate_threshold`, so it defaults to -1 = ungated,
+# and every previous run was ungated. Running THIS sweep ungated would be wrong,
+# for three reasons that compound exactly when sparsity is zeroed.
+#
+#   (a) It contradicts the design. `src/loss.jl` is explicit: base_loss is the
+#       only term that identifies the correct answer, and certainty / sparsity /
+#       correlation are "selectors WITHIN that zero set" — they are meant to
+#       break ties on the flat solution manifold, not to be minimised in their
+#       own right on samples that have not yet cleared the syndrome.
+#
+#   (b) Ungated, the aux terms enter LAYER SELECTION. The ungated path softmins
+#       over base + aux combined, so a layer can win selection by being
+#       confident and co-activating rather than by clearing the syndrome. The
+#       gated path softmins over base ALONE and adds gated aux afterwards. With
+#       sparsity zeroed there is nothing left pulling the other way, so this is
+#       the configuration in which that failure mode is most available.
+#
+#   (c) The certainty term is BATCH_SIZE TIMES STRONGER ungated. Compare:
+#         gated:    certainty_per_sample -> sum(gate .* aux_j) / n_samples
+#         ungated:  syndrome_loss_regularizer = sum(...)   [NO /n_samples]
+#       At n_bits = 72 a fully fractional sample carries ~72*log2 = 49.9 nats, so
+#       at the annealed ceiling alpha_cert = 1e-2 the gated contribution is ~0.50
+#       while the ungated one is ~0.50 * batch_size = ~10.0 — against a base loss
+#       scale of ~1 per softly broken check. Ungated, the regulariser rather than
+#       the syndrome dominates the objective. That has been true of every earlier
+#       run and was survivable because sparsity opposed it; with sparsity = 0 the
+#       correlation reward (which lowers loss by raising sigma) and the certainty
+#       penalty (which lowers loss by driving sigma binary) both push the same
+#       way on coupled pairs, unopposed.
+#
+# Gated, the correlation reward r_j <= 0 is ordering-safe by construction: it can
+# only improve a sample that already clears H, so it can never make a solved
+# sample lose to a failing one. That is the property this sweep needs.
+#
+# `--ungated` reproduces the historical tau = -1 configuration for comparability.
+# Expect it to be worse; run it as a contrast, not as the primary.
+#
+# ---------------------------------------------------------------------------
+# THE GRID
+#
+#   arm    use_CER   couplings   priors                  role
+#   cer     true      revised J   CER single-qubit        treatment
+#   nocer   false     none        flat p = 0.1            baseline
+#
+#   x p in {0.0005, 0.0007, 0.0019}   (the three p with CER data present)
+#   x seeds {1 2 3}                   (paired: the SAME seeds on both arms, so
+#                                      the contrast is a paired t, not a pooled z)
+#
+# The p axis matters here in a way it did not in the lambda sweep: the co-firing
+# rate that drives the correlation term goes as p^2, so the term is ~14x weaker
+# at p = 5e-4 than at p = 1.9e-3. If the couplings ever help, the largest p is
+# where it should show first.
+#
+# `require_correlations = true` on every CER arm, so a missing-pairs CER file
+# raises instead of quietly masquerading as a null result.
 # ============================================================================
 set -euo pipefail
 
-usage() { sed -n '2,60p' "$0"; }
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-MODE="${1:-}"
-case "$MODE" in
-    train|test) shift ;;
-    -h|--help)  usage; exit 0 ;;
-    *) echo "ERROR: first argument must be 'train' or 'test'." >&2
-       echo "  bash misc/sweep_correlation_weight.sh train   # CPU training" >&2
-       echo "  bash misc/sweep_correlation_weight.sh test    # GPU testing" >&2
-       exit 2 ;;
-esac
-
-# ---------------------------------------------------------------- defaults ---
 WORKDIR="./../data"
-CODENAME="72q_BB_cycles_1"
-BASE_HP="hyperparams_epochs_20.toml"
-PVALS="0.0005 0.002"
-ALPHA4="0 0.01 0.1 1.0"        # correlation_weight  (0 = control: CER priors, no corr term)
-ALPHA3="0.5 5.0"               # sparsity_importance (0.5 = current; 5.0 ~ |log((1-p)/p)| anchor)
-NLAYERS=100
-SEED=1
-ACCOUNT="def-jemerson"
+CODENAME="72q_BB_cycles_1_debug"
+SOURCE_CODENAME="72q_BB_cycles_1"
+BASE_HP="hyperparams_epochs_5_corrs.toml"
+PVALS="0.0005 0.0007 0.0019"
+SEEDS="1 2 3"
+NLAYERS=90
+SPARSITY="0.0"                 # pinned CONSTANT — the point of the sweep
+GATE_TAU="0.5"                 # gate ON by default; --ungated for tau = -1
+LAMBDA=""                      # empty = inherit correlation_weight from base TOML
+SINGLE_QUBIT_RESCALE="0.1"     # inherited from the base TOML; exposed for clarity
+
+ACCOUNT="def-jemerson_gpu"
 EMAIL="pavithran.sridhar@gmail.com"
 JULIA_MODULE="julia/1.12.5"
 CUDA_MODULE="cuda"
-GPU_TYPE=""                    # e.g. h100, a100, v100; empty = any
+GPU_TYPE=""
+TEST_JOBS=1                    # serial GPU phase: one MIG permits one CUDA context
+WALLTIME="20:00:00"
+HEAP_HINT="4G"
+MODE="primary"
 
-# Mode-dependent defaults (override with the flags below).
-if [ "$MODE" = "train" ]; then
-    JOBS=16                    # 16 points => one wave
-    WALLTIME="6:00:00"         # ~6h per point
-    MEM_PER_CPU="8G"
-    USE_GPU="0"
-    GPUS=0
-else
-    JOBS=1                     # GPU testing measured ~2-3 min/point => 1 slot is plenty
-    WALLTIME="3:00:00"
-    MEM_PER_CPU="8G"
-    USE_GPU="1"
-    GPUS=1
-fi
+usage() { sed -n '2,120p' "$0"; }
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --workdir)   WORKDIR="$2";     shift 2;;
-        --codename)  CODENAME="$2";    shift 2;;
-        --base_hp)   BASE_HP="$2";     shift 2;;
-        --pvals)     PVALS="$2";       shift 2;;
-        --alpha4)    ALPHA4="$2";      shift 2;;
-        --alpha3)    ALPHA3="$2";      shift 2;;
-        --nlayers)   NLAYERS="$2";     shift 2;;
-        --seed)      SEED="$2";        shift 2;;
-        --jobs)      JOBS="$2";        shift 2;;
-        --gpus)      GPUS="$2";        shift 2;;
-        --gpu_type)  GPU_TYPE="$2";    shift 2;;
-        --walltime)  WALLTIME="$2";    shift 2;;
-        --mem)       MEM_PER_CPU="$2"; shift 2;;
-        --account)   ACCOUNT="$2";     shift 2;;
-        --email)     EMAIL="$2";       shift 2;;
-        --cuda_module) CUDA_MODULE="$2"; shift 2;;
+        --setup)     MODE="setup";   shift;;
+        --check)     MODE="check";   shift;;
+        --collect)   MODE="collect"; shift;;
+        --probe)     MODE="probe";   shift;;
+        --ungated)   GATE_TAU="-1.0"; shift;;
+        --pvals)     PVALS="$2";     shift 2;;
+        --seeds)     SEEDS="$2";     shift 2;;
+        --sparsity)  SPARSITY="$2";  shift 2;;
+        --lambda)    LAMBDA="$2";    shift 2;;
+        --tau)       GATE_TAU="$2";  shift 2;;
+        --rescale)   SINGLE_QUBIT_RESCALE="$2"; shift 2;;
+        --base_hp)   BASE_HP="$2";   shift 2;;
+        --codename)  CODENAME="$2";  shift 2;;
+        --nlayers)   NLAYERS="$2";   shift 2;;
+        --gpu_type)  GPU_TYPE="$2";  shift 2;;
+        --walltime)  WALLTIME="$2";  shift 2;;
+        --account)   ACCOUNT="$2";   shift 2;;
+        --outdir)    OUTDIR="$2";    shift 2;;
         -h|--help)   usage; exit 0;;
         *) echo "unknown flag: $1" >&2; exit 2;;
     esac
 done
 
+CER_DIR="$WORKDIR/$CODENAME/correlated_weights"
 MODELS_DIR="$WORKDIR/$CODENAME/models"
 CLUSTER_DIR="$WORKDIR/$CODENAME/cluster"
-BASE_HP_PATH="$MODELS_DIR/$BASE_HP"
 
-[ -d "$MODELS_DIR" ]   || { echo "no models dir: $MODELS_DIR (run this from expts/)" >&2; exit 1; }
-[ -f "$BASE_HP_PATH" ] || { echo "no base hyperparams: $BASE_HP_PATH" >&2; exit 1; }
+# ------------------------------------------------------------------ setup ---
+if [ "$MODE" = "setup" ]; then
+    src="$WORKDIR/$SOURCE_CODENAME"; dst="$WORKDIR/$CODENAME"
+    [ -d "$src" ] || { echo "source codename missing: $src (run from expts/)" >&2; exit 1; }
+    mkdir -p "$dst"/{models,results,logs,cluster}
+    for shared in code training_data testing_data correlated_weights; do
+        [ -e "$dst/$shared" ] || { ln -s "$(cd "$src/$shared" && pwd)" "$dst/$shared"; echo "  linked  $shared"; }
+    done
+    cp -n "$src"/models/*.toml "$dst/models/" 2>/dev/null || true
+    echo "  $dst ready."
+    echo "  NOTE: if correlated_weights is a SYMLINK back to $SOURCE_CODENAME, the"
+    echo "        revised-J files must be placed there, not in the debug copy."
+    exit 0
+fi
+
+# ------------------------------------------------------------------ collect --
+if [ "$MODE" = "collect" ]; then
+    results_dir="$WORKDIR/$CODENAME/results"
+    [ -d "$results_dir" ] || { echo "no results dir: $results_dir" >&2; exit 1; }
+    extra=""; [ -n "${OUTDIR:-}" ] && extra="--outdir ${OUTDIR}"
+    exec julia --project="$SCRIPT_DIR/../../" "$SCRIPT_DIR/collect_correlation_weight.jl" "$results_dir" $extra
+fi
+
+# ------------------------------------------------------- CER file preflight --
+# The entire sweep is about the two-qubit couplings, so a CER file that parses to
+# zero pairs would produce a "null result" that is really a missing-data bug.
+# `require_correlations = true` catches it inside Julia; this catches it before
+# burning a GPU allocation, and additionally reports the J statistics so a
+# convention regression is visible at submit time.
+check_cer_files() {
+    local ok=1
+    printf "  %-10s %-8s %-7s %-10s %-10s %-10s %s\n" \
+           "p" "singles" "pairs" "J mean" "J min" "J max" "% J<0"
+    for p in $PVALS; do
+        local f="$CER_DIR/correlated_weights_p_${p}_s_1.txt"
+        if [ ! -f "$f" ]; then
+            printf "  %-10s MISSING: %s\n" "$p" "$f"; ok=0; continue
+        fi
+        awk -F: -v p="$p" '
+            /^\(/ { n_pair++; v=$2+0; s+=v; if (n_pair==1){mn=v;mx=v}
+                    if (v<mn) mn=v; if (v>mx) mx=v; if (v<0) neg++; next }
+            NF==2 { n_single++ }
+            END {
+                if (n_pair == 0) { printf "  %-10s %-8d %-7d  NO PAIR ENTRIES\n", p, n_single, 0; exit 3 }
+                printf "  %-10s %-8d %-7d %-+10.4f %-+10.4f %-+10.4f %.1f%%\n",
+                       p, n_single, n_pair, s/n_pair, mn, mx, 100*neg/n_pair
+            }' "$f" || ok=0
+    done
+    [ "$ok" = "1" ] || return 1
+    return 0
+}
+
+if [ "$MODE" = "check" ]; then
+    echo "CER data in $CER_DIR"
+    echo "  (expecting J = log[P00*P11/(P01*P10)], the revised convention)"
+    echo
+    check_cer_files || { echo "PREFLIGHT FAILED." >&2; exit 1; }
+    exit 0
+fi
+
+# ------------------------------------------------------------------ primary --
+[ -d "$MODELS_DIR" ] || { echo "no models dir: $MODELS_DIR — run --setup first" >&2; exit 1; }
+[ -f "$MODELS_DIR/$BASE_HP" ] || { echo "no base hyperparams: $MODELS_DIR/$BASE_HP" >&2; exit 1; }
 mkdir -p "$CLUSTER_DIR"
 
-# n_epochs and the CER tag are needed to reconstruct the weights filename that
-# src/train.jl will write/look for (test-mode preflight).
-N_EPOCHS=$(grep -E '^[[:space:]]*n_epochs[[:space:]]*=' "$BASE_HP_PATH" | head -1 | sed -E 's/[^0-9]*([0-9]+).*/\1/')
-if grep -qE '^[[:space:]]*use_CER[[:space:]]*=[[:space:]]*false' "$BASE_HP_PATH"; then
-    CER_TAG="_no_cer"
-else
-    CER_TAG=""
+if [ "$MODE" = "probe" ]; then
+    PVALS="0.0007"; SEEDS="1"; WALLTIME="8:00:00"
 fi
-[ -n "$N_EPOCHS" ] || { echo "could not read n_epochs from $BASE_HP_PATH" >&2; exit 1; }
+
+echo "CER data preflight:"
+check_cer_files || { echo "PREFLIGHT FAILED — refusing to submit." >&2; exit 1; }
+echo
 
 TS=$(date +%Y-%m-%d_%H-%M-%S)
-COMMANDS="$CLUSTER_DIR/sweep_commands_${MODE}_${TS}.txt"
-SLURM="$CLUSTER_DIR/sweep_${MODE}_${TS}.sh"
-: > "$COMMANDS"
+TRAIN_CMDS="$CLUSTER_DIR/cw_${MODE}_train_${TS}.txt"
+TEST_CMDS="$CLUSTER_DIR/cw_${MODE}_test_${TS}.txt"
+HP_LIST="$CLUSTER_DIR/cw_${MODE}_hp_${TS}.txt"
+SLURM="$CLUSTER_DIR/cw_${MODE}_${TS}.sh"
+: > "$TRAIN_CMDS"; : > "$TEST_CMDS"; : > "$HP_LIST"
 
-# Filename-safe token: 0.01 -> 0p01, 1.0 -> 1p0
-tag_of() { echo "$1" | tr '.' 'p' | tr -d '+'; }
+tag_of() { echo "$1" | tr '.' 'p' | tr -d '-'; }
 
-RETRAIN=$([ "$MODE" = "train" ] && echo true || echo false)
+# `src/loss.jl` switches on `syndrome_gate_threshold <= 0`, so the label must be
+# decided by the same NUMERIC test — a string compare against "-1.0" would call
+# "-1" or "0" gated and silently mislabel every output file of such a run.
+gate_label="ungated"
+if awk -v tau="$GATE_TAU" 'BEGIN { exit !(tau > 0) }'; then
+    gate_label="gated"
+fi
 
-# --------------------------------------------------- generate hyperparams ---
-n_points=0
-n_dropped=0
-dropped_list=""
-for a4 in $ALPHA4; do
-  for a3 in $ALPHA3; do
-    t4=$(tag_of "$a4"); t3=$(tag_of "$a3")
-    run_tag="_a4${t4}_a3${t3}"
-    hp_name="hyperparams_sweep${run_tag}.toml"
-
-    # Strip the keys we override (plus stale/legacy ones), then append ours.
-    grep -vE '^[[:space:]]*(correlation_weight|sparsity_importance|retrain|run_tag|correlation_importance|correlation_syndrome_importance)[[:space:]]*=' \
-        "$BASE_HP_PATH" > "$MODELS_DIR/$hp_name"
+# `run_tag` deliberately omits p and the seed: p is already in the training
+# source (train_p_<p>_s_1) and the seed is auto-appended as _seed_<n>, so the
+# three axes are all recoverable from the filename without duplication.
+write_point() {   # <hp_name> <run_tag> <use_cer> <seed>
+    local hp_name="$1" run_tag="$2" use_cer="$3" seed="$4"
+    local require="true"
+    if [ "$use_cer" = "false" ]; then
+        require="false"
+    fi
+    grep -vE '^[[:space:]]*(sparsity_importance|retrain|run_tag|use_CER|seed|single_qubit_rescale|syndrome_gate_threshold|require_correlations)[[:space:]]*=' \
+        "$MODELS_DIR/$BASE_HP" > "$MODELS_DIR/$hp_name"
     cat >> "$MODELS_DIR/$hp_name" <<EOF
 
 # ---- injected by sweep_correlation_weight.sh ($MODE, $TS) ----
-# TRAIN mode sets retrain = true (each point trains its own model); TEST mode
-# sets it false so the run LOADS that model instead of retraining on the GPU.
-retrain = $RETRAIN
-
-# Tag appended to model + results filenames so sweep points never collide.
+retrain = true
 run_tag = "${run_tag}"
+use_CER = $use_cer
+seed = $seed
 
-# alpha4: overall weight on the Ising correlation term. min == max => CONSTANT
-# (no annealing), so the sweep measures alpha4 itself rather than a schedule.
-correlation_weight = "${a4},${a4},0.7,up"
+# PINNED CONSTANT at ${SPARSITY} (min == max, so no annealing). Sparsity penalises
+# predicted errors while the correlation term rewards co-occurring ones; at the
+# previously annealed 0.3-0.5 it was ~400x larger and simply cancelled the
+# couplings. Zero removes the counterweight so the couplings can be judged.
+sparsity_importance = "${SPARSITY},${SPARSITY},0.8,up"
 
-# alpha3: sparsity weight — the counterweight to the correlation term's
-# one-directional push toward more predicted errors. Also held CONSTANT.
-sparsity_importance = "${a3},${a3},0.8,up"
+# Gate ON (tau > 0) confines certainty / sparsity / correlation to samples whose
+# soft H-syndrome is already (near-)satisfied, and keeps layer selection on
+# base_loss alone. This OVERRIDES the base TOML, which omits the key and so
+# defaults to -1 = ungated. Three reasons, all sharper at sparsity = 0: the aux
+# terms are tie-breakers on the solution manifold by design; ungated they enter
+# layer selection, so a layer can win by co-activating instead of clearing the
+# syndrome; and ungated the certainty regulariser is batch_size (= 20) times
+# stronger, because syndrome_loss_regularizer sums over the batch while the
+# gated path divides by n_samples. See the header.
+#
+# NOTE TO EDITORS: this heredoc is UNQUOTED (<<EOF, not <<'EOF') because it has
+# to expand the sweep's variables, so backticks and dollar-paren inside it are
+# command-substituted — a backtick-quoted identifier here silently vanishes from
+# the generated TOML. Keep prose in this block free of both.
+syndrome_gate_threshold = ${GATE_TAU}
+
+single_qubit_rescale = ${SINGLE_QUBIT_RESCALE}
+
+# Refuse to run if the CER file yielded no couplings, so a missing-pairs file
+# cannot masquerade as a null result in a sweep whose entire content is pairs.
+require_correlations = ${require}
 EOF
+    if [ -n "$LAMBDA" ]; then
+        grep -vE '^[[:space:]]*correlation_weight[[:space:]]*=' "$MODELS_DIR/$hp_name" > "$MODELS_DIR/$hp_name.tmp"
+        mv "$MODELS_DIR/$hp_name.tmp" "$MODELS_DIR/$hp_name"
+        cat >> "$MODELS_DIR/$hp_name" <<EOF
 
-    for p in $PVALS; do
-      train_source="train_p_${p}_s_${SEED}"
-      weights="$MODELS_DIR/neuralbp_weights_nlayers_${NLAYERS}_epochs_${N_EPOCHS}_trained_using_${train_source}${CER_TAG}${run_tag}.json"
+# lambda PINNED CONSTANT by --lambda (overrides the base TOML's anneal).
+correlation_weight = "${LAMBDA},${LAMBDA},0.7,up"
+EOF
+    fi
+    echo "$hp_name" >> "$HP_LIST"
+}
 
-      if [ "$MODE" = "test" ] && [ ! -f "$weights" ]; then
-          n_dropped=$((n_dropped + 1))
-          dropped_list="$dropped_list\n    $(basename "$weights")"
-          continue
-      fi
+emit_pair() {   # <hp_name> <p>
+    local hp="$1" p="$2"
+    local cer_data="correlated_weights_p_${p}_s_1.txt"
+    echo "julia --project=\"./../\" --heap-size-hint=$HEAP_HINT neural_bp_experiments.jl" \
+         "--workdir \$WORKDIR_RUNTIME --codename $CODENAME --n_hidden_layers $NLAYERS" \
+         "--hyperparams $hp --cer_data $cer_data --isdebug true --quiet true" \
+         "--train train_p_${p}_s_1.txt" >> "$TRAIN_CMDS"
+    echo "julia --project=\"./../\" --heap-size-hint=$HEAP_HINT neural_bp_experiments.jl" \
+         "--workdir \$WORKDIR_RUNTIME --codename $CODENAME --n_hidden_layers $NLAYERS" \
+         "--hyperparams $hp --cer_data $cer_data --quiet true --diagnose true" \
+         "--train train_p_${p}_s_1.txt --test test_p_${p}_s_1.txt" >> "$TEST_CMDS"
+}
 
-      cmd="julia --project=\"./../\" neural_bp_experiments.jl --workdir \$WORKDIR_RUNTIME --codename $CODENAME --n_hidden_layers $NLAYERS --hyperparams $hp_name --correlation_strengths_file correlated_weights_p_${p}_s_${SEED}.txt --quiet true --train ${train_source}.txt"
-      if [ "$MODE" = "test" ]; then
-          cmd="$cmd --test test_p_${p}_s_${SEED}.txt"
-      fi
-      echo "$cmd" >> "$COMMANDS"
-      n_points=$((n_points + 1))
+n_points=0
+for p in $PVALS; do
+  for seed in $SEEDS; do
+    for arm in cer nocer; do
+        use_cer="true"
+        if [ "$arm" = "nocer" ]; then
+            use_cer="false"
+        fi
+        run_tag="_cw${arm}_${gate_label}_sp$(tag_of "$SPARSITY")"
+        hp="hyperparams_cw_${arm}_${gate_label}_sp$(tag_of "$SPARSITY")_p$(tag_of "$p")_seed${seed}.toml"
+        write_point "$hp" "$run_tag" "$use_cer" "$seed"
+        emit_pair "$hp" "$p"
+        n_points=$((n_points + 1))
     done
   done
 done
 
-if [ "$MODE" = "test" ] && [ "$n_dropped" -gt 0 ]; then
-    echo "WARNING: $n_dropped point(s) have no trained model and were EXCLUDED:" >&2
-    printf "$dropped_list\n" >&2
-    echo "  (run the 'train' phase first, or add the lines back to $COMMANDS by hand)" >&2
-fi
-if [ "$n_points" -eq 0 ]; then
-    echo "ERROR: no commands generated." >&2
-    [ "$MODE" = "test" ] && echo "  every point is missing its trained model — run 'train' first." >&2
-    exit 1
-fi
-
-# ------------------------------------------------- SBATCH resource header ---
-GRES_LINE=""
-CUDA_LOAD=""
-if [ "$MODE" = "test" ] && [ "$GPUS" -gt 0 ]; then
-    if [ -n "$GPU_TYPE" ]; then
-        GRES_LINE="#SBATCH --gres=gpu:${GPU_TYPE}:${GPUS}"
-    else
-        GRES_LINE="#SBATCH --gres=gpu:${GPUS}"
+# ---- GPU bundle, sized by TRAINING concurrency (Narval: 1 RGU = 3.00 cores) ---
+if [ -z "$GPU_TYPE" ]; then
+    if   [ "$n_points" -le 1 ]; then GPU_TYPE="a100_1g.5gb"
+    elif [ "$n_points" -le 3 ]; then GPU_TYPE="a100_2g.10gb"
+    elif [ "$n_points" -le 6 ]; then GPU_TYPE="a100_3g.20gb"
+    else                             GPU_TYPE="a100"
     fi
-    CUDA_LOAD="module load $CUDA_MODULE"
 fi
+case "$GPU_TYPE" in
+    a100_1g.5gb)  SLOTS=1;  MEM="15G";  VRAM_GB=5  ;;
+    a100_2g.10gb) SLOTS=3;  MEM="31G";  VRAM_GB=10 ;;
+    a100_3g.20gb) SLOTS=6;  MEM="62G";  VRAM_GB=20 ;;
+    a100)         SLOTS=12; MEM="124G"; VRAM_GB=40 ;;
+    *) echo "unknown --gpu_type: $GPU_TYPE" >&2; exit 2;;
+esac
+[ "$n_points" -lt "$SLOTS" ] && SLOTS=$n_points
+TRAIN_WAVES=$(( (n_points + SLOTS - 1) / SLOTS ))
+GPU_MEMORY_PER_SLOT="$(( (VRAM_GB * 1024) / TEST_JOBS ))M"
 
-# With >1 GPU we hand each parallel slot its own device. Capturing SLURM's own
-# CUDA_VISIBLE_DEVICES first is essential: on MIG partitions it is a list of
-# UUIDs ("MIG-a,MIG-b"), and overwriting it with an integer index silently hides
-# the GPU and drops the job to CPU. `cut -d, -f{%}` works for both plain indices
-# and MIG UUIDs. `bash -c {}` re-parses the shell-quoted command.
-if [ "$MODE" = "test" ] && [ "$GPUS" -gt 1 ]; then
-    PARALLEL_LINE="export SLURM_CUDA_VISIBLE_DEVICES=\$CUDA_VISIBLE_DEVICES
-parallel --jobs $JOBS --results \"\$LOCAL_LOGS\" 'CUDA_VISIBLE_DEVICES=\$(echo \$SLURM_CUDA_VISIBLE_DEVICES | cut -d, -f{%}) bash -c {}' < \"\$COMMANDS_LOCAL\" &"
-else
-    PARALLEL_LINE="parallel --jobs $JOBS --results \"\$LOCAL_LOGS\" < \"\$COMMANDS_LOCAL\" &"
-fi
-
-# ----------------------------------------------------------- SLURM script ---
 cat > "$SLURM" <<EOF
 #!/bin/bash
 #SBATCH --account=$ACCOUNT
-#SBATCH --job-name=cer_sweep_${MODE}_$TS
-#SBATCH --output=$CLUSTER_DIR/sweep_${MODE}_${TS}.out
-#SBATCH --error=$CLUSTER_DIR/sweep_${MODE}_${TS}.err
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=$JOBS
-#SBATCH --mem-per-cpu=$MEM_PER_CPU
+#SBATCH --job-name=cw_${MODE}_$TS
+#SBATCH --output=$CLUSTER_DIR/cw_${MODE}_${TS}.out
+#SBATCH --error=$CLUSTER_DIR/cw_${MODE}_${TS}.err
+#SBATCH --gpus=${GPU_TYPE}:1
+#SBATCH --cpus-per-task=$SLOTS
+#SBATCH --mem=$MEM
 #SBATCH --time=$WALLTIME
-$GRES_LINE
-#SBATCH --signal=B:TERM@300
+#SBATCH --signal=B:TERM@600
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=$EMAIL
 
-# Standalone CER sweep runner — $MODE phase, $n_points command(s), $JOBS at a time.
-# Deliberately does NOT use submit.sh / batch_run.jl.
-# NOTE: no 'set -e' — one failing point must not kill the rest of the sweep.
+# CER vs no-CER across p, revised J convention, sparsity = $SPARSITY ($MODE), $n_points point(s).
+# PHASE 1 trains at $SLOTS-way concurrency, CPU only (Enzyme AD cannot use a GPU).
+# PHASE 2 tests $TEST_JOBS at a time — one MIG permits one CUDA context, and four
+# concurrent contexts on a 20 GB MIG previously killed 2 of 4 runs at
+# cuDevicePrimaryCtxRetain.
 set -uo pipefail
-echo "========================================="
-echo "sweep [$MODE] started: \$(date)"
-echo "points: $n_points   parallel slots: $JOBS   USE_GPU=$USE_GPU"
-echo "========================================="
+echo "correlation-weight sweep ($MODE) started: \$(date)"
+nvidia-smi || true
 
 module load $JULIA_MODULE
-$CUDA_LOAD
-
+module load $CUDA_MODULE
 if [ -z "\${JULIA_DEPOT_PATH:-}" ]; then
     if [ -n "\${SCRATCH:-}" ] && [ -d "\$SCRATCH/.julia" ]; then
         export JULIA_DEPOT_PATH="\$SCRATCH/.julia"
@@ -275,81 +420,103 @@ if [ -z "\${JULIA_DEPOT_PATH:-}" ]; then
         export JULIA_DEPOT_PATH="\$HOME/.julia"
     fi
 fi
-echo "[depot] \$JULIA_DEPOT_PATH"
-
-# Training is Enzyme reverse-mode AD => CPU only. Testing is a forward pass => GPU.
-export USE_GPU=$USE_GPU
+export GPU_BACKEND=cuda
 export JULIA_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
-export OMP_NUM_THREADS=1
-export MKL_NUM_THREADS=1
-export JULIA_NUM_PRECOMPILE_TASKS=1
+export JULIA_HEAP_SIZE_HINT=$HEAP_HINT
+export JULIA_PKG_OFFLINE=true
 
 cd \$SLURM_SUBMIT_DIR
 
-# Precompile ONCE before fanning out, so N parallel workers don't race on the
-# shared depot lock.
-julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
+# Precompile HERE: CUDA_Runtime_jll must see a driver, or "no CUDA runtime found"
+# is baked in. LocalPreferences.toml must keep local_toolkit = true.
+if ! timeout 1800 julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'; then
+    echo "ERROR: precompilation failed or timed out." >&2; exit 1
+fi
 export JULIA_PKG_PRECOMPILE_AUTO=0
+julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using CUDA; @info "CUDA functional: \$(CUDA.functional())"' \\
+    || echo "WARNING: CUDA not functional — the test phase would fall back to CPU."
 
-# ---- stage in to node-local disk -------------------------------------------
 LOCAL_WORK_DIR="\$SLURM_TMPDIR/$CODENAME"
-echo "staging $CODENAME -> \$SLURM_TMPDIR"
-STAGE_IN_START=\$(date +%s)
-tar -cf - -C "\$(dirname $WORKDIR/$CODENAME)" "\$(basename $WORKDIR/$CODENAME)" | tar -xf - -C "\$SLURM_TMPDIR"
-echo "[stage-in] done in \$(( \$(date +%s) - STAGE_IN_START ))s"
+tar -chf - -C "\$(dirname $WORKDIR/$CODENAME)" "\$(basename $WORKDIR/$CODENAME)" | tar -xf - -C "\$SLURM_TMPDIR"
 
-# Commands carry a placeholder so the workdir resolves to node-local at runtime.
-COMMANDS_LOCAL="\$SLURM_TMPDIR/sweep_commands_${MODE}.txt"
-sed "s|\\\$WORKDIR_RUNTIME|\$SLURM_TMPDIR|g" "$COMMANDS" > "\$COMMANDS_LOCAL"
+TRAIN_LOCAL="\$SLURM_TMPDIR/cw_train.txt"; TEST_LOCAL="\$SLURM_TMPDIR/cw_test.txt"
+sed "s|\\\$WORKDIR_RUNTIME|\$SLURM_TMPDIR|g" "$TRAIN_CMDS" > "\$TRAIN_LOCAL"
+sed "s|\\\$WORKDIR_RUNTIME|\$SLURM_TMPDIR|g" "$TEST_CMDS"  > "\$TEST_LOCAL"
 
-LOCAL_LOGS="\$LOCAL_WORK_DIR/cluster/logs/sweep_${MODE}_$TS"
-mkdir -p "\$LOCAL_LOGS"
+LOCAL_LOGS="\$LOCAL_WORK_DIR/cluster/logs/cw_${MODE}_${TS}"
+mkdir -p "\$LOCAL_LOGS/train" "\$LOCAL_LOGS/test"
 
-# ---- stage out (fires on normal exit AND on SLURM's pre-walltime TERM) ------
 stage_out_done=0
 stage_out() {
     [ "\$stage_out_done" = "1" ] && return 0
     stage_out_done=1
-    echo "[stage-out] \$(date '+%F %T')"
     DIRS=()
-    for d in results models cluster/logs; do
+    for d in results models logs cluster/logs; do
         [ -d "\$LOCAL_WORK_DIR/\$d" ] && DIRS+=("\$d")
     done
-    if [ \${#DIRS[@]} -gt 0 ]; then
-        tar -cf - -C "\$LOCAL_WORK_DIR" "\${DIRS[@]}" | tar -xf - -C "$WORKDIR/$CODENAME"
-        echo "[stage-out] copied: \${DIRS[*]}"
-    else
-        echo "[stage-out] nothing to copy."
-    fi
+    [ \${#DIRS[@]} -gt 0 ] && tar -cf - --exclude='hyperparams_cw_*.toml' \\
+        -C "\$LOCAL_WORK_DIR" "\${DIRS[@]}" | tar -xf - -C "$WORKDIR/$CODENAME"
 }
-term_handler() { stage_out; exit 0; }
-trap term_handler TERM
+trap 'stage_out; exit 0' TERM
 trap stage_out EXIT
 
-# Background + wait so the TERM trap fires immediately; a FOREGROUND parallel
-# would defer it until it returned, and the walltime SIGKILL would wipe
-# \$SLURM_TMPDIR with every partial result in it.
-$PARALLEL_LINE
+export USE_GPU=0
+echo "[phase 1] training \$(wc -l < "\$TRAIN_LOCAL") point(s), $SLOTS at a time: \$(date)"
+parallel --jobs $SLOTS --results "\$LOCAL_LOGS/train" < "\$TRAIN_LOCAL" &
 wait \$!
+echo "[phase 1] done: \$(date)"
 
-echo "========================================="
-echo "sweep [$MODE] finished: \$(date)"
-echo "========================================="
+while read -r hp; do
+    f="\$LOCAL_WORK_DIR/models/\$hp"
+    [ -f "\$f" ] || continue
+    sed -E 's|^([[:space:]]*retrain[[:space:]]*=[[:space:]]*)true([[:space:]]*(#.*)?)\$|\1false\2|' "\$f" > "\$f.tmp" && mv "\$f.tmp" "\$f"
+done < "$HP_LIST"
+
+export USE_GPU=1
+export GPU_MEMORY=$GPU_MEMORY_PER_SLOT
+echo "[phase 2] testing \$(wc -l < "\$TEST_LOCAL") point(s), $TEST_JOBS at a time: \$(date)"
+parallel --jobs $TEST_JOBS --results "\$LOCAL_LOGS/test" < "\$TEST_LOCAL" &
+wait \$!
+echo "correlation-weight sweep ($MODE) finished: \$(date)"
 EOF
 chmod +x "$SLURM"
 
-echo "[$MODE] generated $n_points command(s): $(echo $ALPHA4 | wc -w) alpha4 x $(echo $ALPHA3 | wc -w) alpha3 x $(echo $PVALS | wc -w) p"
-[ "$n_dropped" -gt 0 ] && echo "         ($n_dropped dropped for missing models)"
-echo "  hyperparams -> $MODELS_DIR/hyperparams_sweep_a4*_a3*.toml   (retrain = $RETRAIN)"
-echo "  commands    -> $COMMANDS"
-echo "  slurm       -> $SLURM"
-if [ "$MODE" = "train" ]; then
-    echo "  resources   -> ${JOBS} CPUs, $WALLTIME, USE_GPU=0 (Enzyme AD is CPU-only)"
-else
-    echo "  resources   -> ${JOBS} slot(s), ${GPUS} GPU(s), $WALLTIME, USE_GPU=1"
-fi
+n_p=$(echo $PVALS | wc -w); n_seeds=$(echo $SEEDS | wc -w)
+echo "[correlation-weight $MODE] $n_points point(s)"
 echo
+printf "  %-28s %-9s %-12s %-9s %s\n" "run_tag" "use_CER" "couplings" "sparsity" "role"
+printf "  %-28s %-9s %-12s %-9s %s\n" \
+    "_cwcer_${gate_label}_sp$(tag_of "$SPARSITY")" "true" "revised J" "$SPARSITY" "treatment"
+printf "  %-28s %-9s %-12s %-9s %s\n" \
+    "_cwnocer_${gate_label}_sp$(tag_of "$SPARSITY")" "false" "none" "$SPARSITY" "baseline: flat p=0.1"
+echo
+echo "  p      -> $PVALS"
+echo "  seeds  -> $SEEDS  (SAME set on both arms => paired contrast)"
+echo "  grid   -> $n_p p x 2 arms x $n_seeds seed(s) = $n_points"
+echo "  base   -> $MODELS_DIR/$BASE_HP"
+echo "  gate   -> syndrome_gate_threshold = $GATE_TAU ($gate_label)"
+echo "  lambda -> $([ -n "$LAMBDA" ] && echo "$LAMBDA (pinned)" || echo 'inherited from base TOML (annealed 1e-2 -> 1)')"
+echo "  GPU    -> $GPU_TYPE, $SLOTS core(s), $MEM; train $TRAIN_WAVES wave(s), test serial"
+echo "  assert -> require_correlations = true on every CER arm"
+echo
+if [ "$MODE" = "primary" ]; then
+    echo "  reading protocol, fixed in advance:"
+    echo "    CER beats no-CER at every p, gap grows with p  -> couplings are working;"
+    echo "                                                      the p^2 co-firing scaling predicts exactly this"
+    echo "    CER beats no-CER uniformly, no p trend         -> it is the single-qubit PRIORS, not the couplings;"
+    echo "                                                      confirm with --lambda 0 (priors on, couplings off)"
+    echo "    no separation at any p                         -> the revised J did not rescue it either;"
+    echo "                                                      the 1/|C| normalisation is the remaining suspect"
+    echo "    CER WORSE, especially at large p               -> the reward is outrunning the syndrome term;"
+    echo "                                                      check gate_open_fraction, then lower --lambda"
+    echo
+    if [ "$gate_label" = "ungated" ]; then
+        echo "  WARNING: running UNGATED with sparsity = $SPARSITY. The aux terms enter layer"
+        echo "  selection and the certainty regulariser is ~batch_size stronger than in the"
+        echo "  gated path. This is a deliberate contrast against the default; do not read"
+        echo "  it as the primary result."
+        echo
+    fi
+fi
 echo "submit with:  sbatch $SLURM"
-[ "$MODE" = "train" ] && echo "then, once it finishes:  bash misc/sweep_correlation_weight.sh test"
-exit 0
