@@ -187,7 +187,8 @@ export save_trained_weights, extract_weights_for_BP, save_extracted_weights_for_
 # Loss functions
 include("loss.jl")
 export compute_additional_loss_from_ising_correlations, compute_loss_including_correlations, linear_ramp_loss,
-       compute_quadratic_residue_loss_from_llrs, syndrome_loss_regularizer, sparsity_penalty, compute_sine_residue_loss_from_llrs
+       compute_quadratic_residue_loss_from_llrs, syndrome_loss_regularizer, sparsity_penalty, compute_sine_residue_loss_from_llrs,
+       compute_smooth_loss_from_llrs
 
 # Training routines
 include("train.jl")

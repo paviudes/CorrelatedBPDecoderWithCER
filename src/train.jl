@@ -106,7 +106,8 @@ function get_individual_loss_values(
     for layer in (warmup_loss_layers + 1):n_layers
         post = posterior_llrs[:, :, layer]
         # base_loss   = compute_quadratic_residue_loss_from_llrs(post, expected_recoveries, parity_check_matrix_dual)
-        base_loss   = compute_sine_residue_loss_from_llrs(post, expected_recoveries, parity_check_matrix_dual)
+        # base_loss   = compute_sine_residue_loss_from_llrs(post, expected_recoveries, parity_check_matrix_dual)
+        base_loss = compute_smooth_loss_from_llrs(post, expected_recoveries, parity_check_matrix_dual)
         llr_reg     = syndrome_loss_regularizer(post)
         sparse_pen  = sparsity_penalty(post)
         corr_pen::Float32 = 0f0

@@ -9,22 +9,29 @@
 @inline sine_residue(x) = abs(sin(π * x / 2))
 
 # ------------------------------------------------------------------------------
-#   quadratic_residue(x) = (x − 2·round(x/2))² = squared distance from x to
-#                          the nearest even integer.
-#       - Same zeros as |sin(π x/2)|.
-#       - Zeros at even integer values of x.
-#       - Piecewise quadratic; d/dx = 2(x − 2k) on each smooth piece, so
-#         restoring force scales linearly with distance from the nearest
-#         valid solution.
-#       - Subgradient ±2 (cusp) at the odd integers — descent is always
-#         defined, no plateau at the maxima.
+# Mod function for floating-point numbers, returning the distance to the nearest even integer.
 # ------------------------------------------------------------------------------
-@inline quadratic_residue(x) = (x - 2 * round(x / 2))^2
-# Equivalent floor-based form, in case Enzyme objects to `round`:
-#   @inline quadratic_residue(x) = (x - 2 * floor((x + 1) / 2))^2
-# Both rely on `round` / `floor` being treated as zero-derivative
-# (piecewise constant), which matches their mathematical derivative
-# almost everywhere.
+@inline floating_modulus(x) = (x - 2 * floor(x / 2))
+function smooth_loss(real_syndrome_bit::Float32)::Float32
+    """
+    Suppose x = s(μ) mod 2, where s(μ) is the soft syndrome and m is the expected recovery.
+    smooth_loss(x) = x^2 when 0 ≤ x ≤ 1
+                = (2 - x)^2 when 1 < x ≤ 2
+        - Same zeros as |sin(π x/2)|.
+    d/dx = 2x when 0 ≤ x ≤ 1
+        = - 2(2 - x) when 1 < x ≤ 2
+    So the derivative does not vanish at the maxima (x = 1, 3, ...), so the optimizer always has a gradient signal to push x toward the nearest even integer.
+    """
+    x = floating_modulus(real_syndrome_bit)
+    if 0 <= x <= 1
+        return x^2
+    elseif 1 < x <= 2
+        return (2 - x)^2
+    else
+        error("smooth_loss is only defined for 0 ≤ x ≤ 2")
+    end
+end
+
 
 function compute_sine_residue_loss_from_llrs(
     posterior_llrs::Matrix{Float32},
@@ -46,6 +53,44 @@ function compute_sine_residue_loss_from_llrs(
     e_total_matrix = @. sigmoid(posterior_llrs) + expected_recoveries
     commutation_relations_matrix = parity_check_matrix_dual * e_total_matrix
     average_loss = sum(@. sine_residue(commutation_relations_matrix)) / n_samples
+    return average_loss
+end
+
+function compute_smooth_loss_from_llrs(
+    posterior_llrs::Matrix{Float32},
+    expected_recoveries::BitMatrix,
+    parity_check_matrix_dual::BitMatrix
+)::Float32
+    """
+    Drop-in replacement for `compute_loss_error_from_llrs` that swaps the
+    per-check penalty f(x) = |sin(π x / 2)| for the piecewise-smooth squared
+    distance from x to the nearest even integer:
+
+        g(x) = x² when 0 ≤ x ≤ 1
+             = (2 - x)² when 1 < x ≤ 2
+
+    Both penalties vanish iff x ≡ 0 (mod 2), so the underlying check —
+    "residual error has trivial syndrome with respect to H^⟂" — is unchanged.
+    The motivation for the swap is purely about the optimization landscape:
+
+    1. Plateau at the maxima. d/dx |sin(πx/2)| = 0 at every integer (both
+       zeros AND ones), so syndrome bits that drift to x ≈ 1 sit on a
+       plateau and the optimizer can't push them out. g(x) has subgradient
+       ±2 at odd integers (cusps), so descent is always defined.
+    2. Stronger restoring force near the zeros. d/dx g(x) = 2(x − 2k) on
+       each smooth piece — linear in distance from the nearest valid
+       solution, vs. the sinusoidal penalty which is shallow near the zeros.
+
+    L(μ, e) = ∑_i  g ( ∑_(jk) H^⟂_ij [ e_k + σ(μ_k) ] )
+    with
+        σ(μ_k) = 1 / (1 + exp(μ_k))
+        g(x)   = (x - 2 · round(x/2))²
+        H^⟂    = rows are stabilizer + logical generators of the code.
+    """
+    n_samples = size(expected_recoveries, 2)
+    e_total_matrix = @. sigmoid(posterior_llrs) + expected_recoveries
+    commutation_relations_matrix = parity_check_matrix_dual * e_total_matrix
+    average_loss = sum(@. smooth_loss(commutation_relations_matrix)) / n_samples
     return average_loss
 end
 
@@ -406,7 +451,8 @@ function compute_loss_including_correlations(
         for layer in (warmup_loss_layers + 1):n_layers
             post = posterior_llrs[:, :, layer]
             # base_loss   = compute_quadratic_residue_loss_from_llrs(post, expected_recoveries, parity_check_matrix_dual)
-            base_loss   = compute_sine_residue_loss_from_llrs(post, expected_recoveries, parity_check_matrix_dual)
+            # base_loss   = compute_sine_residue_loss_from_llrs(post, expected_recoveries, parity_check_matrix_dual)
+            base_loss = compute_smooth_loss_from_llrs(post, expected_recoveries, parity_check_matrix_dual)
             llr_reg     = syndrome_loss_regularizer(post)
             sparse_pen  = sparsity_penalty(post)
             corr_pen::Float32 = 0f0
@@ -435,8 +481,10 @@ function compute_loss_including_correlations(
     gated_aux_per_layer = zeros(Float32, n_scored)
     for layer in (warmup_loss_layers + 1):n_layers
         post = posterior_llrs[:, :, layer]
+        # base_per_layer[layer - warmup_loss_layers] =
+        #     compute_sine_residue_loss_from_llrs(post, expected_recoveries, parity_check_matrix_dual)
         base_per_layer[layer - warmup_loss_layers] =
-            compute_sine_residue_loss_from_llrs(post, expected_recoveries, parity_check_matrix_dual)
+            compute_smooth_loss_from_llrs(post, expected_recoveries, parity_check_matrix_dual)
 
         gate = syndrome_gate_per_sample(
             post, expected_recoveries, parity_check_matrix, syndrome_gate_threshold
