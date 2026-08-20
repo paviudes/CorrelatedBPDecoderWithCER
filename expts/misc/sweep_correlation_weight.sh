@@ -7,6 +7,7 @@
 #
 #     bash misc/sweep_correlation_weight.sh --setup      # once: create the codename
 #     bash misc/sweep_correlation_weight.sh --check      # verify the CER files only
+#     bash misc/sweep_correlation_weight.sh --pin_cer    # lock the CER files by SHA-256
 #     bash misc/sweep_correlation_weight.sh --probe      # 1 p, 1 seed, both arms
 #     bash misc/sweep_correlation_weight.sh              # primary: 3 p x 2 arms x 3 seeds
 #     bash misc/sweep_correlation_weight.sh --ungated    # contrast: historical tau = -1
@@ -155,7 +156,13 @@ JULIA_MODULE="julia/1.12.5"
 CUDA_MODULE="cuda"
 GPU_TYPE=""
 TEST_JOBS=1                    # serial GPU phase: one MIG permits one CUDA context
-WALLTIME="20:00:00"
+# MEASURED, not guessed. The 18-point run of 2026-08-14 took 2h41m end to end:
+#   precompile + stage-in   8 min
+#   phase 1 (train, 2 waves of 12)  1h23m
+#   phase 2 (test, serial)          1h11m   (mean 268 s/point, max 1011 s)
+# 6h is a 2.2x margin, which covers a slower loss function and a busier Lustre.
+# Asking for 20h only pushes the job down the scheduler's queue for nothing.
+WALLTIME="6:00:00"
 HEAP_HINT="4G"
 MODE="primary"
 
@@ -165,6 +172,7 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --setup)     MODE="setup";   shift;;
         --check)     MODE="check";   shift;;
+        --pin_cer)   MODE="pin_cer"; shift;;
         --collect)   MODE="collect"; shift;;
         --probe)     MODE="probe";   shift;;
         --ungated)   GATE_TAU="-1.0"; shift;;
@@ -219,34 +227,122 @@ fi
 # `require_correlations = true` catches it inside Julia; this catches it before
 # burning a GPU allocation, and additionally reports the J statistics so a
 # convention regression is visible at submit time.
+#
+# THE FINGERPRINT EXISTS BECAUSE THIS HAS ALREADY HAPPENED ONCE. The revised-J
+# files were updated on the workstation but never reached the cluster, and a
+# later restore from a cluster tarball overwrote them locally too — so a sweep
+# ran, and was analysed, on the superseded convention. The statistics below make
+# that visible to a reader; the SHA-256 pin below makes it FATAL to a script.
+#
+#     bash misc/sweep_correlation_weight.sh --pin_cer    # record what is there now
+#
+# writes J_FINGERPRINT.txt next to the data. Every later run compares against it
+# and refuses to submit on a mismatch. Commit that file.
+FINGERPRINT_FILE="$CER_DIR/J_FINGERPRINT.txt"
+
+cer_file_for() {
+    echo "$CER_DIR/correlated_weights_p_${1}_s_1.txt"
+}
+
+sha_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | cut -d' ' -f1
+    else
+        shasum -a 256 "$1" | cut -d' ' -f1
+    fi
+}
+
 check_cer_files() {
     local ok=1
-    printf "  %-10s %-8s %-7s %-10s %-10s %-10s %s\n" \
-           "p" "singles" "pairs" "J mean" "J min" "J max" "% J<0"
+    printf "  %-10s %-8s %-7s %-10s %-10s %-10s %-7s %s\n" \
+           "p" "singles" "pairs" "J mean" "J min" "J max" "% J<0" "sha256"
     for p in $PVALS; do
-        local f="$CER_DIR/correlated_weights_p_${p}_s_1.txt"
+        local f
+        f="$(cer_file_for "$p")"
         if [ ! -f "$f" ]; then
             printf "  %-10s MISSING: %s\n" "$p" "$f"; ok=0; continue
         fi
-        awk -F: -v p="$p" '
+        local short
+        short="$(sha_of "$f" | cut -c1-12)"
+        awk -F: -v p="$p" -v sha="$short" '
             /^\(/ { n_pair++; v=$2+0; s+=v; if (n_pair==1){mn=v;mx=v}
                     if (v<mn) mn=v; if (v>mx) mx=v; if (v<0) neg++; next }
             NF==2 { n_single++ }
             END {
                 if (n_pair == 0) { printf "  %-10s %-8d %-7d  NO PAIR ENTRIES\n", p, n_single, 0; exit 3 }
-                printf "  %-10s %-8d %-7d %-+10.4f %-+10.4f %-+10.4f %.1f%%\n",
-                       p, n_single, n_pair, s/n_pair, mn, mx, 100*neg/n_pair
+                printf "  %-10s %-8d %-7d %-+10.4f %-+10.4f %-+10.4f %-7.1f %s\n",
+                       p, n_single, n_pair, s/n_pair, mn, mx, 100*neg/n_pair, sha
             }' "$f" || ok=0
     done
     [ "$ok" = "1" ] || return 1
     return 0
 }
 
+# Compare the files against the pin, if one exists. A missing pin is a warning
+# (the guard is opt-in); a MISMATCH is fatal, because it means the couplings are
+# not the ones the pinned analysis was built on.
+verify_cer_pin() {
+    if [ ! -f "$FINGERPRINT_FILE" ]; then
+        echo "  no J_FINGERPRINT.txt — the couplings are UNPINNED. After confirming"
+        echo "  the files are the intended vintage, run --pin_cer to lock them."
+        return 0
+    fi
+    local mismatched=0
+    for p in $PVALS; do
+        local f expected actual
+        f="$(cer_file_for "$p")"
+        [ -f "$f" ] || continue
+        expected="$(awk -v p="$p" '$1 == p { print $2 }' "$FINGERPRINT_FILE")"
+        if [ -z "$expected" ]; then
+            echo "  p=$p not in the pin — add it with --pin_cer."
+            continue
+        fi
+        actual="$(sha_of "$f")"
+        if [ "$expected" != "$actual" ]; then
+            echo "  p=$p FINGERPRINT MISMATCH" >&2
+            echo "      pinned : $expected" >&2
+            echo "      actual : $actual" >&2
+            mismatched=$((mismatched + 1))
+        fi
+    done
+    if [ "$mismatched" -gt 0 ]; then
+        echo >&2
+        echo "  $mismatched CER file(s) differ from the pin. These are not the couplings" >&2
+        echo "  the pin was taken on. Restore the intended files, or re-pin deliberately" >&2
+        echo "  with --pin_cer if the change is intended." >&2
+        return 1
+    fi
+    echo "  J_FINGERPRINT.txt: all $(echo $PVALS | wc -w) file(s) match the pin."
+    return 0
+}
+
+if [ "$MODE" = "pin_cer" ]; then
+    echo "CER data in $CER_DIR"
+    echo
+    check_cer_files || { echo "PREFLIGHT FAILED — refusing to pin." >&2; exit 1; }
+    {
+        echo "# J_FINGERPRINT.txt — SHA-256 of the CER coupling files this analysis assumes."
+        echo "# Written by sweep_correlation_weight.sh --pin_cer on $(date +%Y-%m-%d_%H-%M-%S)."
+        echo "# Columns: p  sha256"
+        for p in $PVALS; do
+            f="$(cer_file_for "$p")"
+            [ -f "$f" ] || continue
+            echo "$p $(sha_of "$f")"
+        done
+    } > "$FINGERPRINT_FILE"
+    echo
+    echo "  pinned -> $FINGERPRINT_FILE"
+    echo "  commit this file so a stale sync cannot pass unnoticed."
+    exit 0
+fi
+
 if [ "$MODE" = "check" ]; then
     echo "CER data in $CER_DIR"
     echo "  (expecting J = log[P00*P11/(P01*P10)], the revised convention)"
     echo
     check_cer_files || { echo "PREFLIGHT FAILED." >&2; exit 1; }
+    echo
+    verify_cer_pin || exit 1
     exit 0
 fi
 
@@ -256,11 +352,12 @@ fi
 mkdir -p "$CLUSTER_DIR"
 
 if [ "$MODE" = "probe" ]; then
-    PVALS="0.0007"; SEEDS="1"; WALLTIME="8:00:00"
+    PVALS="0.0007"; SEEDS="1"; WALLTIME="3:00:00"
 fi
 
 echo "CER data preflight:"
 check_cer_files || { echo "PREFLIGHT FAILED — refusing to submit." >&2; exit 1; }
+verify_cer_pin  || { echo "PREFLIGHT FAILED — refusing to submit." >&2; exit 1; }
 echo
 
 TS=$(date +%Y-%m-%d_%H-%M-%S)
@@ -408,6 +505,19 @@ cat > "$SLURM" <<EOF
 # concurrent contexts on a 20 GB MIG previously killed 2 of 4 runs at
 # cuDevicePrimaryCtxRetain.
 set -uo pipefail
+
+# THIS IS A BATCH SCRIPT, NOT A SHELL SCRIPT. Running it with \`bash\` on a login
+# node leaves SLURM_SUBMIT_DIR and SLURM_TMPDIR unset, and \`set -u\` then kills it
+# at the first reference with the unhelpful "unbound variable". Worse, without
+# -u it would try to run an 18-point training job on the login node. Refuse.
+if [ -z "\${SLURM_JOB_ID:-}" ]; then
+    echo "ERROR: this script must be SUBMITTED, not executed." >&2
+    echo "         sbatch $SLURM" >&2
+    echo "  (running it with 'bash' leaves SLURM_SUBMIT_DIR/SLURM_TMPDIR unset," >&2
+    echo "   and would put an 18-point training run on a login node.)" >&2
+    exit 1
+fi
+
 echo "correlation-weight sweep ($MODE) started: \$(date)"
 nvidia-smi || true
 
