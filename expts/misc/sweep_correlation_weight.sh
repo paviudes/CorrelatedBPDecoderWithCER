@@ -8,6 +8,7 @@
 #     bash misc/sweep_correlation_weight.sh --setup      # once: create the codename
 #     bash misc/sweep_correlation_weight.sh --check      # verify the CER files only
 #     bash misc/sweep_correlation_weight.sh --pin_cer    # lock the CER files by SHA-256
+#     bash misc/sweep_correlation_weight.sh --lambda_sweep   # 5 lambda + baseline at one p
 #     bash misc/sweep_correlation_weight.sh --probe      # 1 p, 1 seed, both arms
 #     bash misc/sweep_correlation_weight.sh              # primary: 3 p x 2 arms x 3 seeds
 #     bash misc/sweep_correlation_weight.sh --ungated    # contrast: historical tau = -1
@@ -149,6 +150,13 @@ SPARSITY="0.0"                 # pinned CONSTANT — the point of the sweep
 GATE_TAU="0.5"                 # gate ON by default; --ungated for tau = -1
 LAMBDA=""                      # empty = inherit correlation_weight from base TOML
 SINGLE_QUBIT_RESCALE="0.1"     # inherited from the base TOML; exposed for clarity
+LAMBDAS=""                     # empty = one CER arm inheriting the base TOML's anneal
+INCLUDE_NOCER=1                # --no_nocer drops the flat-prior baseline
+# The lambda grid for --lambda_sweep. Deliberately BELOW 1, unlike the retired
+# sweep_lambda.sh grid {0, 1, 10, 100}: that was built when the term was inert.
+# At lambda = 0.76 it now produces a -4.26 sigma coset effect, so the question is
+# no longer "is it strong enough" but "where does the benefit stop paying".
+LAMBDA_GRID="0 0.1 0.3 0.75 1.5"
 
 ACCOUNT="def-jemerson_gpu"
 EMAIL="pavithran.sridhar@gmail.com"
@@ -160,9 +168,10 @@ TEST_JOBS=1                    # serial GPU phase: one MIG permits one CUDA cont
 #   precompile + stage-in   8 min
 #   phase 1 (train, 2 waves of 12)  1h23m
 #   phase 2 (test, serial)          1h11m   (mean 268 s/point, max 1011 s)
-# 6h is a 2.2x margin, which covers a slower loss function and a busier Lustre.
-# Asking for 20h only pushes the job down the scheduler's queue for nothing.
-WALLTIME="6:00:00"
+# The 2026-08-20 rerun came in at 2h37m for the same 18 points. 4h is a 1.5x
+# margin on a twice-measured number, and asking for more only pushes the job
+# down the scheduler's queue.
+WALLTIME="4:00:00"
 HEAP_HINT="4G"
 MODE="primary"
 
@@ -176,10 +185,13 @@ while [ "$#" -gt 0 ]; do
         --collect)   MODE="collect"; shift;;
         --probe)     MODE="probe";   shift;;
         --ungated)   GATE_TAU="-1.0"; shift;;
+        --lambda_sweep) MODE="lambda_sweep"; shift;;
+        --lambdas)   LAMBDAS="$2";   shift 2;;
+        --no_nocer)  INCLUDE_NOCER=0; shift;;
         --pvals)     PVALS="$2";     shift 2;;
         --seeds)     SEEDS="$2";     shift 2;;
         --sparsity)  SPARSITY="$2";  shift 2;;
-        --lambda)    LAMBDA="$2";    shift 2;;
+        --lambda)    LAMBDAS="$2";   shift 2;;
         --tau)       GATE_TAU="$2";  shift 2;;
         --rescale)   SINGLE_QUBIT_RESCALE="$2"; shift 2;;
         --base_hp)   BASE_HP="$2";   shift 2;;
@@ -355,6 +367,28 @@ if [ "$MODE" = "probe" ]; then
     PVALS="0.0007"; SEEDS="1"; WALLTIME="3:00:00"
 fi
 
+# ONE p, MANY lambda. p = 0.0007 is where the coset effect was largest and
+# cleanest (-34.0 +- 7.0 across seeds, t = -8.41, and all three seeds agreeing on
+# the shared test set at McNemar z = -4.26). Adding the p axis on top would
+# multiply the grid by three for a second-order question.
+if [ "$MODE" = "lambda_sweep" ]; then
+    PVALS="0.0007"
+    if [ -z "$LAMBDAS" ]; then
+        LAMBDAS="$LAMBDA_GRID"
+    fi
+fi
+
+# 5 lambda + 1 baseline, 3 seeds = 18 points, the same size as the 2026-08-20 run
+# that took 2h37m. Refuse to submit a grid that silently outgrows the walltime.
+n_planned=$(( $(echo $PVALS | wc -w) * $(echo $SEEDS | wc -w) * \
+              ( $([ -n "$LAMBDAS" ] && echo $LAMBDAS | wc -w || echo 1) + INCLUDE_NOCER ) ))
+if [ "$n_planned" -gt 24 ]; then
+    echo "ERROR: $n_planned points requested. The 18-point run took 2h37m at 12-way" >&2
+    echo "  training concurrency; beyond ~24 the walltime below stops being credible." >&2
+    echo "  Narrow --pvals, --seeds or --lambdas, or raise --walltime deliberately." >&2
+    exit 2
+fi
+
 echo "CER data preflight:"
 check_cer_files || { echo "PREFLIGHT FAILED — refusing to submit." >&2; exit 1; }
 verify_cer_pin  || { echo "PREFLIGHT FAILED — refusing to submit." >&2; exit 1; }
@@ -449,22 +483,87 @@ emit_pair() {   # <hp_name> <p>
          "--train train_p_${p}_s_1.txt --test test_p_${p}_s_1.txt" >> "$TEST_CMDS"
 }
 
+# LAMBDA IS PART OF THE TAG, or two points in a lambda sweep silently overwrite
+# each other's weights AND results. Only when lambda is pinned, though: with
+# LAMBDAS empty the tag stays exactly `_cw<arm>_<gate>_sp<tag>`, which is what
+# the completed 2026-08-20 sweep wrote, so those files are neither collided with
+# nor swept up by the collector's lambda-aware pattern.
+#
+# The no-CER arm carries NO lambda: with use_CER = false there are no couplings,
+# so `correlation_weight` multiplies nothing. Emitting it once per lambda would
+# be the same run trained N times under N names — fake replicates that would
+# shrink the baseline's apparent error bar. It is emitted once per seed.
+lambda_list="$LAMBDAS"
+if [ -z "$lambda_list" ]; then
+    lambda_list="__inherit__"
+fi
+
 n_points=0
+n_cer=0
+n_nocer=0
 for p in $PVALS; do
   for seed in $SEEDS; do
-    for arm in cer nocer; do
-        use_cer="true"
-        if [ "$arm" = "nocer" ]; then
-            use_cer="false"
+    for lam in $lambda_list; do
+        LAMBDA=""
+        lam_tag=""
+        if [ "$lam" != "__inherit__" ]; then
+            LAMBDA="$lam"
+            lam_tag="_lam$(tag_of "$lam")"
         fi
-        run_tag="_cw${arm}_${gate_label}_sp$(tag_of "$SPARSITY")"
-        hp="hyperparams_cw_${arm}_${gate_label}_sp$(tag_of "$SPARSITY")_p$(tag_of "$p")_seed${seed}.toml"
-        write_point "$hp" "$run_tag" "$use_cer" "$seed"
+        run_tag="_cwcer_${gate_label}_sp$(tag_of "$SPARSITY")${lam_tag}"
+        hp="hyperparams_cw_cer_${gate_label}_sp$(tag_of "$SPARSITY")${lam_tag}_p$(tag_of "$p")_seed${seed}.toml"
+        write_point "$hp" "$run_tag" "true" "$seed"
         emit_pair "$hp" "$p"
-        n_points=$((n_points + 1))
+        n_points=$((n_points + 1)); n_cer=$((n_cer + 1))
+    done
+
+    if [ "$INCLUDE_NOCER" = "1" ]; then
+        LAMBDA=""
+        run_tag="_cwnocer_${gate_label}_sp$(tag_of "$SPARSITY")"
+        hp="hyperparams_cw_nocer_${gate_label}_sp$(tag_of "$SPARSITY")_p$(tag_of "$p")_seed${seed}.toml"
+        write_point "$hp" "$run_tag" "false" "$seed"
+        emit_pair "$hp" "$p"
+        n_points=$((n_points + 1)); n_nocer=$((n_nocer + 1))
+    fi
+  done
+done
+
+# ---- overwrite guard ---------------------------------------------------------
+# A run_tag that already has results on disk will be RETRAINED AND OVERWRITTEN.
+# That is sometimes exactly right (the no-CER baseline is configuration-identical
+# to the completed sweep, so re-running it is a free determinism check) and
+# sometimes a data-loss bug. Either way it should be a decision, not a surprise:
+# the previous sweep in this project was analysed against silently stale inputs.
+existing=""
+n_existing=0
+for p in $PVALS; do
+  for seed in $SEEDS; do
+    for tag in $(grep -ho 'run_tag = "[^"]*"' "$MODELS_DIR"/hyperparams_cw_*_p$(tag_of "$p")_seed${seed}.toml 2>/dev/null \
+                 | sed 's/run_tag = "//; s/"//' | sort -u); do
+        # Glob the epoch count rather than reading it from the base TOML: the tag
+        # plus `_seed_<n>.csv` is already unique, and `_sp0p0` cannot match
+        # `_sp0p0_lam0` because `_seed_` must follow immediately.
+        hit="$WORKDIR/$CODENAME/results/simulation_results_test_p_${p}_s_1_"*"_trained_using_train_p_${p}_s_1"*"${tag}_seed_${seed}.csv"
+        for f in $hit; do
+            if [ -f "$f" ]; then
+                existing="$existing\n    $(basename "$f")"
+                n_existing=$((n_existing + 1))
+            fi
+        done
     done
   done
 done
+if [ "$n_existing" -gt 0 ]; then
+    echo "  NOTE: $n_existing existing result file(s) carry a run_tag this sweep also writes."
+    echo "  They will be retrained and OVERWRITTEN. Configuration-identical arms should"
+    echo "  reproduce byte-for-byte (every point is seeded); if they do not, that is itself"
+    echo "  a finding. Back them up first if you want to diff them."
+    printf "$existing\n" | head -8
+    if [ "$n_existing" -gt 8 ]; then
+        echo "    ... and $((n_existing - 8)) more"
+    fi
+    echo
+fi
 
 # ---- GPU bundle, sized by TRAINING concurrency (Narval: 1 RGU = 3.00 cores) ---
 if [ -z "$GPU_TYPE" ]; then
@@ -595,21 +694,51 @@ chmod +x "$SLURM"
 n_p=$(echo $PVALS | wc -w); n_seeds=$(echo $SEEDS | wc -w)
 echo "[correlation-weight $MODE] $n_points point(s)"
 echo
-printf "  %-28s %-9s %-12s %-9s %s\n" "run_tag" "use_CER" "couplings" "sparsity" "role"
-printf "  %-28s %-9s %-12s %-9s %s\n" \
-    "_cwcer_${gate_label}_sp$(tag_of "$SPARSITY")" "true" "revised J" "$SPARSITY" "treatment"
-printf "  %-28s %-9s %-12s %-9s %s\n" \
-    "_cwnocer_${gate_label}_sp$(tag_of "$SPARSITY")" "false" "none" "$SPARSITY" "baseline: flat p=0.1"
+printf "  %-34s %-9s %-11s %-9s %s\n" "run_tag" "use_CER" "lambda" "sparsity" "role"
+for lam in $lambda_list; do
+    lam_tag=""; lam_shown="inherited"; role="CER priors + couplings"
+    if [ "$lam" != "__inherit__" ]; then
+        lam_tag="_lam$(tag_of "$lam")"; lam_shown="$lam"
+    fi
+    if [ "$lam" = "0" ]; then
+        role="CONTROL: CER priors, couplings OFF"
+    fi
+    printf "  %-34s %-9s %-11s %-9s %s\n" \
+        "_cwcer_${gate_label}_sp$(tag_of "$SPARSITY")${lam_tag}" "true" "$lam_shown" "$SPARSITY" "$role"
+done
+if [ "$INCLUDE_NOCER" = "1" ]; then
+    printf "  %-34s %-9s %-11s %-9s %s\n" \
+        "_cwnocer_${gate_label}_sp$(tag_of "$SPARSITY")" "false" "n/a" "$SPARSITY" \
+        "BASELINE: flat p=0.1, no couplings"
+fi
 echo
 echo "  p      -> $PVALS"
-echo "  seeds  -> $SEEDS  (SAME set on both arms => paired contrast)"
-echo "  grid   -> $n_p p x 2 arms x $n_seeds seed(s) = $n_points"
+echo "  seeds  -> $SEEDS  (SAME set on every arm => paired contrasts)"
+echo "  grid   -> $n_cer CER + $n_nocer no-CER = $n_points point(s)"
 echo "  base   -> $MODELS_DIR/$BASE_HP"
 echo "  gate   -> syndrome_gate_threshold = $GATE_TAU ($gate_label)"
-echo "  lambda -> $([ -n "$LAMBDA" ] && echo "$LAMBDA (pinned)" || echo 'inherited from base TOML (annealed 1e-2 -> 1)')"
 echo "  GPU    -> $GPU_TYPE, $SLOTS core(s), $MEM; train $TRAIN_WAVES wave(s), test serial"
 echo "  assert -> require_correlations = true on every CER arm"
 echo
+if [ "$MODE" = "lambda_sweep" ]; then
+    echo "  THE DECOMPOSITION (this is why lambda = 0 and no-CER are both present):"
+    echo "    nocer -> lam0     isolates the single-qubit PRIORS"
+    echo "    lam0  -> lam>0    isolates the COUPLINGS"
+    echo "  Every CER-vs-no-CER number so far has confounded the two; this separates them."
+    echo
+    echo "  THE PREDICTION UNDER TEST, fixed in advance:"
+    echo "    coset selection is a discrete argmax flip, so its benefit should SATURATE in lambda;"
+    echo "    the convergence damage is a continuous distortion, so it should grow ~LINEARLY."
+    echo "  If so there is an interior optimum and lambda = 0.76 is already past it."
+    echo
+    echo "  reading protocol:"
+    echo "    net minimum at some 0 < lambda < 0.76  -> the trade is tunable; take that lambda to the p axis"
+    echo "    coset and convergence scale together   -> no lambda wins; the 1/|C| divisor is the problem"
+    echo "                                              (540 edges, ~0.05 firing per sample)"
+    echo "    lam0 already beats nocer               -> the win is the PRIORS, not the couplings"
+    echo "    nothing separates lam0 from lam0p75    -> the coset effect was not the couplings after all"
+    echo
+fi
 if [ "$MODE" = "primary" ]; then
     echo "  reading protocol, fixed in advance:"
     echo "    CER beats no-CER at every p, gap grows with p  -> couplings are working;"

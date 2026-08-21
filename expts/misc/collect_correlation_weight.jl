@@ -61,14 +61,33 @@ using Statistics
 const DEFAULT_RESULTS_DIR = joinpath(@__DIR__, "..", "..", "data",
                                      "72q_BB_cycles_1_debug", "results")
 
-# `..._trained_using_train_p_<p>_s_<n>[_no_cer]_cw<arm>_<gate>_sp<tag>_seed_<k>.csv`
-const RUN_PATTERN = r"_train_p_([0-9.eE+-]+)_s_(\d+)(_no_cer)?_cw(cer|nocer)_(ungated|gated)_sp([0-9p]+)_seed_(\d+)\.csv$"
+# `..._trained_using_train_p_<p>_s_<n>[_no_cer]_cw<arm>_<gate>_sp<tag>[_lam<tag>]_seed_<k>.csv`
+#
+# The `_lam<tag>` group is OPTIONAL, which is what lets one collector read both
+# vintages: the 2026-08-20 p-sweep wrote no lambda tag (it inherited the base
+# TOML's anneal), the lambda sweep pins one. A run with no tag is recorded as
+# `lambda_pinned = false` rather than as lambda = 0, because "annealed to 0.7623"
+# and "pinned at 0" are opposite ends of the axis and must never be pooled.
+const RUN_PATTERN = r"_train_p_([0-9.eE+-]+)_s_(\d+)(_no_cer)?_cw(cer|nocer)_(ungated|gated)_sp([0-9p]+)(?:_lam([0-9p]+))?_seed_(\d+)\.csv$"
+
+"""
+    tag_to_number(tag) -> Float64
+
+Undo the filename-safe encoding: "0p75" -> 0.75, "0" -> 0.0, "1p5" -> 1.5.
+"""
+function tag_to_number(tag::String)::Float64
+    numeric::Union{Float64, Nothing} = tryparse(Float64, replace(tag, "p" => "."))
+    if numeric === nothing
+        return NaN
+    end
+    return numeric
+end
 
 """
     parse_run(filename) -> Union{NamedTuple, Nothing}
 
-Pull (p, arm, gate, sparsity_tag, seed) out of a result filename, or `nothing`
-if it is not one of this sweep's files.
+Pull (p, arm, gate, sparsity_tag, lambda, seed) out of a result filename, or
+`nothing` if it is not one of this sweep's files.
 
 The `_no_cer` group is captured but NOT used to decide the arm: the arm comes
 from the explicit `cw<arm>` token in the run tag. Capturing it anyway lets the
@@ -87,15 +106,45 @@ function parse_run(filename::String)::Union{NamedTuple, Nothing}
               "run tag says arm = $(arm). use_CER and run_tag have drifted apart; " *
               "this run's arm label cannot be trusted."
     end
+    lambda_tag::String = ""
+    lambda_pinned::Bool = filename_match.captures[7] !== nothing
+    if lambda_pinned
+        lambda_tag = String(filename_match.captures[7])
+    end
+    lambda_value::Float64 = NaN
+    if lambda_pinned
+        lambda_value = tag_to_number(lambda_tag)
+    end
     run_key::NamedTuple = (
         p = String(filename_match.captures[1]),
         data_seed = parse(Int, filename_match.captures[2]),
         arm = arm,
         gate = String(filename_match.captures[5]),
         sparsity_tag = String(filename_match.captures[6]),
-        seed = parse(Int, filename_match.captures[7]),
+        lambda_tag = lambda_tag,
+        lambda_pinned = lambda_pinned,
+        lambda = lambda_value,
+        seed = parse(Int, filename_match.captures[8]),
     )
     return run_key
+end
+
+"""
+    label_for(run_key) -> String
+
+The arm label used for grouping and contrasts. The no-CER baseline carries no
+lambda (with `use_CER = false` the couplings do not exist, so the weight
+multiplies nothing) and is always just "nocer".
+"""
+function label_for(run_key::NamedTuple)::String
+    if run_key.arm == "nocer"
+        return "nocer"
+    end
+    if !run_key.lambda_pinned
+        return "cer_annealed"
+    end
+    label::String = "lam$(run_key.lambda_tag)"
+    return label
 end
 
 """
@@ -314,8 +363,14 @@ function collect_per_run(results_dir::String, logs_dir::String)::DataFrame
             :arm => run_key.arm,
             :gate => run_key.gate,
             :sparsity_tag => run_key.sparsity_tag,
+            :lambda_tag => run_key.lambda_tag,
+            :lambda_pinned => run_key.lambda_pinned,
+            :lambda => run_key.lambda,
             :seed => run_key.seed,
-            :label => "$(run_key.arm)_p$(run_key.p)",
+            :label => label_for(run_key),
+            # Grouping key for the per-arm table: one row per (p, arm) so a sweep
+            # that varies BOTH axes still tabulates correctly.
+            :group => "$(label_for(run_key))_p$(run_key.p)",
         )
         results_row = first(CSV.File(joinpath(results_dir, filename)))
         for name in propertynames(results_row)
@@ -376,9 +431,13 @@ function collect_per_run(results_dir::String, logs_dir::String)::DataFrame
 
         # ---- training-time debug log ----------------------------------------
         cer_tag::String = run_key.arm == "nocer" ? "_no_cer" : ""
+        lambda_segment::String = ""
+        if run_key.lambda_pinned
+            lambda_segment = "_lam$(run_key.lambda_tag)"
+        end
         run_tail::String = "train_p_$(run_key.p)_s_$(run_key.data_seed)$(cer_tag)" *
                            "_cw$(run_key.arm)_$(run_key.gate)_sp$(run_key.sparsity_tag)" *
-                           "_seed_$(run_key.seed)"
+                           "$(lambda_segment)_seed_$(run_key.seed)"
         debug_summary::Dict{Symbol, Any} = debug_log_summary(logs_dir, run_tail)
         for (key, value) in debug_summary
             row[key] = value
@@ -399,6 +458,21 @@ function collect_per_run(results_dir::String, logs_dir::String)::DataFrame
             end
         end
 
+        # THE SECOND PREMISE CHECK, and the one this sweep turns on. A lambda axis
+        # is only an axis if the realised weight matches the pinned one; a TOML
+        # override that failed to take would silently collapse several points onto
+        # the base TOML's annealed 0.7623 and manufacture a flat trend.
+        logged_lambda = debug_summary[:lambda_final_epoch]
+        row[:lambda_matches_pin] = missing
+        if run_key.lambda_pinned && logged_lambda isa Number && !isnan(logged_lambda)
+            row[:lambda_matches_pin] = isapprox(logged_lambda, run_key.lambda; atol = 1e-6)
+            if !row[:lambda_matches_pin]
+                @warn "PREMISE VIOLATED for $(run_tail): pinned lambda = $(run_key.lambda) " *
+                      "but the training log reports correlation_weight = $(logged_lambda) at " *
+                      "the final epoch. This point is not at the lambda its filename claims."
+            end
+        end
+
         expected_gate_sign::Float64 = run_key.gate == "gated" ? 1.0 : -1.0
         logged_gate = debug_summary[:gate_threshold_logged]
         row[:gate_threshold_consistent] = missing
@@ -415,9 +489,32 @@ function collect_per_run(results_dir::String, logs_dir::String)::DataFrame
     end
     per_run::DataFrame = rows_to_dataframe(collected_rows)
     if nrow(per_run) > 0
-        sort!(per_run, [:p_numeric, :arm, :seed])
+        # `:label` rather than `:lambda`: the latter is NaN on the no-CER and
+        # annealed arms, and NaN ordering is not something to rely on.
+        sort!(per_run, [:p_numeric, :label, :seed])
     end
     return per_run
+end
+
+"""
+    arm_order(label) -> Float64
+
+Sort key that puts the baseline first, then the pinned lambdas in numeric order,
+then the annealed arm. Without it "lam0p1" < "lam0p3" < "lam0p75" < "lam1p5"
+holds only by luck of string ordering, and "lam1p5" would sort before "lam0p3"
+the moment a two-digit lambda appears.
+"""
+function arm_order(label::String)::Float64
+    if label == "nocer"
+        return -2.0
+    end
+    if label == "cer_annealed"
+        return Inf
+    end
+    if startswith(label, "lam")
+        return tag_to_number(label[4:end])
+    end
+    return -1.0
 end
 
 "Mean / sd / min / max across seeds, per (p, arm)."
@@ -432,11 +529,15 @@ function collect_per_arm(per_run::DataFrame)::DataFrame
         :runtime,
     ]
     collected_rows::Vector{Dict{Symbol, Any}} = Dict{Symbol, Any}[]
-    for group in groupby(per_run, :label)
-        row::Dict{Symbol, Any} = Dict(:label => group.label[1],
+    for group in groupby(per_run, :group)
+        row::Dict{Symbol, Any} = Dict(:group => group.group[1],
+                                      :label => group.label[1],
                                       :p => group.p[1],
                                       :p_numeric => group.p_numeric[1],
                                       :arm => group.arm[1],
+                                      :lambda => group.lambda[1],
+                                      :lambda_pinned => group.lambda_pinned[1],
+                                      :arm_order => arm_order(group.label[1]),
                                       :n_seeds => nrow(group))
         for quantity in quantities
             if !hasproperty(group, quantity)
@@ -456,7 +557,7 @@ function collect_per_arm(per_run::DataFrame)::DataFrame
     end
     per_arm::DataFrame = rows_to_dataframe(collected_rows)
     if nrow(per_arm) > 0
-        sort!(per_arm, [:p_numeric, :arm])
+        sort!(per_arm, [:p_numeric, :arm_order])
     end
     return per_arm
 end
@@ -474,15 +575,19 @@ evidence warrants — it is reported alongside precisely so the two can be
 compared. A previous +361 failure "effect" survived the z (z = +10.8) and died
 on the t (t = +0.52).
 """
-function contrast(per_run::DataFrame, p_value::String)::Dict{Symbol, Any}
+function contrast(per_run::DataFrame, p_value::String,
+                  label_a::String, label_b::String)::Dict{Symbol, Any}
     at_p::DataFrame = per_run[per_run.p .== p_value, :]
-    cer_rows::DataFrame = at_p[at_p.arm .== "cer", :]
-    nocer_rows::DataFrame = at_p[at_p.arm .== "nocer", :]
+    cer_rows::DataFrame = at_p[at_p.label .== label_a, :]
+    nocer_rows::DataFrame = at_p[at_p.label .== label_b, :]
     shared_seeds::Vector{Int} = sort(collect(intersect(Set(cer_rows.seed), Set(nocer_rows.seed))))
     out::Dict{Symbol, Any} = Dict(
         :p => p_value,
         :p_numeric => something(tryparse(Float64, p_value), NaN),
-        :contrast => "cer - nocer",
+        :contrast => "$(label_a) - $(label_b)",
+        :label_a => label_a,
+        :label_b => label_b,
+        :arm_order_a => arm_order(label_a),
         :n_paired_seeds => length(shared_seeds),
     )
     if isempty(shared_seeds)
@@ -507,8 +612,8 @@ function contrast(per_run::DataFrame, p_value::String)::Dict{Symbol, Any}
         trials::Int = sum(cer_rows[in.(cer_rows.seed, Ref(shared_seeds)), :num_samples_per_error_rate])
         pooled::Float64 = (total_cer + total_nocer) / (2 * trials)
         pooled_standard_error::Float64 = sqrt(pooled * (1 - pooled) * 2 / trials)
-        out[Symbol("$(quantity)_pooled_cer")] = total_cer
-        out[Symbol("$(quantity)_pooled_nocer")] = total_nocer
+        out[Symbol("$(quantity)_pooled_a")] = total_cer
+        out[Symbol("$(quantity)_pooled_b")] = total_nocer
         out[Symbol("$(quantity)_pooled_z")] = pooled_standard_error > 0 ?
             (total_cer / trials - total_nocer / trials) / pooled_standard_error : NaN
     end
@@ -520,12 +625,49 @@ function contrast(per_run::DataFrame, p_value::String)::Dict{Symbol, Any}
     return out
 end
 
+"""
+    collect_contrasts(per_run) -> DataFrame
+
+THE DECOMPOSITION. Every CER-vs-no-CER number in this project so far has
+confounded two changes, because `use_CER = false` swaps the single-qubit priors
+AND removes the couplings at the same time. With a lambda axis they separate:
+
+    nocer -> lam0     the PRIORS      (CER single-qubit rates vs flat p = 0.1)
+    lam0  -> lam>0    the COUPLINGS   (same priors, coupling weight turned up)
+
+So each pinned lambda is contrasted against `lam0`, and `lam0` against `nocer`.
+Where there is no `lam0` (the 2026-08-20 p-sweep, which ran the annealed
+schedule) the fallback is the old cer-vs-nocer contrast, so that vintage still
+collects.
+"""
 function collect_contrasts(per_run::DataFrame)::DataFrame
     p_values::Vector{String} = unique(per_run.p)
     sort!(p_values; by = value -> something(tryparse(Float64, value), Inf))
     collected_rows::Vector{Dict{Symbol, Any}} = Dict{Symbol, Any}[]
     for p_value in p_values
-        push!(collected_rows, contrast(per_run, p_value))
+        labels_here::Vector{String} = unique(per_run[per_run.p .== p_value, :label])
+        pinned::Vector{String} = sort(filter(l -> startswith(l, "lam") && l != "lam0", labels_here);
+                                      by = arm_order)
+        if "lam0" in labels_here
+            # Couplings: each lambda against the lambda = 0 control.
+            for label in pinned
+                push!(collected_rows, contrast(per_run, p_value, label, "lam0"))
+            end
+            # Priors: the control against the flat-prior baseline.
+            if "nocer" in labels_here
+                push!(collected_rows, contrast(per_run, p_value, "lam0", "nocer"))
+            end
+        end
+        # Older vintage, or a lambda sweep run with --no_nocer: keep the direct
+        # comparison so nothing silently drops out of the report.
+        if "cer_annealed" in labels_here && "nocer" in labels_here
+            push!(collected_rows, contrast(per_run, p_value, "cer_annealed", "nocer"))
+        end
+        if !("lam0" in labels_here) && "nocer" in labels_here
+            for label in pinned
+                push!(collected_rows, contrast(per_run, p_value, label, "nocer"))
+            end
+        end
     end
     contrasts::DataFrame = rows_to_dataframe(collected_rows)
     return contrasts
@@ -535,7 +677,7 @@ function print_report(per_run::DataFrame, per_arm::DataFrame, contrasts::DataFra
     println(repeat("=", 100))
     println("PER ARM (mean +- sd across seeds)")
     println(repeat("-", 100))
-    @printf("%-18s %5s %16s %16s %18s %10s\n",
+    @printf("%-26s %5s %16s %16s %18s %10s\n",
             "p / arm", "seeds", "failures", "coset", "convergence", "gate open")
     for row in eachrow(per_arm)
         gate_open::Float64 = NaN
@@ -543,8 +685,8 @@ function print_report(per_run::DataFrame, per_arm::DataFrame, contrasts::DataFra
            row.gate_open_fraction_mean_mean !== missing
             gate_open = row.gate_open_fraction_mean_mean
         end
-        @printf("%-18s %5d %8.1f+-%-6.1f %8.1f+-%-6.1f %10.1f+-%-6.1f %10.3f\n",
-                row.label, row.n_seeds,
+        @printf("%-26s %5d %8.1f+-%-6.1f %8.1f+-%-6.1f %10.1f+-%-6.1f %10.3f\n",
+                row.group, row.n_seeds,
                 row.num_failures_mean, row.num_failures_sd,
                 row.num_coset_failures_mean, row.num_coset_failures_sd,
                 row.num_convergence_failures_mean, row.num_convergence_failures_sd,
@@ -553,10 +695,11 @@ function print_report(per_run::DataFrame, per_arm::DataFrame, contrasts::DataFra
 
     println()
     println(repeat("=", 100))
-    println("CONTRASTS: cer - nocer, paired by seed (t against the seed spread, z test-set only)")
+    println("CONTRASTS, paired by seed (t against the seed spread, z test-set only)")
     println(repeat("-", 100))
     for row in eachrow(contrasts)
-        @printf("  p = %-10s  n = %d paired seed(s)\n", row.p, row.n_paired_seeds)
+        @printf("  p = %-10s  %-22s  n = %d paired seed(s)\n",
+                row.p, row.contrast, row.n_paired_seeds)
         for (quantity, name) in ((:num_failures, "total"),
                                  (:num_coset_failures, "coset"),
                                  (:num_convergence_failures, "convergence"))
@@ -571,34 +714,69 @@ function print_report(per_run::DataFrame, per_arm::DataFrame, contrasts::DataFra
                     row[Symbol("$(quantity)_pooled_z")])
         end
         if hasproperty(contrasts, :num_failures_relative) && row.num_failures_relative !== missing
-            @printf("      %-12s %+.2f%% of the no-CER failure count\n",
-                    "relative", 100 * row.num_failures_relative)
+            @printf("      %-12s %+.2f%% of the %s failure count\n",
+                    "relative", 100 * row.num_failures_relative, row.label_b)
         end
         println()
     end
-    println("  NEGATIVE means CER did BETTER. |t| >~ 3 at n = 3 seeds is the bar; z will")
-    println("  overstate significance because two networks always differ.")
+    println("  NEGATIVE means the FIRST arm did better. |t| >~ 3 at n = 3 seeds is the bar;")
+    println("  z will overstate significance because two networks always differ.")
 
-    println()
-    println(repeat("=", 100))
-    println("p-TREND (the discriminator: the correlation term scales as p^2)")
-    println(repeat("-", 100))
-    @printf("  %-12s %14s %14s %10s\n", "p", "cer - nocer", "relative", "t")
-    for row in eachrow(contrasts)
-        if !hasproperty(contrasts, :num_failures_paired_mean) ||
-           row.num_failures_paired_mean === missing
-            continue
-        end
-        relative::Float64 = row.num_failures_relative === missing ? NaN : row.num_failures_relative
-        @printf("  %-12s %+14.1f %13.1f%% %+10.2f\n",
-                row.p, row.num_failures_paired_mean, 100 * relative,
-                row.num_failures_paired_t)
+    # ---- the trend table: lambda if there is a lambda axis, else p -----------
+    lambda_rows::DataFrame = contrasts
+    if hasproperty(contrasts, :label_b)
+        lambda_rows = contrasts[contrasts.label_b .== "lam0", :]
     end
-    println()
-    println("  more negative as p rises  -> the COUPLINGS are working (p^2 scaling)")
-    println("  flat and negative         -> the single-qubit PRIORS; rerun with --lambda 0")
-    println("  flat and ~zero            -> revised J changed nothing; suspect the 1/|C| norm")
-    println("  positive, worst at big p  -> reward outrunning the syndrome; check gate_open_fraction")
+    if nrow(lambda_rows) > 0
+        println()
+        println(repeat("=", 100))
+        println("LAMBDA TREND, each arm against the lambda = 0 control (couplings OFF, CER priors ON)")
+        println(repeat("-", 100))
+        @printf("  %-8s %-10s %13s %13s %13s %10s\n",
+                "p", "lambda", "coset", "convergence", "total", "t(total)")
+        for row in eachrow(lambda_rows)
+            if row.num_failures_paired_mean === missing
+                continue
+            end
+            @printf("  %-8s %-10s %+13.1f %+13.1f %+13.1f %+10.2f\n",
+                    row.p, replace(row.label_a, "lam" => ""),
+                    row.num_coset_failures_paired_mean,
+                    row.num_convergence_failures_paired_mean,
+                    row.num_failures_paired_mean,
+                    row.num_failures_paired_t)
+        end
+        println()
+        println("  THE PREDICTION: coset selection is a discrete argmax flip, so its benefit")
+        println("  should SATURATE in lambda, while the convergence damage is a continuous")
+        println("  distortion and should grow ~LINEARLY. If so, total has an interior minimum.")
+        println()
+        println("  interior minimum in total      -> the trade is tunable; take that lambda to the p axis")
+        println("  coset and convergence track    -> no lambda wins; the 1/|C| divisor is the problem")
+        println("  coset flat from lambda = 0     -> the coset effect was never the couplings")
+    end
+
+    prior_rows::DataFrame = contrasts
+    if hasproperty(contrasts, :label_a)
+        prior_rows = contrasts[(contrasts.label_a .== "lam0") .& (contrasts.label_b .== "nocer"), :]
+    end
+    if nrow(prior_rows) > 0
+        println()
+        println(repeat("=", 100))
+        println("PRIORS ALONE: lambda = 0 against no-CER (same couplings — none — different priors)")
+        println(repeat("-", 100))
+        for row in eachrow(prior_rows)
+            if row.num_failures_paired_mean === missing
+                continue
+            end
+            @printf("  p = %-10s total %+9.1f +- %-8.1f  t = %+6.2f   (%+.1f%% of no-CER)\n",
+                    row.p, row.num_failures_paired_mean, row.num_failures_paired_sd,
+                    row.num_failures_paired_t,
+                    row.num_failures_relative === missing ? NaN : 100 * row.num_failures_relative)
+        end
+        println()
+        println("  This is the contrast the project has never run. If it is large, every")
+        println("  earlier CER-vs-no-CER result was measuring the single-qubit priors.")
+    end
 
     # ---- integrity checks, printed loudly rather than buried in a column ----
     println()
@@ -613,6 +791,13 @@ function print_report(per_run::DataFrame, per_arm::DataFrame, contrasts::DataFra
         @printf("  sparsity == 0 at final epoch  : %d / %d checked%s\n",
                 length(checked) - n_bad, length(checked),
                 n_bad > 0 ? "   <-- $(n_bad) VIOLATION(S), see warnings above" : "")
+    end
+    if hasproperty(per_run, :lambda_matches_pin)
+        lambda_checked::Vector{Any} = collect(skipmissing(per_run.lambda_matches_pin))
+        n_lambda_bad::Int = count(value -> value === false, lambda_checked)
+        @printf("  realised lambda == pinned     : %d / %d checked%s\n",
+                length(lambda_checked) - n_lambda_bad, length(lambda_checked),
+                n_lambda_bad > 0 ? "   <-- $(n_lambda_bad) VIOLATION(S): the axis is not an axis" : "")
     end
     if hasproperty(per_run, :gate_threshold_consistent)
         gate_checked::Vector{Any} = collect(skipmissing(per_run.gate_threshold_consistent))
