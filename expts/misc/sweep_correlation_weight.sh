@@ -5,23 +5,27 @@
 # ============================================================================
 # RUN FROM expts/ :
 #
-#     bash misc/sweep_correlation_weight.sh --setup      # once: create the codename
-#     bash misc/sweep_correlation_weight.sh --check      # verify the CER files only
-#     bash misc/sweep_correlation_weight.sh --pin_cer    # lock the CER files by SHA-256
-#     bash misc/sweep_correlation_weight.sh --lambda_sweep   # 5 lambda + baseline at one p
-#     bash misc/sweep_correlation_weight.sh --spread     # per-gate-spread datasets
-#     bash misc/sweep_correlation_weight.sh --probe      # 1 p, 1 seed, both arms
-#     bash misc/sweep_correlation_weight.sh              # primary: 3 p x 2 arms x 3 seeds
-#     bash misc/sweep_correlation_weight.sh --ungated    # contrast: historical tau = -1
+#     bash misc/sweep_correlation_weight.sh --check      # verify the CER files
+#     bash misc/sweep_correlation_weight.sh --pin_cer    # lock them by SHA-256
+#     bash misc/sweep_correlation_weight.sh              # the sweep
 #     bash misc/sweep_correlation_weight.sh --collect    # summarise
 #
 #     sbatch ../data/<codename>/cluster/cw_<mode>_<timestamp>.sh
 #
-# THE CODENAME IS SELECTED BY THE DATA PROFILE, NOT FIXED. Default is
-# 72q_BB_cycles_1_debug (the uniform-p datasets); `--spread` switches every path
-# — CER files, models, cluster scripts, results, and --collect — to
-# 72q_BB_cycles_1_spread_comparison. The exact directory is echoed at submit
-# time; check that line rather than trusting this comment.
+# ---------------------------------------------------------------------------
+# WHICH DATA. The codename comes from the DATA PROFILE, and the default is the
+# CURRENT dataset — no flag needed:
+#
+#   (default)   72q_BB_cycles_1_spread_comparison   per-CNOT Normal(p, sigma)
+#   --uniform   72q_BB_cycles_1_debug               uniform p, the earlier sweeps
+#
+# This used to default to the uniform-p codename, so any command missing a flag
+# silently addressed superseded data while producing identically-named outputs.
+# Every mode echoes the directory it resolved to; that line is the check.
+#
+# Other modes: --setup (build a derived codename), --probe and --lambda_sweep
+# (both imply --uniform, being defined on p values only that dataset has),
+# --ungated (historical tau = -1 contrast).
 #
 # ---------------------------------------------------------------------------
 # WHY THIS SWEEP EXISTS — TWO CHANGES SINCE THE LAST CER RUN
@@ -147,13 +151,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 WORKDIR="./../data"
-# Default codename: the uniform-p datasets. `--spread` overrides this and every
-# path derived from it. Anything printed at submit time reflects the override.
-CODENAME="72q_BB_cycles_1_debug"
+# CODENAME, BASE_HP, DATASETS and SEEDS are all set by the DATA PROFILE below.
+# These are placeholders; nothing reads them before the profile has run.
+CODENAME=""
 SOURCE_CODENAME="72q_BB_cycles_1"
-BASE_HP="hyperparams_epochs_5_corrs.toml"
+BASE_HP=""
 PVALS="0.0005 0.0007 0.0019"
-SEEDS="1 2 3"
+SEEDS=""
 # DATASETS holds the dataset KEY of each point, i.e. the part of the filename
 # shared by the training set, the test set and the CER file:
 #
@@ -180,8 +184,21 @@ LAMBDA_GRID="0 0.1 0.3 0.75 1.5"
 # Dataset PROFILE, orthogonal to MODE: it selects which codename and which dataset
 # keys to work on, so `--spread --check`, `--spread --pin_cer` and a plain
 # `--spread` run all address the same data.
-PROFILE=""
+# ---------------------------------------------------------------------------
+# DATA PROFILE. This selects the codename and every path derived from it.
+#
+# THE DEFAULT IS THE CURRENT DATASET. It used to be 72q_BB_cycles_1_debug, which
+# meant any command missing a flag silently addressed the superseded uniform-p
+# data — and the outputs are named identically either way, so the mistake left no
+# trace. Defaulting to the live dataset makes the safe thing automatic and the
+# legacy thing explicit.
+#
+#   (default)   72q_BB_cycles_1_spread_comparison   per-CNOT Normal(p, sigma)
+#   --uniform   72q_BB_cycles_1_debug               uniform p, the old sweeps
+PROFILE="spread"
+PROFILE_EXPLICIT=0
 BASE_HP_EXPLICIT=0
+SEEDS_EXPLICIT=0
 WALLTIME_EXPLICIT=0
 # Datasets that get ONLY the {lambda = 0, no-CER} pair rather than the full lambda
 # grid. The sigma = 0 reference exists to answer "is CER worth more now than it
@@ -218,13 +235,14 @@ while [ "$#" -gt 0 ]; do
         --probe)     MODE="probe";   shift;;
         --ungated)   GATE_TAU="-1.0"; shift;;
         --lambda_sweep) MODE="lambda_sweep"; shift;;
-        --spread)    PROFILE="spread"; shift;;
+        --spread)    PROFILE="spread"; PROFILE_EXPLICIT=1; shift;;
+        --uniform)   PROFILE="uniform"; PROFILE_EXPLICIT=1; shift;;
         --datasets)  DATASETS="$2";  shift 2;;
         --baseline_datasets) BASELINE_DATASETS="$2"; shift 2;;
         --lambdas)   LAMBDAS="$2";   shift 2;;
         --no_nocer)  INCLUDE_NOCER=0; shift;;
         --pvals)     PVALS="$2";     shift 2;;
-        --seeds)     SEEDS="$2";     shift 2;;
+        --seeds)     SEEDS="$2"; SEEDS_EXPLICIT=1; shift 2;;
         --sparsity)  SPARSITY="$2";  shift 2;;
         --lambda)    LAMBDAS="$2";   shift 2;;
         --tau)       GATE_TAU="$2";  shift 2;;
@@ -253,7 +271,20 @@ done
 # couplings were telling the decoder something it had.
 #
 # Per-gate sampling breaks that degeneracy. Run --check to see by how much.
+# `--lambda_sweep` and `--probe` are defined in terms of p values that only exist
+# in the uniform-p codename, so they imply that profile unless one was named.
+if [ "$PROFILE_EXPLICIT" = "0" ]; then
+    case "$MODE" in
+        lambda_sweep|probe) PROFILE="uniform" ;;
+    esac
+fi
+
 if [ "$PROFILE" = "spread" ]; then
+    # THE CURRENT DATASET. Each CNOT's error rate is drawn from Normal(p, sigma)
+    # rather than fixed at p, which is what finally made the CER file carry
+    # per-qubit information: within-sector CV on the single-qubit rates went from
+    # 1.3% to 17-22%. Three independent noise samples at sigma = p, plus a
+    # sigma = 0 reference that gets only {lambda = 0, no-CER}.
     CODENAME="72q_BB_cycles_1_spread_comparison"
     if [ "$BASE_HP_EXPLICIT" = "0" ]; then
         BASE_HP="hyperparams_epochs_10_corrs.toml"
@@ -261,13 +292,31 @@ if [ "$PROFILE" = "spread" ]; then
     if [ -z "$DATASETS" ]; then
         DATASETS="p_0.0005_sig_0.0005_s_1 p_0.0005_sig_0.0005_s_2 p_0.0005_sig_0.0005_s_3"
     fi
-    if [ -z "$LAMBDAS" ]; then
-        LAMBDAS="$LAMBDA_GRID"
-    fi
     if [ -z "$BASELINE_DATASETS" ]; then
         BASELINE_DATASETS="p_0.0005_sig_0.0_s_1"
     fi
-    SEEDS="1"
+    if [ -z "$LAMBDAS" ]; then
+        LAMBDAS="$LAMBDA_GRID"
+    fi
+    if [ "$SEEDS_EXPLICIT" = "0" ]; then
+        # The three noise samples ARE the replicates; a network-seed axis on top
+        # would multiply the grid without adding an independent source of spread.
+        SEEDS="1"
+    fi
+elif [ "$PROFILE" = "uniform" ]; then
+    # THE SUPERSEDED DATASET, kept so the earlier sweeps stay reproducible: one
+    # error rate for every CNOT, which left the CER file almost information-free
+    # (2 sector levels, 2 coupling classes, R^2 = 0.82 on structure alone).
+    CODENAME="72q_BB_cycles_1_debug"
+    if [ "$BASE_HP_EXPLICIT" = "0" ]; then
+        BASE_HP="hyperparams_epochs_5_corrs.toml"
+    fi
+    if [ "$SEEDS_EXPLICIT" = "0" ]; then
+        SEEDS="1 2 3"
+    fi
+else
+    echo "unknown data profile: $PROFILE (expected 'spread' or 'uniform')" >&2
+    exit 2
 fi
 
 CER_DIR="$WORKDIR/$CODENAME/correlated_weights"
@@ -285,8 +334,37 @@ CLUSTER_DIR="$WORKDIR/$CODENAME/cluster"
 # below is derived from it rather than hard-coded.
 
 # ------------------------------------------------------------------ setup ---
+# --setup builds a DERIVED codename: an empty working directory that borrows
+# code / training_data / testing_data / correlated_weights from a source codename
+# by symlink, so a sweep can write models and results without touching the
+# original. It is NOT needed for a codename that already owns its data — and
+# running it there would copy unrelated TOMLs in from the source.
+#
+# It also operates on whatever codename the DATA PROFILE selected, so a bare
+# `--setup` builds the default (72q_BB_cycles_1_debug) even if you meant the
+# spread datasets. The target is printed first for exactly that reason.
 if [ "$MODE" = "setup" ]; then
     src="$WORKDIR/$SOURCE_CODENAME"; dst="$WORKDIR/$CODENAME"
+    echo "  target codename : $CODENAME"
+    echo "  borrowing from  : $SOURCE_CODENAME"
+    echo
+
+    complete=1
+    for shared in code training_data testing_data correlated_weights; do
+        if [ ! -e "$dst/$shared" ]; then
+            complete=0
+        fi
+    done
+    if [ "$complete" = "1" ]; then
+        echo "  Nothing to do — $CODENAME already has code/, training_data/,"
+        echo "  testing_data/ and correlated_weights/. It owns its data, so --setup"
+        echo "  would only copy unrelated hyperparameter files in from $SOURCE_CODENAME."
+        echo
+        echo "  Go straight to:"
+        echo "    bash misc/sweep_correlation_weight.sh${PROFILE:+ --$PROFILE} --check"
+        exit 0
+    fi
+
     [ -d "$src" ] || { echo "source codename missing: $src (run from expts/)" >&2; exit 1; }
     mkdir -p "$dst"/{models,results,logs,cluster}
     for shared in code training_data testing_data correlated_weights; do
@@ -295,7 +373,7 @@ if [ "$MODE" = "setup" ]; then
     cp -n "$src"/models/*.toml "$dst/models/" 2>/dev/null || true
     echo "  $dst ready."
     echo "  NOTE: if correlated_weights is a SYMLINK back to $SOURCE_CODENAME, the"
-    echo "        revised-J files must be placed there, not in the debug copy."
+    echo "        revised-J files must be placed there, not in the derived copy."
     exit 0
 fi
 
