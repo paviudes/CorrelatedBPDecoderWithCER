@@ -154,7 +154,13 @@ WORKDIR="./../data"
 # CODENAME, BASE_HP, DATASETS and SEEDS are all set by the DATA PROFILE below.
 # These are placeholders; nothing reads them before the profile has run.
 CODENAME=""
-SOURCE_CODENAME="72q_BB_cycles_1"
+# The donor codename: where --setup borrows shared data from, and where the base
+# hyperparameter files live. This was 72q_BB_cycles_1, which is now EMPTY — no
+# correlated_weights, no base TOMLs — so every path through it was dead.
+# 72q_BB_cycles_1_debug is the curated one: it holds the revised-J couplings
+# (mean J = +2.0111) and all four base hyperparameter files, including a
+# hyperparams_epochs_10_corrs.toml byte-identical to the spread codename's.
+SOURCE_CODENAME="72q_BB_cycles_1_debug"
 BASE_HP=""
 PVALS="0.0005 0.0007 0.0019"
 SEEDS=""
@@ -348,6 +354,12 @@ if [ "$MODE" = "setup" ]; then
     echo "  target codename : $CODENAME"
     echo "  borrowing from  : $SOURCE_CODENAME"
     echo
+    if [ "$CODENAME" = "$SOURCE_CODENAME" ]; then
+        echo "  Refusing: the target and the donor are the same codename, so there is"
+        echo "  nothing to borrow. --setup builds a DERIVED codename; name a new one"
+        echo "  with --codename, or skip setup entirely." >&2
+        exit 1
+    fi
 
     complete=1
     for shared in code training_data testing_data correlated_weights; do
@@ -533,7 +545,25 @@ fi
 
 # ------------------------------------------------------------------ primary --
 [ -d "$MODELS_DIR" ] || { echo "no models dir: $MODELS_DIR — run --setup first" >&2; exit 1; }
-[ -f "$MODELS_DIR/$BASE_HP" ] || { echo "no base hyperparams: $MODELS_DIR/$BASE_HP" >&2; exit 1; }
+# Missing base hyperparameters are a stop, not a silent substitution. An earlier
+# version copied a file in from another codename automatically, which quietly
+# overrode a deliberately-edited one. Say where the canonical copy lives and let
+# the decision be made explicitly.
+if [ ! -f "$MODELS_DIR/$BASE_HP" ]; then
+    echo "no base hyperparameters: $MODELS_DIR/$BASE_HP" >&2
+    donor_hp="$WORKDIR/$SOURCE_CODENAME/models/$BASE_HP"
+    if [ -f "$donor_hp" ]; then
+        echo >&2
+        echo "  A copy exists in the donor codename ($SOURCE_CODENAME). To use it:" >&2
+        echo "    cp $donor_hp $MODELS_DIR/" >&2
+        echo "  Or name a different file with --base_hp. Available here:" >&2
+    else
+        echo "  Available in $MODELS_DIR:" >&2
+    fi
+    ls "$MODELS_DIR"/hyperparams_epochs*.toml 2>/dev/null | sed 's|.*/|    |' >&2 \
+        || echo "    (none)" >&2
+    exit 1
+fi
 mkdir -p "$CLUSTER_DIR"
 
 if [ "$MODE" = "probe" ]; then
