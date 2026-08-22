@@ -15,7 +15,13 @@
 #     bash misc/sweep_correlation_weight.sh --ungated    # contrast: historical tau = -1
 #     bash misc/sweep_correlation_weight.sh --collect    # summarise
 #
-#     sbatch ../data/72q_BB_cycles_1_debug/cluster/cw_<mode>_<timestamp>.sh
+#     sbatch ../data/<codename>/cluster/cw_<mode>_<timestamp>.sh
+#
+# THE CODENAME IS SELECTED BY THE DATA PROFILE, NOT FIXED. Default is
+# 72q_BB_cycles_1_debug (the uniform-p datasets); `--spread` switches every path
+# — CER files, models, cluster scripts, results, and --collect — to
+# 72q_BB_cycles_1_spread_comparison. The exact directory is echoed at submit
+# time; check that line rather than trusting this comment.
 #
 # ---------------------------------------------------------------------------
 # WHY THIS SWEEP EXISTS — TWO CHANGES SINCE THE LAST CER RUN
@@ -141,6 +147,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 WORKDIR="./../data"
+# Default codename: the uniform-p datasets. `--spread` overrides this and every
+# path derived from it. Anything printed at submit time reflects the override.
 CODENAME="72q_BB_cycles_1_debug"
 SOURCE_CODENAME="72q_BB_cycles_1"
 BASE_HP="hyperparams_epochs_5_corrs.toml"

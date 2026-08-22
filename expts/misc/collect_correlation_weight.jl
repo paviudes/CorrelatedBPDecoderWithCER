@@ -58,8 +58,25 @@ using DataFrames
 using Printf
 using Statistics
 
-const DEFAULT_RESULTS_DIR = joinpath(@__DIR__, "..", "..", "data",
-                                     "72q_BB_cycles_1_debug", "results")
+# THERE IS DELIBERATELY NO DEFAULT RESULTS DIRECTORY.
+#
+# This previously defaulted to 72q_BB_cycles_1_debug/results. That is a trap once
+# more than one codename exists: running the collector with no argument would
+# silently summarise a DIFFERENT experiment than the one just finished, and the
+# output filenames are identical either way, so the mistake is invisible in the
+# artefacts. `sweep_correlation_weight.sh --collect` always passes the directory
+# explicitly (derived from the active data profile), so requiring it costs
+# nothing and removes the failure mode.
+const USAGE = """
+    julia --project="./../" misc/collect_correlation_weight.jl <results_dir> [--outdir DIR]
+
+  <results_dir> is required, e.g.
+      ./../data/72q_BB_cycles_1_spread_comparison/results
+      ./../data/72q_BB_cycles_1_debug/results
+
+  Or let the sweep script pick it from the active data profile:
+      bash misc/sweep_correlation_weight.sh --spread --collect
+"""
 
 # `..._trained_using_train_p_<p>_s_<n>[_no_cer]_cw<arm>_<gate>_sp<tag>[_lam<tag>]_seed_<k>.csv`
 #
@@ -884,7 +901,7 @@ it is treated as a new local and the script dies with
 everything is hard local scope and the loop behaves as written.
 """
 function main(arguments::Vector{String})::Nothing
-    results_dir::String = DEFAULT_RESULTS_DIR
+    results_dir::String = ""
     output_dir::String = ""
     argument_index::Int = 1
     while argument_index <= length(arguments)
@@ -895,6 +912,10 @@ function main(arguments::Vector{String})::Nothing
             results_dir = arguments[argument_index]
             argument_index += 1
         end
+    end
+    if isempty(results_dir)
+        print(USAGE)
+        error("no results directory given. Naming it is required — see above.")
     end
     if !isdir(results_dir)
         error("results directory not found: $(results_dir)")
