@@ -218,7 +218,26 @@ EMAIL="pavithran.sridhar@gmail.com"
 JULIA_MODULE="julia/1.12.5"
 CUDA_MODULE="cuda"
 GPU_TYPE=""
-TEST_JOBS=1                    # serial GPU phase: one MIG permits one CUDA context
+# GPUS scales the TRAINING core budget: on Narval a whole a100 is 4.0 RGU = 12
+# cores, so N GPUs buys 12N cores and the training phase runs 12N-wide. Training
+# is Enzyme reverse-mode AD and never touches the GPU, so the extra cards sit
+# idle during phase 1 — that is the price of taking cores from a GPU allocation
+# rather than submitting a separate CPU job.
+#
+# An a100 node is 4x A100-40GB / 48 cores, so GPUS <= 4 stays on ONE node. That
+# matters: the stage-in/stage-out uses $SLURM_TMPDIR, which is node-local, so a
+# job spanning two nodes would silently lose half its results. --nodes=1 below
+# enforces it.
+# Empty = size the allocation to the grid: take as many whole GPUs as it takes to
+# run every point in ONE training wave, capped at the 4 on a node. Two waves is
+# the thing worth spending a card to avoid — it doubles the longer phase.
+GPUS=""
+# TEST_JOBS was pinned to 1 when this job ran on a 20 GB MIG slice, where the
+# driver permits exactly one CUDA context (four concurrent contexts previously
+# killed 2 of 4 runs at cuDevicePrimaryCtxRetain). A WHOLE a100 has no such
+# limit, and the test phase is the larger half of the runtime, so it is the
+# highest-value thing to parallelise. Empty = choose from the GPU type below.
+TEST_JOBS=""
 # MEASURED, not guessed. The 18-point run of 2026-08-14 took 2h41m end to end:
 #   precompile + stage-in   8 min
 #   phase 1 (train, 2 waves of 12)  1h23m
@@ -257,6 +276,8 @@ while [ "$#" -gt 0 ]; do
         --codename)  CODENAME="$2";  shift 2;;
         --nlayers)   NLAYERS="$2";   shift 2;;
         --gpu_type)  GPU_TYPE="$2";  shift 2;;
+        --gpus)      GPUS="$2";      shift 2;;
+        --test_jobs) TEST_JOBS="$2";  shift 2;;
         --walltime)  WALLTIME="$2"; WALLTIME_EXPLICIT=1; shift 2;;
         --account)   ACCOUNT="$2";   shift 2;;
         --outdir)    OUTDIR="$2";    shift 2;;
@@ -817,15 +838,74 @@ if [ -z "$GPU_TYPE" ]; then
     fi
 fi
 case "$GPU_TYPE" in
-    a100_1g.5gb)  SLOTS=1;  MEM="15G";  VRAM_GB=5  ;;
-    a100_2g.10gb) SLOTS=3;  MEM="31G";  VRAM_GB=10 ;;
-    a100_3g.20gb) SLOTS=6;  MEM="62G";  VRAM_GB=20 ;;
-    a100)         SLOTS=12; MEM="124G"; VRAM_GB=40 ;;
+    a100_1g.5gb)  SLOTS_PER_GPU=1;  MEM_PER_GPU=15;  VRAM_GB=5;  IS_MIG=1 ;;
+    a100_2g.10gb) SLOTS_PER_GPU=3;  MEM_PER_GPU=31;  VRAM_GB=10; IS_MIG=1 ;;
+    a100_3g.20gb) SLOTS_PER_GPU=6;  MEM_PER_GPU=62;  VRAM_GB=20; IS_MIG=1 ;;
+    a100)         SLOTS_PER_GPU=12; MEM_PER_GPU=124; VRAM_GB=40; IS_MIG=0 ;;
     *) echo "unknown --gpu_type: $GPU_TYPE" >&2; exit 2;;
 esac
+
+# A MIG slice cannot be requested more than once, so GPUS > 1 only makes sense on
+# whole cards. An a100 node is 4 GPUs / 48 cores; beyond that SLURM would span
+# nodes and $SLURM_TMPDIR — which the stage-in and stage-out both rely on — is
+# node-local, so half the results would be written somewhere the stage-out never
+# looks. Refuse rather than lose data.
+# Size the request to the grid unless told otherwise.
+if [ -z "$GPUS" ]; then
+    if [ "$IS_MIG" = "1" ]; then
+        GPUS=1
+    else
+        GPUS=$(( (n_points + SLOTS_PER_GPU - 1) / SLOTS_PER_GPU ))
+        if [ "$GPUS" -lt 1 ]; then
+            GPUS=1
+        fi
+        if [ "$GPUS" -gt 4 ]; then
+            GPUS=4
+        fi
+    fi
+fi
+
+if [ "$IS_MIG" = "1" ] && [ "$GPUS" -gt 1 ]; then
+    echo "ERROR: --gpus $GPUS with a MIG partition ($GPU_TYPE). MIG slices cannot be" >&2
+    echo "  multiply allocated; use --gpu_type a100 for more than one." >&2
+    exit 2
+fi
+if [ "$GPUS" -gt 4 ]; then
+    echo "ERROR: --gpus $GPUS exceeds the 4 GPUs on a Narval a100 node. The job would" >&2
+    echo "  span nodes, and \$SLURM_TMPDIR is node-local: the stage-out would silently" >&2
+    echo "  collect only the first node's results." >&2
+    exit 2
+fi
+
+SLOTS=$(( SLOTS_PER_GPU * GPUS ))
+MEM="$(( MEM_PER_GPU * GPUS ))G"
 [ "$n_points" -lt "$SLOTS" ] && SLOTS=$n_points
 TRAIN_WAVES=$(( (n_points + SLOTS - 1) / SLOTS ))
-GPU_MEMORY_PER_SLOT="$(( (VRAM_GB * 1024) / TEST_JOBS ))M"
+
+# TEST phase concurrency. On a whole a100 the only real limits are VRAM and
+# cores; on a MIG the driver allows one context, full stop.
+if [ -z "$TEST_JOBS" ]; then
+    if [ "$IS_MIG" = "1" ]; then
+        TEST_JOBS=1
+    else
+        # 4 processes x 10 GB on a 40 GB card. Without MPS these time-slice on the
+        # SM, but a large share of the measured 268 s/point is Julia startup and
+        # data loading rather than GPU compute, so the speedup is real if sublinear.
+        TEST_JOBS=$(( 4 * GPUS ))
+        if [ "$TEST_JOBS" -gt "$SLOTS" ]; then
+            TEST_JOBS=$SLOTS
+        fi
+        if [ "$TEST_JOBS" -gt "$n_points" ]; then
+            TEST_JOBS=$n_points
+        fi
+    fi
+fi
+
+# 85% of the per-process VRAM share. The remaining 15% covers the CUDA context
+# (~0.5 GB each) and fragmentation; `compute_optimal_batch_size_for` sizes the
+# prediction batch from this number, so under-stating it costs a little speed
+# whereas over-stating it is an OOM at cuDevicePrimaryCtxRetain.
+GPU_MEMORY_PER_SLOT="$(( (VRAM_GB * 1024 * GPUS * 85) / (TEST_JOBS * 100) ))M"
 
 # ---- walltime, DERIVED from n_epochs rather than hard-coded --------------------
 # Two runs of 18 points at n_epochs = 5, 12-way concurrency, measured end to end:
@@ -841,12 +921,24 @@ N_EPOCHS_BASE=$(grep -E '^[[:space:]]*n_epochs[[:space:]]*=' "$MODELS_DIR/$BASE_
 if [ -z "$N_EPOCHS_BASE" ]; then
     N_EPOCHS_BASE=5
 fi
-estimated_minutes=$(( (83 * N_EPOCHS_BASE * TRAIN_WAVES) / 10 + (45 * n_points) / 10 + 8 ))
+estimated_minutes=$(( (83 * N_EPOCHS_BASE * TRAIN_WAVES) / 10 + (45 * n_points) / (10 * TEST_JOBS) + 8 ))
 if [ "$WALLTIME_EXPLICIT" = "0" ]; then
-    # 1.3x margin on the estimate, rounded up to a whole hour, floor of 2h.
+    # 1.3x margin on the estimate, rounded up to a whole hour, then a FLOOR of 4h.
+    #
+    # The floor is not padding on the measured work — it covers the part that is
+    # not measured. Precompilation runs inside the job (CUDA_Runtime_jll must see
+    # a driver or "no CUDA runtime found" gets baked in) and is given a 1800 s
+    # timeout of its own; a cold or contended Lustre depot can spend most of that
+    # before a single gradient step. Stage-in of a 72 x 1e6 dataset per point adds
+    # more. Those costs are roughly fixed, so on a short job they dominate the
+    # estimate rather than perturb it.
+    #
+    # Asking for 4h instead of 2h costs queue priority and nothing else; running
+    # out at 1h59m costs the whole job, and SLURM's TERM handler only stages out
+    # whatever finished.
     walltime_hours=$(( ((estimated_minutes * 13) / 10 + 59) / 60 ))
-    if [ "$walltime_hours" -lt 2 ]; then
-        walltime_hours=2
+    if [ "$walltime_hours" -lt 4 ]; then
+        walltime_hours=4
     fi
     WALLTIME="${walltime_hours}:00:00"
 fi
@@ -857,7 +949,8 @@ cat > "$SLURM" <<EOF
 #SBATCH --job-name=cw_${MODE}_$TS
 #SBATCH --output=$CLUSTER_DIR/cw_${MODE}_${TS}.out
 #SBATCH --error=$CLUSTER_DIR/cw_${MODE}_${TS}.err
-#SBATCH --gpus=${GPU_TYPE}:1
+#SBATCH --gpus=${GPU_TYPE}:${GPUS}
+#SBATCH --nodes=1
 #SBATCH --cpus-per-task=$SLOTS
 #SBATCH --mem=$MEM
 #SBATCH --time=$WALLTIME
@@ -951,8 +1044,22 @@ done < "$HP_LIST"
 
 export USE_GPU=1
 export GPU_MEMORY=$GPU_MEMORY_PER_SLOT
-echo "[phase 2] testing \$(wc -l < "\$TEST_LOCAL") point(s), $TEST_JOBS at a time: \$(date)"
-parallel --jobs $TEST_JOBS --results "\$LOCAL_LOGS/test" < "\$TEST_LOCAL" &
+echo "[phase 2] testing \$(wc -l < "\$TEST_LOCAL") point(s), $TEST_JOBS at a time on $GPUS GPU(s): \$(date)"
+
+# PIN EACH PARALLEL SLOT TO A GPU, round-robin. Without this every process
+# inherits the same CUDA_VISIBLE_DEVICES, so all $TEST_JOBS of them open a context
+# on card 0 — which at $GPU_MEMORY_PER_SLOT each would exceed a 40 GB card and die
+# at cuDevicePrimaryCtxRetain, exactly as four workers on one MIG did before.
+#
+# Capture SLURM's own CUDA_VISIBLE_DEVICES first: on MIG partitions it is a list
+# of UUIDs ("MIG-a,MIG-b"), not integer indices, so overwriting it with a number
+# silently hides the GPU and drops the run to CPU. \`cut -d,\` works for both.
+# {%} is the parallel job slot, 1..$TEST_JOBS.
+export SLURM_CUDA_VISIBLE_DEVICES=\${CUDA_VISIBLE_DEVICES:-0}
+echo "[phase 2] SLURM gave CUDA_VISIBLE_DEVICES=\$SLURM_CUDA_VISIBLE_DEVICES"
+parallel --jobs $TEST_JOBS --results "\$LOCAL_LOGS/test" \\
+    'card=\$(( ({%} - 1) % $GPUS + 1 )); export CUDA_VISIBLE_DEVICES=\$(echo \$SLURM_CUDA_VISIBLE_DEVICES | cut -d, -f\$card); bash -c {}' \\
+    < "\$TEST_LOCAL" &
 wait \$!
 echo "correlation-weight sweep ($MODE) finished: \$(date)"
 EOF
@@ -987,8 +1094,8 @@ echo "  seeds  -> $SEEDS  (SAME set on every arm => paired contrasts)"
 echo "  grid   -> $n_cer CER + $n_nocer no-CER = $n_points point(s)"
 echo "  base   -> $MODELS_DIR/$BASE_HP"
 echo "  gate   -> syndrome_gate_threshold = $GATE_TAU ($gate_label)"
-echo "  GPU    -> $GPU_TYPE, $SLOTS core(s), $MEM; train $TRAIN_WAVES wave(s), test serial"
-echo "  time   -> $WALLTIME  (estimate ${estimated_minutes} min: $N_EPOCHS_BASE epoch(s) x $TRAIN_WAVES wave(s) train + $n_points serial test)"
+echo "  GPU    -> ${GPUS}x $GPU_TYPE, $SLOTS core(s), $MEM, 1 node; train $TRAIN_WAVES wave(s) of $SLOTS, test $TEST_JOBS at a time"
+echo "  time   -> $WALLTIME  (estimate ${estimated_minutes} min: $N_EPOCHS_BASE epoch(s) x $TRAIN_WAVES wave(s) train, $n_points tests $TEST_JOBS-way)"
 echo "  assert -> require_correlations = true on every CER arm"
 echo
 if [ "$PROFILE" = "spread" ]; then
