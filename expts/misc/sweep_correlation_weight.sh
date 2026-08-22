@@ -287,26 +287,45 @@ fi
 
 if [ "$PROFILE" = "spread" ]; then
     # THE CURRENT DATASET. Each CNOT's error rate is drawn from Normal(p, sigma)
-    # rather than fixed at p, which is what finally made the CER file carry
-    # per-qubit information: within-sector CV on the single-qubit rates went from
-    # 1.3% to 17-22%. Three independent noise samples at sigma = p, plus a
-    # sigma = 0 reference that gets only {lambda = 0, no-CER}.
+    # and clamped at 0, rather than fixed at p. Measured on the CER files, the
+    # degeneracy that made the uniform-p couplings useless retreats monotonically
+    # with sigma:
+    #
+    #   sigma     R^2(J ~ structure)   sector CV   (1,1) within-class sd   dead edges
+    #   0.0             0.848             1.58%            0.927            206/540
+    #   0.0005          0.709            18.88%            1.309            223/540
+    #   0.001           0.619            23.61%            1.473            245/540
+    #
+    # Better on every axis except one: clamping at zero kills more gates as sigma
+    # grows (66-81 of 432 at sigma = 5e-4, 115-137 at 1e-3), so more couplings go
+    # dead. sigma = 0.001 is still the most informative data available.
+    #
+    # THE GRID IS SPLIT BY QUESTION, because 7 datasets x 5 lambdas would be 38
+    # points -- four training waves and ~11h.
+    #
+    #   PRIMARY   every dataset gets {lambda = 0, no-CER}.  Does the CER PRIOR
+    #             advantage grow with sigma? Live hypothesis, 3 replicates per
+    #             sigma, and lambda = 0 is the arm the uniform-p sweep found
+    #             optimal.
+    #   SECONDARY only sigma = 0.001 gets extra lambdas. The couplings have
+    #             failed at every lambda on weaker data, so they are tested once
+    #             more on the BEST data rather than everywhere.
     CODENAME="72q_BB_cycles_1_spread_comparison"
     if [ "$BASE_HP_EXPLICIT" = "0" ]; then
-        BASE_HP="hyperparams_epochs_10_corrs.toml"
+        BASE_HP="hyperparams_epochs_5_corrs.toml"
     fi
     if [ -z "$DATASETS" ]; then
-        DATASETS="p_0.0005_sig_0.0005_s_1 p_0.0005_sig_0.0005_s_2 p_0.0005_sig_0.0005_s_3"
+        DATASETS="p_0.0005_sig_0.001_s_1 p_0.0005_sig_0.001_s_2 p_0.0005_sig_0.001_s_3"
     fi
     if [ -z "$BASELINE_DATASETS" ]; then
-        BASELINE_DATASETS="p_0.0005_sig_0.0_s_1"
+        BASELINE_DATASETS="p_0.0005_sig_0.0_s_1 p_0.0005_sig_0.0005_s_1 p_0.0005_sig_0.0005_s_2 p_0.0005_sig_0.0005_s_3"
     fi
     if [ -z "$LAMBDAS" ]; then
-        LAMBDAS="$LAMBDA_GRID"
+        LAMBDAS="0 0.3 1.5"
     fi
     if [ "$SEEDS_EXPLICIT" = "0" ]; then
-        # The three noise samples ARE the replicates; a network-seed axis on top
-        # would multiply the grid without adding an independent source of spread.
+        # The noise samples ARE the replicates; a network-seed axis on top would
+        # multiply the grid without adding an independent source of spread.
         SEEDS="1"
     fi
 elif [ "$PROFILE" = "uniform" ]; then
@@ -426,6 +445,10 @@ resolve_datasets() {
         done
         DATASETS="$(echo $DATASETS)"
     fi
+    # The reference datasets read their CER file too (the lambda = 0 arm runs with
+    # use_CER = true), so the preflight and the fingerprint must cover them. A
+    # missing or superseded file there would be just as invisible as anywhere else.
+    CHECKED_DATASETS="$(echo $DATASETS $BASELINE_DATASETS)"
 }
 
 cer_file_for() {
@@ -477,7 +500,7 @@ verify_cer_pin() {
     fi
     local mismatched=0
     local unpinned=0
-    for key in $DATASETS; do
+    for key in $CHECKED_DATASETS; do
         local f expected actual
         f="$(cer_file_for "$key")"
         [ -f "$f" ] || continue
@@ -503,11 +526,11 @@ verify_cer_pin() {
         return 1
     fi
     if [ "$unpinned" -gt 0 ]; then
-        echo "  $unpinned of $(echo $DATASETS | wc -w) file(s) are not covered by the pin."
+        echo "  $unpinned of $(echo $CHECKED_DATASETS | wc -w) file(s) are not covered by the pin."
         echo "  A partial pin is not a guard. Re-pin once the data is confirmed."
         return 0
     fi
-    echo "  J_FINGERPRINT.txt: all $(echo $DATASETS | wc -w) file(s) match the pin."
+    echo "  J_FINGERPRINT.txt: all $(echo $CHECKED_DATASETS | wc -w) file(s) match the pin."
     return 0
 }
 
@@ -520,7 +543,7 @@ if [ "$MODE" = "pin_cer" ]; then
         echo "# J_FINGERPRINT.txt — SHA-256 of the CER coupling files this analysis assumes."
         echo "# Written by sweep_correlation_weight.sh --pin_cer on $(date +%Y-%m-%d_%H-%M-%S)."
         echo "# Columns: p  sha256"
-        for key in $DATASETS; do
+        for key in $CHECKED_DATASETS; do
             f="$(cer_file_for "$key")"
             [ -f "$f" ] || continue
             echo "$key $(sha_of "$f")"
@@ -969,27 +992,32 @@ echo "  time   -> $WALLTIME  (estimate ${estimated_minutes} min: $N_EPOCHS_BASE 
 echo "  assert -> require_correlations = true on every CER arm"
 echo
 if [ "$PROFILE" = "spread" ]; then
-    echo "  WHAT CHANGED IN THE DATA (measured, uniform-p -> per-gate spread):"
-    echo "    single-qubit within-sector CV   1.3%  ->  17-22%     PASSES decisively"
-    echo "    J explained by check structure  0.82  ->  0.67-0.75  short of the <0.30 gate"
-    echo "    strong-class within-class sd    0.93  ->  1.21-1.42  ~40% more per-edge signal"
-    echo "    dead edges (216 at J ~ 0)       216   ->  201-210    essentially unchanged"
+    echo "  THE SIGMA LADDER (measured on the CER files, before any decoding):"
+    echo "    sigma     R^2(J~structure)   sector CV   (1,1) sd   dead edges"
+    echo "    0.0            0.848            1.58%       0.927     206/540"
+    echo "    0.0005         0.709           18.88%       1.309     223/540"
+    echo "    0.001          0.619           23.61%       1.473     245/540"
     echo
-    echo "  So the PRIORS became genuinely informative and the COUPLINGS only partly did."
-    echo "  Given lambda = 0 was optimal on the uniform-p data, the honest prior is that"
-    echo "  lam0 wins again and the news is how much bigger its margin over no-CER is."
+    echo "  Rising sigma makes the priors much more informative and the surviving"
+    echo "  couplings somewhat more so, but clamping at zero kills more gates (66-81"
+    echo "  of 432 at sigma = 5e-4, 115-137 at 1e-3), so more couplings go dead."
     echo
     echo "  reading protocol, fixed in advance:"
-    echo "    lam0 beats nocer by MORE than the 135 seen on uniform-p -> the priors are the"
-    echo "                                                               story; per-gate data helps"
-    echo "    some lambda > 0 now beats lam0                          -> FIRST evidence the"
-    echo "                                                               couplings carry information"
-    echo "    lambda > 0 still monotonically worse                    -> couplings are done as a"
-    echo "                                                               loss term; move to OSD scoring"
+    echo "    PRIMARY   lam0 - nocer, as a function of sigma:"
+    echo "      margin grows monotonically with sigma  -> per-gate characterisation is"
+    echo "                                                what makes CER worth having"
+    echo "      margin flat across sigma               -> the win is LLR magnitude"
+    echo "                                                (saturation), not information"
+    echo "      margin shrinks                         -> the extra dead gates cost more"
+    echo "                                                than the extra spread buys"
+    echo "    SECONDARY lambda > 0 vs lam0 at sigma = 0.001, the most informative data:"
+    echo "      still worse                            -> couplings are done as a loss term"
+    echo "      finally better                         -> re-run the full lambda grid here"
     echo
-    echo "  CAUTION: sigma = 0 and sigma > 0 are NOT matched on physical error rate"
-    echo "  (mean per-gate rate 5.0e-4 vs 5.3-5.7e-4, because the Normal is clamped at 0),"
-    echo "  so compare CER vs no-CER WITHIN a dataset, not failure counts ACROSS sigma."
+    echo "  CAUTION: the sigmas are NOT matched on physical error rate. Mean per-gate"
+    echo "  rate is 5.0e-4 / 5.4e-4 / 7.1e-4 for sigma = 0 / 5e-4 / 1e-3, because the"
+    echo "  Normal is clamped at zero. Compare CER vs no-CER WITHIN a dataset; the"
+    echo "  sigma trend is only interpretable on that paired margin, never raw counts."
     echo
 fi
 if [ "$MODE" = "lambda_sweep" ]; then
