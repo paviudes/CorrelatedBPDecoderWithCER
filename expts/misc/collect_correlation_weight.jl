@@ -68,7 +68,10 @@ const DEFAULT_RESULTS_DIR = joinpath(@__DIR__, "..", "..", "data",
 # TOML's anneal), the lambda sweep pins one. A run with no tag is recorded as
 # `lambda_pinned = false` rather than as lambda = 0, because "annealed to 0.7623"
 # and "pinned at 0" are opposite ends of the axis and must never be pooled.
-const RUN_PATTERN = r"_train_p_([0-9.eE+-]+)_s_(\d+)(_no_cer)?_cw(cer|nocer)_(ungated|gated)_sp([0-9p]+)(?:_lam([0-9p]+))?_seed_(\d+)\.csv$"
+# The dataset KEY is captured whole (`p_0.0005_s_1`, or `p_0.0005_sig_0.0005_s_2`
+# for the per-gate-spread runs) and decomposed afterwards, so a new field in the
+# filename layout does not require a new capture group here.
+const RUN_PATTERN = r"_trained_using_train_(p_[0-9.eE+-]+(?:_sig_[0-9.eE+-]+)?_s_\d+)(_no_cer)?_cw(cer|nocer)_(ungated|gated)_sp([0-9p]+)(?:_lam([0-9p]+))?_seed_(\d+)\.csv$"
 
 """
     tag_to_number(tag) -> Float64
@@ -99,32 +102,51 @@ function parse_run(filename::String)::Union{NamedTuple, Nothing}
     if filename_match === nothing
         return nothing
     end
-    arm::String = String(filename_match.captures[4])
-    has_no_cer_tag::Bool = filename_match.captures[3] !== nothing
+    dataset_key::String = String(filename_match.captures[1])
+    arm::String = String(filename_match.captures[3])
+    has_no_cer_tag::Bool = filename_match.captures[2] !== nothing
     if has_no_cer_tag != (arm == "nocer")
         @warn "filename $(filename) has the `_no_cer` tag = $(has_no_cer_tag) but the " *
               "run tag says arm = $(arm). use_CER and run_tag have drifted apart; " *
               "this run's arm label cannot be trusted."
     end
     lambda_tag::String = ""
-    lambda_pinned::Bool = filename_match.captures[7] !== nothing
+    lambda_pinned::Bool = filename_match.captures[6] !== nothing
     if lambda_pinned
-        lambda_tag = String(filename_match.captures[7])
+        lambda_tag = String(filename_match.captures[6])
     end
     lambda_value::Float64 = NaN
     if lambda_pinned
         lambda_value = tag_to_number(lambda_tag)
     end
+
+    # Decompose the key. `sigma` is "" on the uniform-p datasets, which is what
+    # distinguishes them from a per-gate-spread run that happens to use sigma = 0.
+    key_match::Union{RegexMatch, Nothing} =
+        match(r"^p_([0-9.eE+-]+)(?:_sig_([0-9.eE+-]+))?_s_(\d+)$", dataset_key)
+    p_string::String = ""
+    sigma_string::String = ""
+    data_sample::Int = 0
+    if key_match !== nothing
+        p_string = String(key_match.captures[1])
+        if key_match.captures[2] !== nothing
+            sigma_string = String(key_match.captures[2])
+        end
+        data_sample = parse(Int, key_match.captures[3])
+    end
+
     run_key::NamedTuple = (
-        p = String(filename_match.captures[1]),
-        data_seed = parse(Int, filename_match.captures[2]),
+        dataset = dataset_key,
+        p = p_string,
+        sigma = sigma_string,
+        data_seed = data_sample,
         arm = arm,
-        gate = String(filename_match.captures[5]),
-        sparsity_tag = String(filename_match.captures[6]),
+        gate = String(filename_match.captures[4]),
+        sparsity_tag = String(filename_match.captures[5]),
         lambda_tag = lambda_tag,
         lambda_pinned = lambda_pinned,
         lambda = lambda_value,
-        seed = parse(Int, filename_match.captures[8]),
+        seed = parse(Int, filename_match.captures[7]),
     )
     return run_key
 end
@@ -358,8 +380,11 @@ function collect_per_run(results_dir::String, logs_dir::String)::DataFrame
         run_stem::String = split(filename, "simulation_results_")[2]
 
         row::Dict{Symbol, Any} = Dict(
+            :dataset => run_key.dataset,
             :p => run_key.p,
             :p_numeric => something(tryparse(Float64, run_key.p), NaN),
+            :sigma => run_key.sigma,
+            :data_sample => run_key.data_seed,
             :arm => run_key.arm,
             :gate => run_key.gate,
             :sparsity_tag => run_key.sparsity_tag,
@@ -370,7 +395,10 @@ function collect_per_run(results_dir::String, logs_dir::String)::DataFrame
             :label => label_for(run_key),
             # Grouping key for the per-arm table: one row per (p, arm) so a sweep
             # that varies BOTH axes still tabulates correctly.
-            :group => "$(label_for(run_key))_p$(run_key.p)",
+            # Grouped by DATASET, not by p: the per-gate-spread runs share one p
+            # across three independent noise samples, and pooling them would hide
+            # exactly the sample-to-sample variation the replicates exist to measure.
+            :group => "$(label_for(run_key))__$(run_key.dataset)",
         )
         results_row = first(CSV.File(joinpath(results_dir, filename)))
         for name in propertynames(results_row)
@@ -435,7 +463,7 @@ function collect_per_run(results_dir::String, logs_dir::String)::DataFrame
         if run_key.lambda_pinned
             lambda_segment = "_lam$(run_key.lambda_tag)"
         end
-        run_tail::String = "train_p_$(run_key.p)_s_$(run_key.data_seed)$(cer_tag)" *
+        run_tail::String = "train_$(run_key.dataset)$(cer_tag)" *
                            "_cw$(run_key.arm)_$(run_key.gate)_sp$(run_key.sparsity_tag)" *
                            "$(lambda_segment)_seed_$(run_key.seed)"
         debug_summary::Dict{Symbol, Any} = debug_log_summary(logs_dir, run_tail)
@@ -491,7 +519,7 @@ function collect_per_run(results_dir::String, logs_dir::String)::DataFrame
     if nrow(per_run) > 0
         # `:label` rather than `:lambda`: the latter is NaN on the no-CER and
         # annealed arms, and NaN ordering is not something to rely on.
-        sort!(per_run, [:p_numeric, :label, :seed])
+        sort!(per_run, [:dataset, :label, :seed])
     end
     return per_run
 end
@@ -532,6 +560,8 @@ function collect_per_arm(per_run::DataFrame)::DataFrame
     for group in groupby(per_run, :group)
         row::Dict{Symbol, Any} = Dict(:group => group.group[1],
                                       :label => group.label[1],
+                                      :dataset => group.dataset[1],
+                                      :sigma => group.sigma[1],
                                       :p => group.p[1],
                                       :p_numeric => group.p_numeric[1],
                                       :arm => group.arm[1],
@@ -557,7 +587,7 @@ function collect_per_arm(per_run::DataFrame)::DataFrame
     end
     per_arm::DataFrame = rows_to_dataframe(collected_rows)
     if nrow(per_arm) > 0
-        sort!(per_arm, [:p_numeric, :arm_order])
+        sort!(per_arm, [:dataset, :arm_order])
     end
     return per_arm
 end
@@ -575,15 +605,16 @@ evidence warrants — it is reported alongside precisely so the two can be
 compared. A previous +361 failure "effect" survived the z (z = +10.8) and died
 on the t (t = +0.52).
 """
-function contrast(per_run::DataFrame, p_value::String,
+function contrast(per_run::DataFrame, dataset_key::String,
                   label_a::String, label_b::String)::Dict{Symbol, Any}
-    at_p::DataFrame = per_run[per_run.p .== p_value, :]
+    at_p::DataFrame = per_run[per_run.dataset .== dataset_key, :]
     cer_rows::DataFrame = at_p[at_p.label .== label_a, :]
     nocer_rows::DataFrame = at_p[at_p.label .== label_b, :]
     shared_seeds::Vector{Int} = sort(collect(intersect(Set(cer_rows.seed), Set(nocer_rows.seed))))
     out::Dict{Symbol, Any} = Dict(
-        :p => p_value,
-        :p_numeric => something(tryparse(Float64, p_value), NaN),
+        :dataset => dataset_key,
+        :p => nrow(at_p) > 0 ? at_p.p[1] : "",
+        :sigma => nrow(at_p) > 0 ? at_p.sigma[1] : "",
         :contrast => "$(label_a) - $(label_b)",
         :label_a => label_a,
         :label_b => label_b,
@@ -641,11 +672,10 @@ schedule) the fallback is the old cer-vs-nocer contrast, so that vintage still
 collects.
 """
 function collect_contrasts(per_run::DataFrame)::DataFrame
-    p_values::Vector{String} = unique(per_run.p)
-    sort!(p_values; by = value -> something(tryparse(Float64, value), Inf))
+    p_values::Vector{String} = sort(unique(per_run.dataset))
     collected_rows::Vector{Dict{Symbol, Any}} = Dict{Symbol, Any}[]
     for p_value in p_values
-        labels_here::Vector{String} = unique(per_run[per_run.p .== p_value, :label])
+        labels_here::Vector{String} = unique(per_run[per_run.dataset .== p_value, :label])
         pinned::Vector{String} = sort(filter(l -> startswith(l, "lam") && l != "lam0", labels_here);
                                       by = arm_order)
         if "lam0" in labels_here
@@ -698,8 +728,8 @@ function print_report(per_run::DataFrame, per_arm::DataFrame, contrasts::DataFra
     println("CONTRASTS, paired by seed (t against the seed spread, z test-set only)")
     println(repeat("-", 100))
     for row in eachrow(contrasts)
-        @printf("  p = %-10s  %-22s  n = %d paired seed(s)\n",
-                row.p, row.contrast, row.n_paired_seeds)
+        @printf("  %-26s  %-22s  n = %d paired seed(s)\n",
+                row.dataset, row.contrast, row.n_paired_seeds)
         for (quantity, name) in ((:num_failures, "total"),
                                  (:num_coset_failures, "coset"),
                                  (:num_convergence_failures, "convergence"))
@@ -732,14 +762,14 @@ function print_report(per_run::DataFrame, per_arm::DataFrame, contrasts::DataFra
         println(repeat("=", 100))
         println("LAMBDA TREND, each arm against the lambda = 0 control (couplings OFF, CER priors ON)")
         println(repeat("-", 100))
-        @printf("  %-8s %-10s %13s %13s %13s %10s\n",
-                "p", "lambda", "coset", "convergence", "total", "t(total)")
+        @printf("  %-26s %-10s %13s %13s %13s %10s\n",
+                "dataset", "lambda", "coset", "convergence", "total", "t(total)")
         for row in eachrow(lambda_rows)
             if row.num_failures_paired_mean === missing
                 continue
             end
-            @printf("  %-8s %-10s %+13.1f %+13.1f %+13.1f %+10.2f\n",
-                    row.p, replace(row.label_a, "lam" => ""),
+            @printf("  %-26s %-10s %+13.1f %+13.1f %+13.1f %+10.2f\n",
+                    row.dataset, replace(row.label_a, "lam" => ""),
                     row.num_coset_failures_paired_mean,
                     row.num_convergence_failures_paired_mean,
                     row.num_failures_paired_mean,
@@ -768,8 +798,8 @@ function print_report(per_run::DataFrame, per_arm::DataFrame, contrasts::DataFra
             if row.num_failures_paired_mean === missing
                 continue
             end
-            @printf("  p = %-10s total %+9.1f +- %-8.1f  t = %+6.2f   (%+.1f%% of no-CER)\n",
-                    row.p, row.num_failures_paired_mean, row.num_failures_paired_sd,
+            @printf("  %-26s total %+9.1f +- %-8.1f  t = %+6.2f   (%+.1f%% of no-CER)\n",
+                    row.dataset, row.num_failures_paired_mean, row.num_failures_paired_sd,
                     row.num_failures_paired_t,
                     row.num_failures_relative === missing ? NaN : 100 * row.num_failures_relative)
         end

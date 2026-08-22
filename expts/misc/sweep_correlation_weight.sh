@@ -9,6 +9,7 @@
 #     bash misc/sweep_correlation_weight.sh --check      # verify the CER files only
 #     bash misc/sweep_correlation_weight.sh --pin_cer    # lock the CER files by SHA-256
 #     bash misc/sweep_correlation_weight.sh --lambda_sweep   # 5 lambda + baseline at one p
+#     bash misc/sweep_correlation_weight.sh --spread     # per-gate-spread datasets
 #     bash misc/sweep_correlation_weight.sh --probe      # 1 p, 1 seed, both arms
 #     bash misc/sweep_correlation_weight.sh              # primary: 3 p x 2 arms x 3 seeds
 #     bash misc/sweep_correlation_weight.sh --ungated    # contrast: historical tau = -1
@@ -145,6 +146,17 @@ SOURCE_CODENAME="72q_BB_cycles_1"
 BASE_HP="hyperparams_epochs_5_corrs.toml"
 PVALS="0.0005 0.0007 0.0019"
 SEEDS="1 2 3"
+# DATASETS holds the dataset KEY of each point, i.e. the part of the filename
+# shared by the training set, the test set and the CER file:
+#
+#     training_data/train_<key>.txt
+#     testing_data/test_<key>.txt
+#     correlated_weights/correlated_weights_<key>.txt
+#
+# Empty means "derive p_<p>_s_1 from PVALS", which is the historical layout. The
+# per-gate-spread datasets add a sigma field (p_0.0005_sig_0.0005_s_2), so the
+# key is carried around whole rather than reassembled from parts.
+DATASETS=""
 NLAYERS=90
 SPARSITY="0.0"                 # pinned CONSTANT — the point of the sweep
 GATE_TAU="0.5"                 # gate ON by default; --ungated for tau = -1
@@ -157,6 +169,18 @@ INCLUDE_NOCER=1                # --no_nocer drops the flat-prior baseline
 # At lambda = 0.76 it now produces a -4.26 sigma coset effect, so the question is
 # no longer "is it strong enough" but "where does the benefit stop paying".
 LAMBDA_GRID="0 0.1 0.3 0.75 1.5"
+# Dataset PROFILE, orthogonal to MODE: it selects which codename and which dataset
+# keys to work on, so `--spread --check`, `--spread --pin_cer` and a plain
+# `--spread` run all address the same data.
+PROFILE=""
+BASE_HP_EXPLICIT=0
+WALLTIME_EXPLICIT=0
+# Datasets that get ONLY the {lambda = 0, no-CER} pair rather than the full lambda
+# grid. The sigma = 0 reference exists to answer "is CER worth more now than it
+# was on uniform-p data?", which needs lam0-vs-nocer at both sigmas and nothing
+# else; running five lambdas on it would spend a third of the job re-deriving a
+# result we already have.
+BASELINE_DATASETS=""
 
 ACCOUNT="def-jemerson_gpu"
 EMAIL="pavithran.sridhar@gmail.com"
@@ -186,6 +210,9 @@ while [ "$#" -gt 0 ]; do
         --probe)     MODE="probe";   shift;;
         --ungated)   GATE_TAU="-1.0"; shift;;
         --lambda_sweep) MODE="lambda_sweep"; shift;;
+        --spread)    PROFILE="spread"; shift;;
+        --datasets)  DATASETS="$2";  shift 2;;
+        --baseline_datasets) BASELINE_DATASETS="$2"; shift 2;;
         --lambdas)   LAMBDAS="$2";   shift 2;;
         --no_nocer)  INCLUDE_NOCER=0; shift;;
         --pvals)     PVALS="$2";     shift 2;;
@@ -194,11 +221,11 @@ while [ "$#" -gt 0 ]; do
         --lambda)    LAMBDAS="$2";   shift 2;;
         --tau)       GATE_TAU="$2";  shift 2;;
         --rescale)   SINGLE_QUBIT_RESCALE="$2"; shift 2;;
-        --base_hp)   BASE_HP="$2";   shift 2;;
+        --base_hp)   BASE_HP="$2"; BASE_HP_EXPLICIT=1; shift 2;;
         --codename)  CODENAME="$2";  shift 2;;
         --nlayers)   NLAYERS="$2";   shift 2;;
         --gpu_type)  GPU_TYPE="$2";  shift 2;;
-        --walltime)  WALLTIME="$2";  shift 2;;
+        --walltime)  WALLTIME="$2"; WALLTIME_EXPLICIT=1; shift 2;;
         --account)   ACCOUNT="$2";   shift 2;;
         --outdir)    OUTDIR="$2";    shift 2;;
         -h|--help)   usage; exit 0;;
@@ -206,9 +233,48 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
+# ------------------------------------------------------- per-gate spread mode --
+# The dataset where each CNOT's error rate is drawn from Normal(p, sigma) rather
+# than fixed at p. Sigma = 0 is the matched uniform-p baseline.
+#
+# WHY THIS DATASET EXISTS. On the uniform-p data the CER file was almost
+# information-free: the 72 single-qubit rates collapsed to TWO sector levels with
+# 1.3% spread inside each, and 82% of the variance in J was explained by a single
+# structural feature (how many HZ / HX checks the pair shares), with 216 of 540
+# couplings sitting at J = 0.003. BP already knows the check structure, so the
+# couplings were telling the decoder something it had.
+#
+# Per-gate sampling breaks that degeneracy. Run --check to see by how much.
+if [ "$PROFILE" = "spread" ]; then
+    CODENAME="72q_BB_cycles_1_spread_comparison"
+    if [ "$BASE_HP_EXPLICIT" = "0" ]; then
+        BASE_HP="hyperparams_epochs_10_corrs.toml"
+    fi
+    if [ -z "$DATASETS" ]; then
+        DATASETS="p_0.0005_sig_0.0005_s_1 p_0.0005_sig_0.0005_s_2 p_0.0005_sig_0.0005_s_3"
+    fi
+    if [ -z "$LAMBDAS" ]; then
+        LAMBDAS="$LAMBDA_GRID"
+    fi
+    if [ -z "$BASELINE_DATASETS" ]; then
+        BASELINE_DATASETS="p_0.0005_sig_0.0_s_1"
+    fi
+    SEEDS="1"
+fi
+
 CER_DIR="$WORKDIR/$CODENAME/correlated_weights"
 MODELS_DIR="$WORKDIR/$CODENAME/models"
 CLUSTER_DIR="$WORKDIR/$CODENAME/cluster"
+
+# hyperparams_epochs_10_corrs.toml matches the established base on every knob
+# that the script does not itself override, EXCEPT n_epochs: 10 rather than 5.
+# learning_rate, loss_layer_temperature, single_qubit_rescale, batch_size and the
+# annealing schedules are all identical, so the two sweeps stay comparable. The
+# sparsity difference ("0,5e-1" vs "0,0") is moot because the script pins it, and
+# the absent `seed` is injected per point.
+#
+# n_epochs is NOT moot: it doubles the training phase, which is why the walltime
+# below is derived from it rather than hard-coded.
 
 # ------------------------------------------------------------------ setup ---
 if [ "$MODE" = "setup" ]; then
@@ -252,8 +318,20 @@ fi
 # and refuses to submit on a mismatch. Commit that file.
 FINGERPRINT_FILE="$CER_DIR/J_FINGERPRINT.txt"
 
+# Called after the mode blocks have had their say about PVALS, so `--probe` and
+# `--lambda_sweep` narrowing to one p is reflected here rather than overridden.
+resolve_datasets() {
+    if [ -z "$DATASETS" ]; then
+        DATASETS=""
+        for p in $PVALS; do
+            DATASETS="$DATASETS p_${p}_s_1"
+        done
+        DATASETS="$(echo $DATASETS)"
+    fi
+}
+
 cer_file_for() {
-    echo "$CER_DIR/correlated_weights_p_${1}_s_1.txt"
+    echo "$CER_DIR/correlated_weights_${1}.txt"
 }
 
 sha_of() {
@@ -268,15 +346,15 @@ check_cer_files() {
     local ok=1
     printf "  %-10s %-8s %-7s %-10s %-10s %-10s %-7s %s\n" \
            "p" "singles" "pairs" "J mean" "J min" "J max" "% J<0" "sha256"
-    for p in $PVALS; do
+    for key in $DATASETS; do
         local f
-        f="$(cer_file_for "$p")"
+        f="$(cer_file_for "$key")"
         if [ ! -f "$f" ]; then
-            printf "  %-10s MISSING: %s\n" "$p" "$f"; ok=0; continue
+            printf "  %-28s MISSING: %s\n" "$key" "$f"; ok=0; continue
         fi
         local short
         short="$(sha_of "$f" | cut -c1-12)"
-        awk -F: -v p="$p" -v sha="$short" '
+        awk -F: -v p="$key" -v sha="$short" '
             /^\(/ { n_pair++; v=$2+0; s+=v; if (n_pair==1){mn=v;mx=v}
                     if (v<mn) mn=v; if (v>mx) mx=v; if (v<0) neg++; next }
             NF==2 { n_single++ }
@@ -300,18 +378,20 @@ verify_cer_pin() {
         return 0
     fi
     local mismatched=0
-    for p in $PVALS; do
+    local unpinned=0
+    for key in $DATASETS; do
         local f expected actual
-        f="$(cer_file_for "$p")"
+        f="$(cer_file_for "$key")"
         [ -f "$f" ] || continue
-        expected="$(awk -v p="$p" '$1 == p { print $2 }' "$FINGERPRINT_FILE")"
+        expected="$(awk -v k="$key" '$1 == k { print $2 }' "$FINGERPRINT_FILE")"
         if [ -z "$expected" ]; then
-            echo "  p=$p not in the pin — add it with --pin_cer."
+            echo "  $key is NOT IN THE PIN — add it with --pin_cer."
+            unpinned=$((unpinned + 1))
             continue
         fi
         actual="$(sha_of "$f")"
         if [ "$expected" != "$actual" ]; then
-            echo "  p=$p FINGERPRINT MISMATCH" >&2
+            echo "  $key FINGERPRINT MISMATCH" >&2
             echo "      pinned : $expected" >&2
             echo "      actual : $actual" >&2
             mismatched=$((mismatched + 1))
@@ -324,11 +404,17 @@ verify_cer_pin() {
         echo "  with --pin_cer if the change is intended." >&2
         return 1
     fi
-    echo "  J_FINGERPRINT.txt: all $(echo $PVALS | wc -w) file(s) match the pin."
+    if [ "$unpinned" -gt 0 ]; then
+        echo "  $unpinned of $(echo $DATASETS | wc -w) file(s) are not covered by the pin."
+        echo "  A partial pin is not a guard. Re-pin once the data is confirmed."
+        return 0
+    fi
+    echo "  J_FINGERPRINT.txt: all $(echo $DATASETS | wc -w) file(s) match the pin."
     return 0
 }
 
 if [ "$MODE" = "pin_cer" ]; then
+    resolve_datasets
     echo "CER data in $CER_DIR"
     echo
     check_cer_files || { echo "PREFLIGHT FAILED — refusing to pin." >&2; exit 1; }
@@ -336,10 +422,10 @@ if [ "$MODE" = "pin_cer" ]; then
         echo "# J_FINGERPRINT.txt — SHA-256 of the CER coupling files this analysis assumes."
         echo "# Written by sweep_correlation_weight.sh --pin_cer on $(date +%Y-%m-%d_%H-%M-%S)."
         echo "# Columns: p  sha256"
-        for p in $PVALS; do
-            f="$(cer_file_for "$p")"
+        for key in $DATASETS; do
+            f="$(cer_file_for "$key")"
             [ -f "$f" ] || continue
-            echo "$p $(sha_of "$f")"
+            echo "$key $(sha_of "$f")"
         done
     } > "$FINGERPRINT_FILE"
     echo
@@ -349,6 +435,7 @@ if [ "$MODE" = "pin_cer" ]; then
 fi
 
 if [ "$MODE" = "check" ]; then
+    resolve_datasets
     echo "CER data in $CER_DIR"
     echo "  (expecting J = log[P00*P11/(P01*P10)], the revised convention)"
     echo
@@ -378,10 +465,13 @@ if [ "$MODE" = "lambda_sweep" ]; then
     fi
 fi
 
+resolve_datasets
+
 # 5 lambda + 1 baseline, 3 seeds = 18 points, the same size as the 2026-08-20 run
 # that took 2h37m. Refuse to submit a grid that silently outgrows the walltime.
-n_planned=$(( $(echo $PVALS | wc -w) * $(echo $SEEDS | wc -w) * \
-              ( $([ -n "$LAMBDAS" ] && echo $LAMBDAS | wc -w || echo 1) + INCLUDE_NOCER ) ))
+n_planned=$(( $(echo $DATASETS | wc -w) * $(echo $SEEDS | wc -w) * \
+              ( $([ -n "$LAMBDAS" ] && echo $LAMBDAS | wc -w || echo 1) + INCLUDE_NOCER ) \
+              + $(echo $BASELINE_DATASETS | wc -w) * $(echo $SEEDS | wc -w) * (1 + INCLUDE_NOCER) ))
 if [ "$n_planned" -gt 24 ]; then
     echo "ERROR: $n_planned points requested. The 18-point run took 2h37m at 12-way" >&2
     echo "  training concurrency; beyond ~24 the walltime below stops being credible." >&2
@@ -470,17 +560,17 @@ EOF
     echo "$hp_name" >> "$HP_LIST"
 }
 
-emit_pair() {   # <hp_name> <p>
-    local hp="$1" p="$2"
-    local cer_data="correlated_weights_p_${p}_s_1.txt"
+emit_pair() {   # <hp_name> <dataset_key>
+    local hp="$1" key="$2"
+    local cer_data="correlated_weights_${key}.txt"
     echo "julia --project=\"./../\" --heap-size-hint=$HEAP_HINT neural_bp_experiments.jl" \
          "--workdir \$WORKDIR_RUNTIME --codename $CODENAME --n_hidden_layers $NLAYERS" \
          "--hyperparams $hp --cer_data $cer_data --isdebug true --quiet true" \
-         "--train train_p_${p}_s_1.txt" >> "$TRAIN_CMDS"
+         "--train train_${key}.txt" >> "$TRAIN_CMDS"
     echo "julia --project=\"./../\" --heap-size-hint=$HEAP_HINT neural_bp_experiments.jl" \
          "--workdir \$WORKDIR_RUNTIME --codename $CODENAME --n_hidden_layers $NLAYERS" \
          "--hyperparams $hp --cer_data $cer_data --quiet true --diagnose true" \
-         "--train train_p_${p}_s_1.txt --test test_p_${p}_s_1.txt" >> "$TEST_CMDS"
+         "--train train_${key}.txt --test test_${key}.txt" >> "$TEST_CMDS"
 }
 
 # LAMBDA IS PART OF THE TAG, or two points in a lambda sweep silently overwrite
@@ -501,9 +591,23 @@ fi
 n_points=0
 n_cer=0
 n_nocer=0
-for p in $PVALS; do
+
+# The baseline datasets run only {lambda = 0, no-CER}; every other dataset runs
+# the full lambda grid. Emitting them from one loop keeps write_point/emit_pair
+# and the overwrite guard single-sourced.
+all_datasets="$DATASETS $BASELINE_DATASETS"
+all_datasets="$(echo $all_datasets)"
+
+for key in $all_datasets; do
+  key_tag="$(tag_of "$key")"
+  point_lambdas="$lambda_list"
+  for baseline_key in $BASELINE_DATASETS; do
+      if [ "$key" = "$baseline_key" ]; then
+          point_lambdas="0"
+      fi
+  done
   for seed in $SEEDS; do
-    for lam in $lambda_list; do
+    for lam in $point_lambdas; do
         LAMBDA=""
         lam_tag=""
         if [ "$lam" != "__inherit__" ]; then
@@ -511,18 +615,18 @@ for p in $PVALS; do
             lam_tag="_lam$(tag_of "$lam")"
         fi
         run_tag="_cwcer_${gate_label}_sp$(tag_of "$SPARSITY")${lam_tag}"
-        hp="hyperparams_cw_cer_${gate_label}_sp$(tag_of "$SPARSITY")${lam_tag}_p$(tag_of "$p")_seed${seed}.toml"
+        hp="hyperparams_cw_cer_${gate_label}_sp$(tag_of "$SPARSITY")${lam_tag}_${key_tag}_seed${seed}.toml"
         write_point "$hp" "$run_tag" "true" "$seed"
-        emit_pair "$hp" "$p"
+        emit_pair "$hp" "$key"
         n_points=$((n_points + 1)); n_cer=$((n_cer + 1))
     done
 
     if [ "$INCLUDE_NOCER" = "1" ]; then
         LAMBDA=""
         run_tag="_cwnocer_${gate_label}_sp$(tag_of "$SPARSITY")"
-        hp="hyperparams_cw_nocer_${gate_label}_sp$(tag_of "$SPARSITY")_p$(tag_of "$p")_seed${seed}.toml"
+        hp="hyperparams_cw_nocer_${gate_label}_sp$(tag_of "$SPARSITY")_${key_tag}_seed${seed}.toml"
         write_point "$hp" "$run_tag" "false" "$seed"
-        emit_pair "$hp" "$p"
+        emit_pair "$hp" "$key"
         n_points=$((n_points + 1)); n_nocer=$((n_nocer + 1))
     fi
   done
@@ -536,14 +640,14 @@ done
 # the previous sweep in this project was analysed against silently stale inputs.
 existing=""
 n_existing=0
-for p in $PVALS; do
+for key in $all_datasets; do
   for seed in $SEEDS; do
-    for tag in $(grep -ho 'run_tag = "[^"]*"' "$MODELS_DIR"/hyperparams_cw_*_p$(tag_of "$p")_seed${seed}.toml 2>/dev/null \
+    for tag in $(grep -ho 'run_tag = "[^"]*"' "$MODELS_DIR"/hyperparams_cw_*_$(tag_of "$key")_seed${seed}.toml 2>/dev/null \
                  | sed 's/run_tag = "//; s/"//' | sort -u); do
         # Glob the epoch count rather than reading it from the base TOML: the tag
         # plus `_seed_<n>.csv` is already unique, and `_sp0p0` cannot match
         # `_sp0p0_lam0` because `_seed_` must follow immediately.
-        hit="$WORKDIR/$CODENAME/results/simulation_results_test_p_${p}_s_1_"*"_trained_using_train_p_${p}_s_1"*"${tag}_seed_${seed}.csv"
+        hit="$WORKDIR/$CODENAME/results/simulation_results_test_${key}_"*"_trained_using_train_${key}"*"${tag}_seed_${seed}.csv"
         for f in $hit; do
             if [ -f "$f" ]; then
                 existing="$existing\n    $(basename "$f")"
@@ -583,6 +687,30 @@ esac
 [ "$n_points" -lt "$SLOTS" ] && SLOTS=$n_points
 TRAIN_WAVES=$(( (n_points + SLOTS - 1) / SLOTS ))
 GPU_MEMORY_PER_SLOT="$(( (VRAM_GB * 1024) / TEST_JOBS ))M"
+
+# ---- walltime, DERIVED from n_epochs rather than hard-coded --------------------
+# Two runs of 18 points at n_epochs = 5, 12-way concurrency, measured end to end:
+#     training  1h23m over 2 waves          -> 8.3 min per epoch per wave
+#     testing   89 min serial over 20 runs  -> 4.5 min per point (mean 268 s)
+#     precompile + stage-in                 -> ~8 min
+# Training scales with n_epochs; testing does not (it is one forward pass over
+# 1e6 samples whatever the model was trained for). The 10-epoch base TOML
+# therefore roughly doubles the training phase, which a fixed 4h would not cover:
+# 20 points x 10 epochs comes to ~4h30m of work before any margin.
+N_EPOCHS_BASE=$(grep -E '^[[:space:]]*n_epochs[[:space:]]*=' "$MODELS_DIR/$BASE_HP" \
+                | head -1 | sed -E 's/[^0-9]*([0-9]+).*/\1/')
+if [ -z "$N_EPOCHS_BASE" ]; then
+    N_EPOCHS_BASE=5
+fi
+estimated_minutes=$(( (83 * N_EPOCHS_BASE * TRAIN_WAVES) / 10 + (45 * n_points) / 10 + 8 ))
+if [ "$WALLTIME_EXPLICIT" = "0" ]; then
+    # 1.3x margin on the estimate, rounded up to a whole hour, floor of 2h.
+    walltime_hours=$(( ((estimated_minutes * 13) / 10 + 59) / 60 ))
+    if [ "$walltime_hours" -lt 2 ]; then
+        walltime_hours=2
+    fi
+    WALLTIME="${walltime_hours}:00:00"
+fi
 
 cat > "$SLURM" <<EOF
 #!/bin/bash
@@ -691,7 +819,7 @@ echo "correlation-weight sweep ($MODE) finished: \$(date)"
 EOF
 chmod +x "$SLURM"
 
-n_p=$(echo $PVALS | wc -w); n_seeds=$(echo $SEEDS | wc -w)
+n_p=$(echo $DATASETS | wc -w); n_seeds=$(echo $SEEDS | wc -w)
 echo "[correlation-weight $MODE] $n_points point(s)"
 echo
 printf "  %-34s %-9s %-11s %-9s %s\n" "run_tag" "use_CER" "lambda" "sparsity" "role"
@@ -712,14 +840,42 @@ if [ "$INCLUDE_NOCER" = "1" ]; then
         "BASELINE: flat p=0.1, no couplings"
 fi
 echo
-echo "  p      -> $PVALS"
+echo "  data   -> $DATASETS"
+if [ -n "$BASELINE_DATASETS" ]; then
+    echo "  ref    -> $BASELINE_DATASETS   (lambda = 0 and no-CER only)"
+fi
 echo "  seeds  -> $SEEDS  (SAME set on every arm => paired contrasts)"
 echo "  grid   -> $n_cer CER + $n_nocer no-CER = $n_points point(s)"
 echo "  base   -> $MODELS_DIR/$BASE_HP"
 echo "  gate   -> syndrome_gate_threshold = $GATE_TAU ($gate_label)"
 echo "  GPU    -> $GPU_TYPE, $SLOTS core(s), $MEM; train $TRAIN_WAVES wave(s), test serial"
+echo "  time   -> $WALLTIME  (estimate ${estimated_minutes} min: $N_EPOCHS_BASE epoch(s) x $TRAIN_WAVES wave(s) train + $n_points serial test)"
 echo "  assert -> require_correlations = true on every CER arm"
 echo
+if [ "$PROFILE" = "spread" ]; then
+    echo "  WHAT CHANGED IN THE DATA (measured, uniform-p -> per-gate spread):"
+    echo "    single-qubit within-sector CV   1.3%  ->  17-22%     PASSES decisively"
+    echo "    J explained by check structure  0.82  ->  0.67-0.75  short of the <0.30 gate"
+    echo "    strong-class within-class sd    0.93  ->  1.21-1.42  ~40% more per-edge signal"
+    echo "    dead edges (216 at J ~ 0)       216   ->  201-210    essentially unchanged"
+    echo
+    echo "  So the PRIORS became genuinely informative and the COUPLINGS only partly did."
+    echo "  Given lambda = 0 was optimal on the uniform-p data, the honest prior is that"
+    echo "  lam0 wins again and the news is how much bigger its margin over no-CER is."
+    echo
+    echo "  reading protocol, fixed in advance:"
+    echo "    lam0 beats nocer by MORE than the 135 seen on uniform-p -> the priors are the"
+    echo "                                                               story; per-gate data helps"
+    echo "    some lambda > 0 now beats lam0                          -> FIRST evidence the"
+    echo "                                                               couplings carry information"
+    echo "    lambda > 0 still monotonically worse                    -> couplings are done as a"
+    echo "                                                               loss term; move to OSD scoring"
+    echo
+    echo "  CAUTION: sigma = 0 and sigma > 0 are NOT matched on physical error rate"
+    echo "  (mean per-gate rate 5.0e-4 vs 5.3-5.7e-4, because the Normal is clamped at 0),"
+    echo "  so compare CER vs no-CER WITHIN a dataset, not failure counts ACROSS sigma."
+    echo
+fi
 if [ "$MODE" = "lambda_sweep" ]; then
     echo "  THE DECOMPOSITION (this is why lambda = 0 and no-CER are both present):"
     echo "    nocer -> lam0     isolates the single-qubit PRIORS"
@@ -739,7 +895,7 @@ if [ "$MODE" = "lambda_sweep" ]; then
     echo "    nothing separates lam0 from lam0p75    -> the coset effect was not the couplings after all"
     echo
 fi
-if [ "$MODE" = "primary" ]; then
+if [ "$MODE" = "primary" ] && [ -z "$PROFILE" ] && [ -z "$LAMBDAS" ]; then
     echo "  reading protocol, fixed in advance:"
     echo "    CER beats no-CER at every p, gap grows with p  -> couplings are working;"
     echo "                                                      the p^2 co-firing scaling predicts exactly this"
