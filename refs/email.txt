@@ -1,0 +1,20 @@
+Hi Joseph,
+
+    Thanks for clarifying the standard definition, where twirling a state $\rho$ by a group $G$ entails computing the average state:
+\rho_T = \sum_{g \in G} g \rho g^\dagger
+
+If we compare three scenarios for a single QEC round under pure coherent physical error model: 
+1. measuring the not recording the error syndrome (neither active nor passive QEC) : Twirling by the Stabilizer group
+2. measuring the syndrome and recording the outcome but not applying active recovery (passive QEC)
+3. measuring the syndrome and performing the recovery (active QEC)
+we know the effective logical channel is non-unitary in (1), and remains unitary in (2) and (3).
+
+The off-diagonal vs diagonal scaling in the process matrix of the logical channel (distance "d" code, and t = (d-1)/2) as a function of the physical rotation angle "theta", in each case is:
+1. Diagonal: theta^(2 t) and off-diagonal: theta^t . I got this from Beale et al. https://arxiv.org/pdf/1805.08802.
+2. Diagonal: (\pm theta)^(2 t) and off-diagonal: (\pm theta)^t. This is the pure unitary channel Robin pointed out. Here the "\pm" comes from the detail of whether the previous round's correction commutes with the rotation axis or not.
+3. Diagonal: theta^(d) and off-diagonal: theta^(d/2). The exact form is also in (Eq 51) of Bravyi et al. https://arxiv.org/pdf/1710.02270. Pradnesh had also derived this process matrix.
+
+If we perform "m" rounds of QEC and ask the question: how do the diagonal and offdiagonal elements of the logical channel (distance d code) behave with the physical rotation angle "theta" and "m"?
+1. Diagonal: theta^(2 m t) and off-diagonal: \theta^(2 m t). So this approaches a decoherence map as m and d increases.
+2. Diagonal: (\sqrt(m) theta^(2 t)) while off-diagonal: (\sqrt(m) \theta^t). So this too has a accumulation characteristic of a twirled map. Althought this is not twirling per the definitions. The physics of the effective noise process is unitary.
+3. Diagonal: \theta^(2 t m) and off-diagonal: \theta^(t m). This has the signature of a coherent map.

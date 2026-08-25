@@ -6,7 +6,8 @@ function get_loss_value(
     loss_layer_regularizer, # temperature for the smooth minimum approximation when combining losses from different layers, to be annealed during training.
     llr_certainty_importance, # term for ensuring that the LLRs have converged.
     sparsity_regularizer, # term for encouraging sparsity in the LLRs, to be annealed during training.
-    syndrome_gate_threshold, # τ for the per-sample detached syndrome gate on the aux terms; ≤ 0 disables the gate.
+    syndrome_gate_threshold, # τ for the per-sample detached syndrome gate on the aux terms.
+    correlation_certainty_threshold, # c for the per-pair detached certainty gate on the correlation term.
     warmup_loss_layers, # First number of layers to leave unconstrained in the Loss function.
     base, # constant parameters of the model, including the parity-check matrix, connectivity, correlation strengths, etc.
     llrs_batch, # batch of initial LLRs for the bits, to be used as input to the network
@@ -44,7 +45,8 @@ function get_loss_value(
         loss_layer_regularizer, # temperature for the smooth minimum approximation when combining losses from different layers, to be annealed during training.
         llr_certainty_importance, # weight for ensuring that the LLRs are converged.
         sparsity_regularizer, # term for encouraging sparsity in the LLRs, to be annealed during training.
-        syndrome_gate_threshold, # τ for the per-sample detached syndrome gate; ≤ 0 disables the gate.
+        syndrome_gate_threshold, # τ for the per-sample detached syndrome gate.
+        correlation_certainty_threshold, # c for the per-pair detached certainty gate.
         warmup_loss_layers # first number of layers that should be unconstrained since the optimizer doesn't know what the right beliefs are.
     )
     return total_loss
@@ -58,7 +60,8 @@ function get_individual_loss_values(
     loss_layer_regularizer::Float32, # temperature for the smooth minimum approximation when combining losses from different layers, to be annealed during training.
     llr_certainty_importance::Float32, # term for ensuring that the LLRs have converged.
     sparsity_importance::Float32, # term for encouraging sparsity in the LLRs, to be annealed during training.
-    syndrome_gate_threshold::Float32, # τ for the per-sample detached syndrome gate; ≤ 0 disables the gate.
+    syndrome_gate_threshold::Float32, # τ for the per-sample detached syndrome gate.
+    correlation_certainty_threshold::Float32, # c for the per-pair detached certainty gate.
     warmup_loss_layers::Int, # first number of layers that should be excluded from the loss function.
     base::NeuralBPBase, # constant parameters of the model, including the parity-check matrix, connectivity, correlation strengths, etc.
     llrs_batch::Matrix{Float32}, # batch of initial LLRs for the bits, to be used as input to the network
@@ -66,20 +69,17 @@ function get_individual_loss_values(
     expected_recoveries::BitMatrix # batch of expected recoveries (error patterns), to be used for computing the Loss function
 )
     """
-    Logging mirror of `compute_loss_including_correlations` — follows the same
-    mode (gated vs ungated) as the training loss.
+    Logging mirror of `compute_loss_including_correlations`.
 
-    Returns (total_loss, losses_per_layer::Matrix{Float32}(n_scored, 6)):
-      col 1: base_loss  (residue against [H; L], batch mean)
-      col 2: llr_reg    (batch-summed binary entropy)
-      col 3: corr_pen   (per-edge / per-sample mean Ising reward)
-      col 4: sparse_pen (batch-mean predicted weight)
-      col 5: the layer's effective contribution:
-               ungated — the softmin argument (base + weighted aux);
-               gated   — base + mean_j(g_j · aux_j). In the gated mode the
-               softmin argument is col 1 alone; col 5 is the layer's total,
-               not what selection sees.
-      col 6: gate-open fraction  mean_j(g_j)  (1.0 when the gate is disabled)
+    Returns (total_loss, losses_per_layer::Matrix{Float32}(n_scored, 7)):
+      col 1: base_loss   residue against [H; L], batch mean
+      col 2: llr_reg     batch-summed binary entropy
+      col 3: corr_pen    mean Ising reward over ACTIVE pairs, per sample
+      col 4: sparse_pen  batch-mean predicted weight
+      col 5: base + mean_j(g_j · aux_j), the layer's total. Selection sees col 1
+             alone, so this is not the softmin argument.
+      col 6: syndrome gate-open fraction, mean_j(g_j)
+      col 7: correlation certainty gate-open fraction over (pair, sample) slots
     """
     # Forward pass through the network to get the posterior LLRs.
     # Always use the CPU path: same reason as in get_loss_value — Metal GPU array
@@ -99,68 +99,47 @@ function get_individual_loss_values(
     correlation_strengths = base.correlation_strengths
     is_correlated = base.is_correlated
 
-    use_gate = syndrome_gate_threshold > 0.0f0
     n_layers::Int = size(posterior_llrs, 3)
     n_samples = size(posterior_llrs, 2)
-    losses_per_layer = zeros(Float32, (n_layers - warmup_loss_layers, 6))
+    losses_per_layer = zeros(Float32, (n_layers - warmup_loss_layers, 7))
     for layer in (warmup_loss_layers + 1):n_layers
         post = posterior_llrs[:, :, layer]
-        # base_loss   = compute_quadratic_residue_loss_from_llrs(post, expected_recoveries, parity_check_matrix_dual)
-        # base_loss   = compute_sine_residue_loss_from_llrs(post, expected_recoveries, parity_check_matrix_dual)
+        row = layer - warmup_loss_layers
+
         base_loss = compute_smooth_loss_from_llrs(post, expected_recoveries, parity_check_matrix_dual)
-        llr_reg     = syndrome_loss_regularizer(post)
-        sparse_pen  = sparsity_penalty(post)
-        corr_pen::Float32 = 0f0
+        gate = syndrome_gate_per_sample(
+            post, expected_recoveries, parity_check_matrix, syndrome_gate_threshold
+        )
+        cert_j   = certainty_per_sample(post)
+        sparse_j = sparsity_per_sample(post)
+        corr_j   = zeros(Float32, n_samples)
+        corr_open::Float32 = 0.0f0
         if is_correlated
-            corr_pen = compute_additional_loss_from_ising_correlations(
-                post, connectivity, correlation_strengths
+            corr_j = ising_correlation_reward_per_sample(
+                post, connectivity, correlation_strengths, correlation_certainty_threshold
+            )
+            corr_open = correlation_gate_open_fraction(
+                post, connectivity, correlation_certainty_threshold
             )
         end
+        aux_j = @. llr_certainty_importance * cert_j +
+                   correlation_weight * corr_j +
+                   sparsity_importance * sparse_j
+        gated_aux = sum(gate .* aux_j) / n_samples
 
-        # Record the individual losses
-        losses_per_layer[layer - warmup_loss_layers, 1] = base_loss
-        losses_per_layer[layer - warmup_loss_layers, 2] = llr_reg
-        losses_per_layer[layer - warmup_loss_layers, 3] = corr_pen
-        losses_per_layer[layer - warmup_loss_layers, 4] = sparse_pen
-
-        if use_gate
-            gate = syndrome_gate_per_sample(
-                post, expected_recoveries, parity_check_matrix, syndrome_gate_threshold
-            )
-            cert_j   = certainty_per_sample(post)
-            sparse_j = sparsity_per_sample(post)
-            if is_correlated
-                corr_j = ising_correlation_reward_per_sample(post, connectivity, correlation_strengths)
-                aux_j = @. llr_certainty_importance * cert_j +
-                           correlation_weight * corr_j +
-                           sparsity_importance * sparse_j
-            else
-                aux_j = @. llr_certainty_importance * cert_j + sparsity_importance * sparse_j
-            end
-            gated_aux = sum(gate .* aux_j) / n_samples
-            losses_per_layer[layer - warmup_loss_layers, 5] = base_loss + gated_aux
-            losses_per_layer[layer - warmup_loss_layers, 6] = sum(gate) / n_samples
-        else
-            # Ungated: the layer's softmin argument.
-            losses_per_layer[layer - warmup_loss_layers, 5] = base_loss +
-                             llr_certainty_importance * llr_reg +
-                             correlation_weight * corr_pen +
-                             sparsity_importance * sparse_pen
-            losses_per_layer[layer - warmup_loss_layers, 6] = 1.0f0
-        end
+        losses_per_layer[row, 1] = base_loss
+        losses_per_layer[row, 2] = sum(cert_j) / n_samples
+        losses_per_layer[row, 3] = sum(corr_j) / n_samples
+        losses_per_layer[row, 4] = sum(sparse_j) / n_samples
+        losses_per_layer[row, 5] = base_loss + gated_aux
+        losses_per_layer[row, 6] = sum(gate) / n_samples
+        losses_per_layer[row, 7] = corr_open
     end
 
-    if use_gate
-        # Mirror of the gated path: selection on base only, aux added outside.
-        gated_aux_loss = sum(losses_per_layer[:, 5] .- losses_per_layer[:, 1]) /
-                         size(losses_per_layer, 1)
-        selection_loss = softmin_loss(losses_per_layer[:, 1], loss_layer_regularizer)
-        total_loss = selection_loss + gated_aux_loss
-    else
-        total_loss = softmin_loss(losses_per_layer[:, 5], loss_layer_regularizer)
-        # total_loss = linear_ramp_loss(losses_per_layer[:, 5])
-        # total_loss = last_layer_only_loss(losses_per_layer[:, 5])
-    end
+    gated_aux_loss = sum(losses_per_layer[:, 5] .- losses_per_layer[:, 1]) /
+                     size(losses_per_layer, 1)
+    selection_loss = softmin_loss(losses_per_layer[:, 1], loss_layer_regularizer)
+    total_loss = selection_loss + gated_aux_loss
     return (total_loss, losses_per_layer)
 end
 
@@ -214,6 +193,7 @@ function init_training_debug_logs(n_samples_to_log::Int)
         llr_certainty_importance = zeros(Float32, n_samples_to_log),
         sparsity_importance = zeros(Float32, n_samples_to_log),
         syndrome_gate_threshold = zeros(Float32, n_samples_to_log),
+        correlation_certainty_threshold = zeros(Float32, n_samples_to_log),
         loss = zeros(Float32, n_samples_to_log),
         nan_skip_count = zeros(Int, n_samples_to_log),
         min_weight_c2v_v2c = zeros(Float32, n_samples_to_log),
@@ -236,6 +216,7 @@ function init_training_debug_logs(n_samples_to_log::Int)
         :sparsity_penalty => ["" for _ in 1:n_samples_to_log],
         :loss_at_layer => ["" for _ in 1:n_samples_to_log],
         :gate_open_fraction => ["" for _ in 1:n_samples_to_log],
+        :correlation_gate_open_fraction => ["" for _ in 1:n_samples_to_log],
         :total_loss => zeros(Float32, n_samples_to_log)
     )
     return hp_log, losses_log
@@ -264,6 +245,7 @@ function log_batch_debug!(
     hp_log[index, :llr_certainty_importance] = hp[:llr_certainty_importance]
     hp_log[index, :sparsity_importance] = hp[:sparsity_importance]
     hp_log[index, :syndrome_gate_threshold] = hp[:syndrome_gate_threshold]
+    hp_log[index, :correlation_certainty_threshold] = hp[:correlation_certainty_threshold]
     hp_log[index, :loss] = aggregate_loss
     hp_log[index, :nan_skip_count] = nan_skip_count
     hp_log[index, :min_weight_c2v_v2c] = minimum(bpnn.weights_c2v_v2c)
@@ -285,6 +267,7 @@ function log_batch_debug!(
     losses_log[index, :sparsity_penalty]      = join(["$(individual_losses[l, 4])" for l in 1:n_layers], ",")
     losses_log[index, :loss_at_layer]         = join(["$(individual_losses[l, 5])" for l in 1:n_layers], ",")
     losses_log[index, :gate_open_fraction]    = join(["$(individual_losses[l, 6])" for l in 1:n_layers], ",")
+    losses_log[index, :correlation_gate_open_fraction] = join(["$(individual_losses[l, 7])" for l in 1:n_layers], ",")
     losses_log[index, :total_loss] = aggregate_loss
     return nothing
 end
@@ -318,12 +301,11 @@ function train_neuralbp_enzyme!(
       specs in the hyperparameters TOML; the per-layer combiner is the softmin
       at `loss_layer_temperature` (annealed down so late training commits to
       the best layer).
-    - `syndrome_gate_threshold` is a plain scalar, not annealed: when > 0 the
-      auxiliary terms (certainty / sparsity / correlation) are applied per
-      sample only where the soft H-syndrome of the residual is below τ, via a
-      detached indicator gate, and layer selection sees base_loss only. When
-      the key is absent or ≤ 0 the gate is disabled and the auxiliary terms
-      apply unconditionally inside the softmin.
+    - `syndrome_gate_threshold` (τ) and `correlation_certainty_threshold` (c) are
+      plain scalars, not annealed. The auxiliary terms apply per sample only
+      where the soft H-syndrome is below τ; the correlation term additionally
+      applies per PAIR only where both endpoints have |μ| > c. Both gates are
+      detached indicators, and layer selection sees base_loss alone.
 
     Robustness against numerical instability:
     - Each batch's gradients are checked for NaN/Inf BEFORE the optimizer step.
@@ -351,7 +333,8 @@ function train_neuralbp_enzyme!(
     # Per-sample syndrome gate threshold τ for the auxiliary loss terms.
     # Plain scalar (NOT annealed). ≤ 0 (the default when the key is absent
     # from the TOML) disables the gate.
-    syndrome_gate_threshold = Float32(get(hyperparameters, "syndrome_gate_threshold", -1.0))
+    syndrome_gate_threshold = Float32(get(hyperparameters, "syndrome_gate_threshold", 0.5))
+    correlation_certainty_threshold = Float32(get(hyperparameters, "correlation_certainty_threshold", 2.2))
     annealing_schedule = Dict(
         key => hyperparameters[key]
         for key in [
@@ -424,6 +407,7 @@ function train_neuralbp_enzyme!(
         # Not annealed; carried in `hp` so the debug logger and the loss calls
         # read one consistent value.
         hp[:syndrome_gate_threshold] = syndrome_gate_threshold
+        hp[:correlation_certainty_threshold] = correlation_certainty_threshold
 
         # -------------------------
         # Per-epoch checkpoint — restored at end-of-epoch if too many batches
@@ -478,6 +462,7 @@ function train_neuralbp_enzyme!(
                 Enzyme.Const(hp[:llr_certainty_importance]),
                 Enzyme.Const(hp[:sparsity_importance]),
                 Enzyme.Const(hp[:syndrome_gate_threshold]),
+                Enzyme.Const(hp[:correlation_certainty_threshold]),
                 Enzyme.Const(warmup_loss_layers),
                 Enzyme.Const(base),
                 Enzyme.Const(llrs_batch),
@@ -549,6 +534,7 @@ function train_neuralbp_enzyme!(
                     hp[:llr_certainty_importance],
                     hp[:sparsity_importance],
                     hp[:syndrome_gate_threshold],
+                    hp[:correlation_certainty_threshold],
                     warmup_loss_layers,
                     base,
                     llrs_batch,

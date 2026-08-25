@@ -1,150 +1,28 @@
 #!/usr/bin/env bash
 # ============================================================================
-# sweep_correlation_weight.sh — CER vs no-CER across p, with the REVISED J
-#                               convention and sparsity switched OFF
+# sweep_correlation_weight.sh — CER vs no-CER, sweeping the correlation weight
 # ============================================================================
-# RUN FROM expts/ :
+# Run from expts/ :
 #
 #     bash misc/sweep_correlation_weight.sh --check      # verify the CER files
 #     bash misc/sweep_correlation_weight.sh --pin_cer    # lock them by SHA-256
-#     bash misc/sweep_correlation_weight.sh              # the sweep
-#     bash misc/sweep_correlation_weight.sh --collect    # summarise
+#     bash misc/sweep_correlation_weight.sh              # generate the sweep
+#     bash misc/sweep_correlation_weight.sh --collect    # summarise the results
 #
 #     sbatch ../data/<codename>/cluster/cw_<mode>_<timestamp>.sh
 #
-# ---------------------------------------------------------------------------
-# WHICH DATA. The codename comes from the DATA PROFILE, and the default is the
-# CURRENT dataset — no flag needed:
+# Data profile, selecting the codename and every path derived from it:
+#     (default)   72q_BB_cycles_1_spread_comparison    per-CNOT Normal(p, sigma)
+#     --uniform   72q_BB_cycles_1_debug                uniform p
 #
-#   (default)   72q_BB_cycles_1_spread_comparison   per-CNOT Normal(p, sigma)
-#   --uniform   72q_BB_cycles_1_debug               uniform p, the earlier sweeps
+# Other flags:
+#     --datasets / --baseline_datasets / --lambdas / --seeds / --sparsity
+#     --tau / --certainty / --gpus / --test_jobs / --walltime / --base_hp
+#     --probe      one dataset, one seed          (implies --uniform)
+#     --lambda_sweep  the historical lambda grid  (implies --uniform)
+#     --ungated    tau = -1
 #
-# This used to default to the uniform-p codename, so any command missing a flag
-# silently addressed superseded data while producing identically-named outputs.
 # Every mode echoes the directory it resolved to; that line is the check.
-#
-# Other modes: --setup (build a derived codename), --probe and --lambda_sweep
-# (both imply --uniform, being defined on p values only that dataset has),
-# --ungated (historical tau = -1 contrast).
-#
-# ---------------------------------------------------------------------------
-# WHY THIS SWEEP EXISTS — TWO CHANGES SINCE THE LAST CER RUN
-#
-# (1) THE J CONVENTION WAS CORRECTED.
-#
-# For binary e_i, e_j in {0,1}, the pairwise log-linear (Ising) prior is
-#
-#     log P(e_i, e_j) = c + h_i e_i + h_j e_j + J_ik e_i e_k
-#
-# Reading off the four cells and eliminating c, h_i, h_j gives, uniquely,
-#
-#     J_ik = log P11 - log P10 - log P01 + log P00
-#          = log[ P00 * P11 / (P01 * P10) ]          <-- the 2x2 log ODDS RATIO
-#
-# That is the only combination of the four cell probabilities in which c, h_i
-# and h_j all cancel, i.e. the only one that isolates the INTERACTION from the
-# single-qubit fields. It is what `src/loss.jl` documents and what the loss term
-#
-#     L_corr = -(1/(N|C|)) sum_C J_ik sigma_i sigma_k
-#
-# requires, because the single-qubit fields h_i are already carried separately
-# by `initial_llrs = log((1-p_i)/p_i)`.
-#
-# The previously supplied J was the pointwise mutual information,
-# log[P11 / (P_i P_j)]. It is a legitimate association measure and it vanishes
-# under independence exactly as the log odds ratio does — but it still contains
-# -log P_i - log P_j, i.e. marginal information that `initial_llrs` has already
-# supplied. Adding it as a PAIRWISE coupling double-counts the marginals.
-#
-# HOW MUCH DID IT ACTUALLY CHANGE? Measured on the three files, old vs new:
-#
-#     p        old mean   new mean   mean delta   Spearman(old,new)   sign flips
-#     0.0005    +1.806     +2.011      +0.205         0.99986           29/540
-#     0.0007    +1.639     +1.817      +0.178         0.99991           14/540
-#     0.0019    +1.131     +1.284      +0.153         0.99995            1/540
-#
-# The single-qubit rates are byte-identical between the two vintages; only the
-# pair block moved. The shift is a near-uniform +0.15..+0.21 (about +10%) with
-# rank order essentially preserved. Analytically that is expected: the two
-# differ by log P00 - log(1 - P11/P_i) - log(1 - P11/P_j), which is small and
-# positive whenever P11 << P_i, P_j.
-#
-# CONSEQUENCE, STATED PLAINLY: the convention error was real but numerically
-# minor. It does NOT explain the previous null results, and it does not
-# retroactively invalidate them — a term contributing 0.05% of the total loss
-# does not become decisive under a 10% rescale. Expect this sweep to reproduce
-# the null unless (2) below is what was actually binding.
-#
-# (2) SPARSITY IS PINNED TO ZERO.
-#
-# `sparsity_importance` was previously annealed into the 0.3-0.5 band, where it
-# is ~400x the correlation term's contribution. Since sparsity penalises
-# predicted errors and the correlation term rewards co-occurring ones, they pull
-# opposite ways and sparsity wins by three orders of magnitude. Removing it is
-# the cleanest test of whether the couplings do anything once nothing is
-# actively cancelling them.
-#
-#   NOTE: the base TOML hyperparams_epochs_5_corrs.toml ALREADY carries
-#   sparsity_importance = "0,0,0.8,up". This script pins it explicitly anyway so
-#   the sweep is self-describing and survives edits to the base file.
-#
-# (3) THE GATE IS ON BY DEFAULT (tau = 0.5). THIS IS NOT WHAT THE BASE TOML DOES.
-#
-# The base TOML omits `syndrome_gate_threshold`, so it defaults to -1 = ungated,
-# and every previous run was ungated. Running THIS sweep ungated would be wrong,
-# for three reasons that compound exactly when sparsity is zeroed.
-#
-#   (a) It contradicts the design. `src/loss.jl` is explicit: base_loss is the
-#       only term that identifies the correct answer, and certainty / sparsity /
-#       correlation are "selectors WITHIN that zero set" — they are meant to
-#       break ties on the flat solution manifold, not to be minimised in their
-#       own right on samples that have not yet cleared the syndrome.
-#
-#   (b) Ungated, the aux terms enter LAYER SELECTION. The ungated path softmins
-#       over base + aux combined, so a layer can win selection by being
-#       confident and co-activating rather than by clearing the syndrome. The
-#       gated path softmins over base ALONE and adds gated aux afterwards. With
-#       sparsity zeroed there is nothing left pulling the other way, so this is
-#       the configuration in which that failure mode is most available.
-#
-#   (c) The certainty term is BATCH_SIZE TIMES STRONGER ungated. Compare:
-#         gated:    certainty_per_sample -> sum(gate .* aux_j) / n_samples
-#         ungated:  syndrome_loss_regularizer = sum(...)   [NO /n_samples]
-#       At n_bits = 72 a fully fractional sample carries ~72*log2 = 49.9 nats, so
-#       at the annealed ceiling alpha_cert = 1e-2 the gated contribution is ~0.50
-#       while the ungated one is ~0.50 * batch_size = ~10.0 — against a base loss
-#       scale of ~1 per softly broken check. Ungated, the regulariser rather than
-#       the syndrome dominates the objective. That has been true of every earlier
-#       run and was survivable because sparsity opposed it; with sparsity = 0 the
-#       correlation reward (which lowers loss by raising sigma) and the certainty
-#       penalty (which lowers loss by driving sigma binary) both push the same
-#       way on coupled pairs, unopposed.
-#
-# Gated, the correlation reward r_j <= 0 is ordering-safe by construction: it can
-# only improve a sample that already clears H, so it can never make a solved
-# sample lose to a failing one. That is the property this sweep needs.
-#
-# `--ungated` reproduces the historical tau = -1 configuration for comparability.
-# Expect it to be worse; run it as a contrast, not as the primary.
-#
-# ---------------------------------------------------------------------------
-# THE GRID
-#
-#   arm    use_CER   couplings   priors                  role
-#   cer     true      revised J   CER single-qubit        treatment
-#   nocer   false     none        flat p = 0.1            baseline
-#
-#   x p in {0.0005, 0.0007, 0.0019}   (the three p with CER data present)
-#   x seeds {1 2 3}                   (paired: the SAME seeds on both arms, so
-#                                      the contrast is a paired t, not a pooled z)
-#
-# The p axis matters here in a way it did not in the lambda sweep: the co-firing
-# rate that drives the correlation term goes as p^2, so the term is ~14x weaker
-# at p = 5e-4 than at p = 1.9e-3. If the couplings ever help, the largest p is
-# where it should show first.
-#
-# `require_correlations = true` on every CER arm, so a missing-pairs CER file
-# raises instead of quietly masquerading as a null result.
 # ============================================================================
 set -euo pipefail
 
@@ -154,30 +32,16 @@ WORKDIR="./../data"
 # CODENAME, BASE_HP, DATASETS and SEEDS are all set by the DATA PROFILE below.
 # These are placeholders; nothing reads them before the profile has run.
 CODENAME=""
-# The donor codename: where --setup borrows shared data from, and where the base
-# hyperparameter files live. This was 72q_BB_cycles_1, which is now EMPTY — no
-# correlated_weights, no base TOMLs — so every path through it was dead.
-# 72q_BB_cycles_1_debug is the curated one: it holds the revised-J couplings
-# (mean J = +2.0111) and all four base hyperparameter files, including a
-# hyperparams_epochs_10_corrs.toml byte-identical to the spread codename's.
-SOURCE_CODENAME="72q_BB_cycles_1_debug"
 BASE_HP=""
 PVALS="0.0005 0.0007 0.0019"
 SEEDS=""
-# DATASETS holds the dataset KEY of each point, i.e. the part of the filename
-# shared by the training set, the test set and the CER file:
-#
-#     training_data/train_<key>.txt
-#     testing_data/test_<key>.txt
-#     correlated_weights/correlated_weights_<key>.txt
-#
-# Empty means "derive p_<p>_s_1 from PVALS", which is the historical layout. The
-# per-gate-spread datasets add a sigma field (p_0.0005_sig_0.0005_s_2), so the
-# key is carried around whole rather than reassembled from parts.
+# Dataset KEYS: train_<key>.txt / test_<key>.txt / correlated_weights_<key>.txt.
+# Empty = derive p_<p>_s_1 from PVALS.
 DATASETS=""
 NLAYERS=90
 SPARSITY="0.0"                 # pinned CONSTANT — the point of the sweep
-GATE_TAU="0.5"                 # gate ON by default; --ungated for tau = -1
+GATE_TAU="0.5"                 # tau, softly broken checks; --ungated for tau = -1
+CERTAINTY="2.2"                # c, LLR units: pair contributes only if both |mu| > c
 LAMBDA=""                      # empty = inherit correlation_weight from base TOML
 SINGLE_QUBIT_RESCALE="0.1"     # inherited from the base TOML; exposed for clarity
 LAMBDAS=""                     # empty = one CER arm inheriting the base TOML's anneal
@@ -186,32 +50,22 @@ INCLUDE_NOCER=1                # --no_nocer drops the flat-prior baseline
 # sweep_lambda.sh grid {0, 1, 10, 100}: that was built when the term was inert.
 # At lambda = 0.76 it now produces a -4.26 sigma coset effect, so the question is
 # no longer "is it strong enough" but "where does the benefit stop paying".
-LAMBDA_GRID="0 0.1 0.3 0.75 1.5"
+# The correlation term now divides by the number of ACTIVE (gated) pairs rather
+# than |C|, so lambda is a weight per contributing pair and the old grid does not
+# transfer: 1/|C| at lambda = 0.76 equals 1/n_active at lambda ~ 0.00027.
+LAMBDA_GRID="0 0.1 0.3 1.0 3.0"
 # Dataset PROFILE, orthogonal to MODE: it selects which codename and which dataset
 # keys to work on, so `--spread --check`, `--spread --pin_cer` and a plain
 # `--spread` run all address the same data.
-# ---------------------------------------------------------------------------
-# DATA PROFILE. This selects the codename and every path derived from it.
-#
-# THE DEFAULT IS THE CURRENT DATASET. It used to be 72q_BB_cycles_1_debug, which
-# meant any command missing a flag silently addressed the superseded uniform-p
-# data — and the outputs are named identically either way, so the mistake left no
-# trace. Defaulting to the live dataset makes the safe thing automatic and the
-# legacy thing explicit.
-#
-#   (default)   72q_BB_cycles_1_spread_comparison   per-CNOT Normal(p, sigma)
-#   --uniform   72q_BB_cycles_1_debug               uniform p, the old sweeps
+# Data profile: selects the codename and every path derived from it.
 PROFILE="spread"
 PROFILE_EXPLICIT=0
 BASE_HP_EXPLICIT=0
 SEEDS_EXPLICIT=0
 WALLTIME_EXPLICIT=0
-# Datasets that get ONLY the {lambda = 0, no-CER} pair rather than the full lambda
-# grid. The sigma = 0 reference exists to answer "is CER worth more now than it
-# was on uniform-p data?", which needs lam0-vs-nocer at both sigmas and nothing
-# else; running five lambdas on it would spend a third of the job re-deriving a
-# result we already have.
+# Datasets that get ONLY the {lambda = 0, no-CER} pair rather than the full grid.
 BASELINE_DATASETS=""
+BASELINE_EXPLICIT=0
 
 ACCOUNT="def-jemerson_gpu"
 EMAIL="pavithran.sridhar@gmail.com"
@@ -228,15 +82,9 @@ GPU_TYPE=""
 # matters: the stage-in/stage-out uses $SLURM_TMPDIR, which is node-local, so a
 # job spanning two nodes would silently lose half its results. --nodes=1 below
 # enforces it.
-# Empty = size the allocation to the grid: take as many whole GPUs as it takes to
-# run every point in ONE training wave, capped at the 4 on a node. Two waves is
-# the thing worth spending a card to avoid — it doubles the longer phase.
+# Empty = as many whole GPUs as it takes to train in one wave, capped at a node.
 GPUS=""
-# TEST_JOBS was pinned to 1 when this job ran on a 20 GB MIG slice, where the
-# driver permits exactly one CUDA context (four concurrent contexts previously
-# killed 2 of 4 runs at cuDevicePrimaryCtxRetain). A WHOLE a100 has no such
-# limit, and the test phase is the larger half of the runtime, so it is the
-# highest-value thing to parallelise. Empty = choose from the GPU type below.
+# Empty = one test process per GPU. More than one per card OOMs and is slower.
 TEST_JOBS=""
 # MEASURED, not guessed. The 18-point run of 2026-08-14 took 2h41m end to end:
 #   precompile + stage-in   8 min
@@ -253,7 +101,6 @@ usage() { sed -n '2,120p' "$0"; }
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --setup)     MODE="setup";   shift;;
         --check)     MODE="check";   shift;;
         --pin_cer)   MODE="pin_cer"; shift;;
         --collect)   MODE="collect"; shift;;
@@ -263,7 +110,7 @@ while [ "$#" -gt 0 ]; do
         --spread)    PROFILE="spread"; PROFILE_EXPLICIT=1; shift;;
         --uniform)   PROFILE="uniform"; PROFILE_EXPLICIT=1; shift;;
         --datasets)  DATASETS="$2";  shift 2;;
-        --baseline_datasets) BASELINE_DATASETS="$2"; shift 2;;
+        --baseline_datasets) BASELINE_DATASETS="$2"; BASELINE_EXPLICIT=1; shift 2;;
         --lambdas)   LAMBDAS="$2";   shift 2;;
         --no_nocer)  INCLUDE_NOCER=0; shift;;
         --pvals)     PVALS="$2";     shift 2;;
@@ -271,6 +118,7 @@ while [ "$#" -gt 0 ]; do
         --sparsity)  SPARSITY="$2";  shift 2;;
         --lambda)    LAMBDAS="$2";   shift 2;;
         --tau)       GATE_TAU="$2";  shift 2;;
+        --certainty) CERTAINTY="$2"; shift 2;;
         --rescale)   SINGLE_QUBIT_RESCALE="$2"; shift 2;;
         --base_hp)   BASE_HP="$2"; BASE_HP_EXPLICIT=1; shift 2;;
         --codename)  CODENAME="$2";  shift 2;;
@@ -298,8 +146,7 @@ done
 # couplings were telling the decoder something it had.
 #
 # Per-gate sampling breaks that degeneracy. Run --check to see by how much.
-# `--lambda_sweep` and `--probe` are defined in terms of p values that only exist
-# in the uniform-p codename, so they imply that profile unless one was named.
+# --lambda_sweep and --probe use p values that only the uniform codename has.
 if [ "$PROFILE_EXPLICIT" = "0" ]; then
     case "$MODE" in
         lambda_sweep|probe) PROFILE="uniform" ;;
@@ -307,30 +154,8 @@ if [ "$PROFILE_EXPLICIT" = "0" ]; then
 fi
 
 if [ "$PROFILE" = "spread" ]; then
-    # THE CURRENT DATASET. Each CNOT's error rate is drawn from Normal(p, sigma)
-    # and clamped at 0, rather than fixed at p. Measured on the CER files, the
-    # degeneracy that made the uniform-p couplings useless retreats monotonically
-    # with sigma:
-    #
-    #   sigma     R^2(J ~ structure)   sector CV   (1,1) within-class sd   dead edges
-    #   0.0             0.848             1.58%            0.927            206/540
-    #   0.0005          0.709            18.88%            1.309            223/540
-    #   0.001           0.619            23.61%            1.473            245/540
-    #
-    # Better on every axis except one: clamping at zero kills more gates as sigma
-    # grows (66-81 of 432 at sigma = 5e-4, 115-137 at 1e-3), so more couplings go
-    # dead. sigma = 0.001 is still the most informative data available.
-    #
-    # THE GRID IS SPLIT BY QUESTION, because 7 datasets x 5 lambdas would be 38
-    # points -- four training waves and ~11h.
-    #
-    #   PRIMARY   every dataset gets {lambda = 0, no-CER}.  Does the CER PRIOR
-    #             advantage grow with sigma? Live hypothesis, 3 replicates per
-    #             sigma, and lambda = 0 is the arm the uniform-p sweep found
-    #             optimal.
-    #   SECONDARY only sigma = 0.001 gets extra lambdas. The couplings have
-    #             failed at every lambda on weaker data, so they are tested once
-    #             more on the BEST data rather than everywhere.
+        # Per-CNOT Normal(p, sigma). Every dataset gets {lambda = 0, no-CER}; only
+    # sigma = 0.001, the most informative, also gets the lambda grid.
     CODENAME="72q_BB_cycles_1_spread_comparison"
     if [ "$BASE_HP_EXPLICIT" = "0" ]; then
         BASE_HP="hyperparams_epochs_5_corrs.toml"
@@ -338,11 +163,13 @@ if [ "$PROFILE" = "spread" ]; then
     if [ -z "$DATASETS" ]; then
         DATASETS="p_0.0005_sig_0.001_s_1 p_0.0005_sig_0.001_s_2 p_0.0005_sig_0.001_s_3"
     fi
-    if [ -z "$BASELINE_DATASETS" ]; then
+    # `none` explicitly clears a list, since empty means "use the default".
+    if [ "$BASELINE_DATASETS" = "none" ]; then BASELINE_DATASETS=""; fi
+    if [ -z "$BASELINE_DATASETS" ] && [ "$BASELINE_EXPLICIT" = "0" ]; then
         BASELINE_DATASETS="p_0.0005_sig_0.0_s_1 p_0.0005_sig_0.0005_s_1 p_0.0005_sig_0.0005_s_2 p_0.0005_sig_0.0005_s_3"
     fi
     if [ -z "$LAMBDAS" ]; then
-        LAMBDAS="0 0.3 1.5"
+        LAMBDAS="0 0.3 3.0"
     fi
     if [ "$SEEDS_EXPLICIT" = "0" ]; then
         # The noise samples ARE the replicates; a network-seed axis on top would
@@ -350,9 +177,7 @@ if [ "$PROFILE" = "spread" ]; then
         SEEDS="1"
     fi
 elif [ "$PROFILE" = "uniform" ]; then
-    # THE SUPERSEDED DATASET, kept so the earlier sweeps stay reproducible: one
-    # error rate for every CNOT, which left the CER file almost information-free
-    # (2 sector levels, 2 coupling classes, R^2 = 0.82 on structure alone).
+    # Uniform p, kept so the earlier sweeps stay reproducible.
     CODENAME="72q_BB_cycles_1_debug"
     if [ "$BASE_HP_EXPLICIT" = "0" ]; then
         BASE_HP="hyperparams_epochs_5_corrs.toml"
@@ -379,56 +204,6 @@ CLUSTER_DIR="$WORKDIR/$CODENAME/cluster"
 # n_epochs is NOT moot: it doubles the training phase, which is why the walltime
 # below is derived from it rather than hard-coded.
 
-# ------------------------------------------------------------------ setup ---
-# --setup builds a DERIVED codename: an empty working directory that borrows
-# code / training_data / testing_data / correlated_weights from a source codename
-# by symlink, so a sweep can write models and results without touching the
-# original. It is NOT needed for a codename that already owns its data — and
-# running it there would copy unrelated TOMLs in from the source.
-#
-# It also operates on whatever codename the DATA PROFILE selected, so a bare
-# `--setup` builds the default (72q_BB_cycles_1_debug) even if you meant the
-# spread datasets. The target is printed first for exactly that reason.
-if [ "$MODE" = "setup" ]; then
-    src="$WORKDIR/$SOURCE_CODENAME"; dst="$WORKDIR/$CODENAME"
-    echo "  target codename : $CODENAME"
-    echo "  borrowing from  : $SOURCE_CODENAME"
-    echo
-    if [ "$CODENAME" = "$SOURCE_CODENAME" ]; then
-        echo "  Refusing: the target and the donor are the same codename, so there is"
-        echo "  nothing to borrow. --setup builds a DERIVED codename; name a new one"
-        echo "  with --codename, or skip setup entirely." >&2
-        exit 1
-    fi
-
-    complete=1
-    for shared in code training_data testing_data correlated_weights; do
-        if [ ! -e "$dst/$shared" ]; then
-            complete=0
-        fi
-    done
-    if [ "$complete" = "1" ]; then
-        echo "  Nothing to do — $CODENAME already has code/, training_data/,"
-        echo "  testing_data/ and correlated_weights/. It owns its data, so --setup"
-        echo "  would only copy unrelated hyperparameter files in from $SOURCE_CODENAME."
-        echo
-        echo "  Go straight to:"
-        echo "    bash misc/sweep_correlation_weight.sh${PROFILE:+ --$PROFILE} --check"
-        exit 0
-    fi
-
-    [ -d "$src" ] || { echo "source codename missing: $src (run from expts/)" >&2; exit 1; }
-    mkdir -p "$dst"/{models,results,logs,cluster}
-    for shared in code training_data testing_data correlated_weights; do
-        [ -e "$dst/$shared" ] || { ln -s "$(cd "$src/$shared" && pwd)" "$dst/$shared"; echo "  linked  $shared"; }
-    done
-    cp -n "$src"/models/*.toml "$dst/models/" 2>/dev/null || true
-    echo "  $dst ready."
-    echo "  NOTE: if correlated_weights is a SYMLINK back to $SOURCE_CODENAME, the"
-    echo "        revised-J files must be placed there, not in the derived copy."
-    exit 0
-fi
-
 # ------------------------------------------------------------------ collect --
 if [ "$MODE" = "collect" ]; then
     results_dir="$WORKDIR/$CODENAME/results"
@@ -444,20 +219,10 @@ fi
 # burning a GPU allocation, and additionally reports the J statistics so a
 # convention regression is visible at submit time.
 #
-# THE FINGERPRINT EXISTS BECAUSE THIS HAS ALREADY HAPPENED ONCE. The revised-J
-# files were updated on the workstation but never reached the cluster, and a
-# later restore from a cluster tarball overwrote them locally too — so a sweep
-# ran, and was analysed, on the superseded convention. The statistics below make
-# that visible to a reader; the SHA-256 pin below makes it FATAL to a script.
-#
-#     bash misc/sweep_correlation_weight.sh --pin_cer    # record what is there now
-#
-# writes J_FINGERPRINT.txt next to the data. Every later run compares against it
-# and refuses to submit on a mismatch. Commit that file.
+# --pin_cer records a SHA-256 per CER file in J_FINGERPRINT.txt; later runs compare
+# against it and refuse to submit on a mismatch. Commit that file.
 FINGERPRINT_FILE="$CER_DIR/J_FINGERPRINT.txt"
 
-# Called after the mode blocks have had their say about PVALS, so `--probe` and
-# `--lambda_sweep` narrowing to one p is reflected here rather than overridden.
 resolve_datasets() {
     if [ -z "$DATASETS" ]; then
         DATASETS=""
@@ -466,9 +231,7 @@ resolve_datasets() {
         done
         DATASETS="$(echo $DATASETS)"
     fi
-    # The reference datasets read their CER file too (the lambda = 0 arm runs with
-    # use_CER = true), so the preflight and the fingerprint must cover them. A
-    # missing or superseded file there would be just as invisible as anywhere else.
+    # The reference datasets read their CER file too, so the preflight covers them.
     CHECKED_DATASETS="$(echo $DATASETS $BASELINE_DATASETS)"
 }
 
@@ -588,24 +351,13 @@ if [ "$MODE" = "check" ]; then
 fi
 
 # ------------------------------------------------------------------ primary --
-[ -d "$MODELS_DIR" ] || { echo "no models dir: $MODELS_DIR — run --setup first" >&2; exit 1; }
-# Missing base hyperparameters are a stop, not a silent substitution. An earlier
-# version copied a file in from another codename automatically, which quietly
-# overrode a deliberately-edited one. Say where the canonical copy lives and let
-# the decision be made explicitly.
+[ -d "$MODELS_DIR" ] || { echo "no models dir: $MODELS_DIR (run this from expts/)" >&2; exit 1; }
 if [ ! -f "$MODELS_DIR/$BASE_HP" ]; then
     echo "no base hyperparameters: $MODELS_DIR/$BASE_HP" >&2
-    donor_hp="$WORKDIR/$SOURCE_CODENAME/models/$BASE_HP"
-    if [ -f "$donor_hp" ]; then
-        echo >&2
-        echo "  A copy exists in the donor codename ($SOURCE_CODENAME). To use it:" >&2
-        echo "    cp $donor_hp $MODELS_DIR/" >&2
-        echo "  Or name a different file with --base_hp. Available here:" >&2
-    else
-        echo "  Available in $MODELS_DIR:" >&2
-    fi
+    echo "  Available in $MODELS_DIR:" >&2
     ls "$MODELS_DIR"/hyperparams_epochs*.toml 2>/dev/null | sed 's|.*/|    |' >&2 \
         || echo "    (none)" >&2
+    echo "  Name one with --base_hp, or copy the intended file in." >&2
     exit 1
 fi
 mkdir -p "$CLUSTER_DIR"
@@ -614,10 +366,6 @@ if [ "$MODE" = "probe" ]; then
     PVALS="0.0007"; SEEDS="1"; WALLTIME="3:00:00"
 fi
 
-# ONE p, MANY lambda. p = 0.0007 is where the coset effect was largest and
-# cleanest (-34.0 +- 7.0 across seeds, t = -8.41, and all three seeds agreeing on
-# the shared test set at McNemar z = -4.26). Adding the p axis on top would
-# multiply the grid by three for a second-order question.
 if [ "$MODE" = "lambda_sweep" ]; then
     PVALS="0.0007"
     if [ -z "$LAMBDAS" ]; then
@@ -627,8 +375,7 @@ fi
 
 resolve_datasets
 
-# 5 lambda + 1 baseline, 3 seeds = 18 points, the same size as the 2026-08-20 run
-# that took 2h37m. Refuse to submit a grid that silently outgrows the walltime.
+# Refuse a grid that silently outgrows the walltime.
 n_planned=$(( $(echo $DATASETS | wc -w) * $(echo $SEEDS | wc -w) * \
               ( $([ -n "$LAMBDAS" ] && echo $LAMBDAS | wc -w || echo 1) + INCLUDE_NOCER ) \
               + $(echo $BASELINE_DATASETS | wc -w) * $(echo $SEEDS | wc -w) * (1 + INCLUDE_NOCER) ))
@@ -661,9 +408,6 @@ if awk -v tau="$GATE_TAU" 'BEGIN { exit !(tau > 0) }'; then
     gate_label="gated"
 fi
 
-# `run_tag` deliberately omits p and the seed: p is already in the training
-# source (train_p_<p>_s_1) and the seed is auto-appended as _seed_<n>, so the
-# three axes are all recoverable from the filename without duplication.
 write_point() {   # <hp_name> <run_tag> <use_cer> <seed>
     local hp_name="$1" run_tag="$2" use_cer="$3" seed="$4"
     local require="true"
@@ -680,32 +424,18 @@ run_tag = "${run_tag}"
 use_CER = $use_cer
 seed = $seed
 
-# PINNED CONSTANT at ${SPARSITY} (min == max, so no annealing). Sparsity penalises
-# predicted errors while the correlation term rewards co-occurring ones; at the
-# previously annealed 0.3-0.5 it was ~400x larger and simply cancelled the
-# couplings. Zero removes the counterweight so the couplings can be judged.
+# Pinned constant (min == max, so no annealing).
 sparsity_importance = "${SPARSITY},${SPARSITY},0.8,up"
 
-# Gate ON (tau > 0) confines certainty / sparsity / correlation to samples whose
-# soft H-syndrome is already (near-)satisfied, and keeps layer selection on
-# base_loss alone. This OVERRIDES the base TOML, which omits the key and so
-# defaults to -1 = ungated. Three reasons, all sharper at sparsity = 0: the aux
-# terms are tie-breakers on the solution manifold by design; ungated they enter
-# layer selection, so a layer can win by co-activating instead of clearing the
-# syndrome; and ungated the certainty regulariser is batch_size (= 20) times
-# stronger, because syndrome_loss_regularizer sums over the batch while the
-# gated path divides by n_samples. See the header.
-#
-# NOTE TO EDITORS: this heredoc is UNQUOTED (<<EOF, not <<'EOF') because it has
-# to expand the sweep's variables, so backticks and dollar-paren inside it are
-# command-substituted — a backtick-quoted identifier here silently vanishes from
-# the generated TOML. Keep prose in this block free of both.
+# tau: per-sample detached gate, in softly broken checks.
 syndrome_gate_threshold = ${GATE_TAU}
+
+# c: per-pair detached certainty gate on the correlation term, in LLR units.
+correlation_certainty_threshold = ${CERTAINTY}
 
 single_qubit_rescale = ${SINGLE_QUBIT_RESCALE}
 
-# Refuse to run if the CER file yielded no couplings, so a missing-pairs file
-# cannot masquerade as a null result in a sweep whose entire content is pairs.
+# Refuse to run if the CER file yielded no couplings.
 require_correlations = ${require}
 EOF
     if [ -n "$LAMBDA" ]; then
@@ -733,16 +463,8 @@ emit_pair() {   # <hp_name> <dataset_key>
          "--train train_${key}.txt --test test_${key}.txt" >> "$TEST_CMDS"
 }
 
-# LAMBDA IS PART OF THE TAG, or two points in a lambda sweep silently overwrite
-# each other's weights AND results. Only when lambda is pinned, though: with
-# LAMBDAS empty the tag stays exactly `_cw<arm>_<gate>_sp<tag>`, which is what
-# the completed 2026-08-20 sweep wrote, so those files are neither collided with
-# nor swept up by the collector's lambda-aware pattern.
-#
-# The no-CER arm carries NO lambda: with use_CER = false there are no couplings,
-# so `correlation_weight` multiplies nothing. Emitting it once per lambda would
-# be the same run trained N times under N names — fake replicates that would
-# shrink the baseline's apparent error bar. It is emitted once per seed.
+# lambda is part of run_tag when pinned, so points never overwrite each other. The
+# no-CER arm carries none: with use_CER = false the weight multiplies nothing.
 lambda_list="$LAMBDAS"
 if [ -z "$lambda_list" ]; then
     lambda_list="__inherit__"
@@ -792,12 +514,7 @@ for key in $all_datasets; do
   done
 done
 
-# ---- overwrite guard ---------------------------------------------------------
-# A run_tag that already has results on disk will be RETRAINED AND OVERWRITTEN.
-# That is sometimes exactly right (the no-CER baseline is configuration-identical
-# to the completed sweep, so re-running it is a free determinism check) and
-# sometimes a data-loss bug. Either way it should be a decision, not a surprise:
-# the previous sweep in this project was analysed against silently stale inputs.
+# ---- overwrite guard: a run_tag with results on disk will be OVERWRITTEN -------
 existing=""
 n_existing=0
 for key in $all_datasets; do
@@ -845,26 +562,19 @@ case "$GPU_TYPE" in
     *) echo "unknown --gpu_type: $GPU_TYPE" >&2; exit 2;;
 esac
 
-# A MIG slice cannot be requested more than once, so GPUS > 1 only makes sense on
-# whole cards. An a100 node is 4 GPUs / 48 cores; beyond that SLURM would span
-# nodes and $SLURM_TMPDIR — which the stage-in and stage-out both rely on — is
-# node-local, so half the results would be written somewhere the stage-out never
-# looks. Refuse rather than lose data.
-# Size the request to the grid unless told otherwise.
+# Default: as many whole GPUs as it takes to train in one wave, capped at a node.
 if [ -z "$GPUS" ]; then
     if [ "$IS_MIG" = "1" ]; then
         GPUS=1
     else
         GPUS=$(( (n_points + SLOTS_PER_GPU - 1) / SLOTS_PER_GPU ))
-        if [ "$GPUS" -lt 1 ]; then
-            GPUS=1
-        fi
-        if [ "$GPUS" -gt 4 ]; then
-            GPUS=4
-        fi
+        if [ "$GPUS" -lt 1 ]; then GPUS=1; fi
+        if [ "$GPUS" -gt 4 ]; then GPUS=4; fi
     fi
 fi
 
+# MIG slices cannot be multiply allocated, and $SLURM_TMPDIR is node-local, so a
+# job spanning nodes would lose half its results.
 if [ "$IS_MIG" = "1" ] && [ "$GPUS" -gt 1 ]; then
     echo "ERROR: --gpus $GPUS with a MIG partition ($GPU_TYPE). MIG slices cannot be" >&2
     echo "  multiply allocated; use --gpu_type a100 for more than one." >&2
@@ -882,40 +592,20 @@ MEM="$(( MEM_PER_GPU * GPUS ))G"
 [ "$n_points" -lt "$SLOTS" ] && SLOTS=$n_points
 TRAIN_WAVES=$(( (n_points + SLOTS - 1) / SLOTS ))
 
-# TEST phase concurrency. On a whole a100 the only real limits are VRAM and
-# cores; on a MIG the driver allows one context, full stop.
+# One test process per card. More than one per card OOMs (GPU_MEMORY sizes the
+# prediction batch, it does not bound the process) and measured slower than serial.
 if [ -z "$TEST_JOBS" ]; then
-    if [ "$IS_MIG" = "1" ]; then
-        TEST_JOBS=1
-    else
-        # 4 processes x 10 GB on a 40 GB card. Without MPS these time-slice on the
-        # SM, but a large share of the measured 268 s/point is Julia startup and
-        # data loading rather than GPU compute, so the speedup is real if sublinear.
-        TEST_JOBS=$(( 4 * GPUS ))
-        if [ "$TEST_JOBS" -gt "$SLOTS" ]; then
-            TEST_JOBS=$SLOTS
-        fi
-        if [ "$TEST_JOBS" -gt "$n_points" ]; then
-            TEST_JOBS=$n_points
-        fi
+    TEST_JOBS=$GPUS
+    if [ "$TEST_JOBS" -gt "$n_points" ]; then
+        TEST_JOBS=$n_points
     fi
 fi
 
-# 85% of the per-process VRAM share. The remaining 15% covers the CUDA context
-# (~0.5 GB each) and fragmentation; `compute_optimal_batch_size_for` sizes the
-# prediction batch from this number, so under-stating it costs a little speed
-# whereas over-stating it is an OOM at cuDevicePrimaryCtxRetain.
 GPU_MEMORY_PER_SLOT="$(( (VRAM_GB * 1024 * GPUS * 85) / (TEST_JOBS * 100) ))M"
 
-# ---- walltime, DERIVED from n_epochs rather than hard-coded --------------------
-# Two runs of 18 points at n_epochs = 5, 12-way concurrency, measured end to end:
-#     training  1h23m over 2 waves          -> 8.3 min per epoch per wave
-#     testing   89 min serial over 20 runs  -> 4.5 min per point (mean 268 s)
-#     precompile + stage-in                 -> ~8 min
-# Training scales with n_epochs; testing does not (it is one forward pass over
-# 1e6 samples whatever the model was trained for). The 10-epoch base TOML
-# therefore roughly doubles the training phase, which a fixed 4h would not cover:
-# 20 points x 10 epochs comes to ~4h30m of work before any margin.
+# ---- walltime, derived from n_epochs -----------------------------------------
+# Measured: 8.3 min per epoch per training wave, 4.5 min per test point, ~8 min
+# precompile + stage-in. Floored at 4h to cover in-job precompilation.
 N_EPOCHS_BASE=$(grep -E '^[[:space:]]*n_epochs[[:space:]]*=' "$MODELS_DIR/$BASE_HP" \
                 | head -1 | sed -E 's/[^0-9]*([0-9]+).*/\1/')
 if [ -z "$N_EPOCHS_BASE" ]; then
@@ -923,19 +613,7 @@ if [ -z "$N_EPOCHS_BASE" ]; then
 fi
 estimated_minutes=$(( (83 * N_EPOCHS_BASE * TRAIN_WAVES) / 10 + (45 * n_points) / (10 * TEST_JOBS) + 8 ))
 if [ "$WALLTIME_EXPLICIT" = "0" ]; then
-    # 1.3x margin on the estimate, rounded up to a whole hour, then a FLOOR of 4h.
-    #
-    # The floor is not padding on the measured work — it covers the part that is
-    # not measured. Precompilation runs inside the job (CUDA_Runtime_jll must see
-    # a driver or "no CUDA runtime found" gets baked in) and is given a 1800 s
-    # timeout of its own; a cold or contended Lustre depot can spend most of that
-    # before a single gradient step. Stage-in of a 72 x 1e6 dataset per point adds
-    # more. Those costs are roughly fixed, so on a short job they dominate the
-    # estimate rather than perturb it.
-    #
-    # Asking for 4h instead of 2h costs queue priority and nothing else; running
-    # out at 1h59m costs the whole job, and SLURM's TERM handler only stages out
-    # whatever finished.
+    # 1.3x margin, rounded up to a whole hour, floored at 4h.
     walltime_hours=$(( ((estimated_minutes * 13) / 10 + 59) / 60 ))
     if [ "$walltime_hours" -lt 4 ]; then
         walltime_hours=4
@@ -965,10 +643,7 @@ cat > "$SLURM" <<EOF
 # cuDevicePrimaryCtxRetain.
 set -uo pipefail
 
-# THIS IS A BATCH SCRIPT, NOT A SHELL SCRIPT. Running it with \`bash\` on a login
-# node leaves SLURM_SUBMIT_DIR and SLURM_TMPDIR unset, and \`set -u\` then kills it
-# at the first reference with the unhelpful "unbound variable". Worse, without
-# -u it would try to run an 18-point training job on the login node. Refuse.
+# Must be submitted, not executed: SLURM_SUBMIT_DIR/SLURM_TMPDIR only exist in a job.
 if [ -z "\${SLURM_JOB_ID:-}" ]; then
     echo "ERROR: this script must be SUBMITTED, not executed." >&2
     echo "         sbatch $SLURM" >&2
@@ -1016,6 +691,9 @@ sed "s|\\\$WORKDIR_RUNTIME|\$SLURM_TMPDIR|g" "$TEST_CMDS"  > "\$TEST_LOCAL"
 LOCAL_LOGS="\$LOCAL_WORK_DIR/cluster/logs/cw_${MODE}_${TS}"
 mkdir -p "\$LOCAL_LOGS/train" "\$LOCAL_LOGS/test"
 
+# --isdebug writes training logs here; without the directory they are lost.
+mkdir -p "\$LOCAL_WORK_DIR/logs"
+
 stage_out_done=0
 stage_out() {
     [ "\$stage_out_done" = "1" ] && return 0
@@ -1046,15 +724,8 @@ export USE_GPU=1
 export GPU_MEMORY=$GPU_MEMORY_PER_SLOT
 echo "[phase 2] testing \$(wc -l < "\$TEST_LOCAL") point(s), $TEST_JOBS at a time on $GPUS GPU(s): \$(date)"
 
-# PIN EACH PARALLEL SLOT TO A GPU, round-robin. Without this every process
-# inherits the same CUDA_VISIBLE_DEVICES, so all $TEST_JOBS of them open a context
-# on card 0 — which at $GPU_MEMORY_PER_SLOT each would exceed a 40 GB card and die
-# at cuDevicePrimaryCtxRetain, exactly as four workers on one MIG did before.
-#
-# Capture SLURM's own CUDA_VISIBLE_DEVICES first: on MIG partitions it is a list
-# of UUIDs ("MIG-a,MIG-b"), not integer indices, so overwriting it with a number
-# silently hides the GPU and drops the run to CPU. \`cut -d,\` works for both.
-# {%} is the parallel job slot, 1..$TEST_JOBS.
+# Pin each parallel slot to a card, round-robin. Capture SLURM's own list first:
+# on MIG it is UUIDs, not indices, so overwriting it with a number hides the GPU.
 export SLURM_CUDA_VISIBLE_DEVICES=\${CUDA_VISIBLE_DEVICES:-0}
 echo "[phase 2] SLURM gave CUDA_VISIBLE_DEVICES=\$SLURM_CUDA_VISIBLE_DEVICES"
 parallel --jobs $TEST_JOBS --results "\$LOCAL_LOGS/test" \\
@@ -1093,76 +764,20 @@ fi
 echo "  seeds  -> $SEEDS  (SAME set on every arm => paired contrasts)"
 echo "  grid   -> $n_cer CER + $n_nocer no-CER = $n_points point(s)"
 echo "  base   -> $MODELS_DIR/$BASE_HP"
-echo "  gate   -> syndrome_gate_threshold = $GATE_TAU ($gate_label)"
+echo "  gates  -> syndrome tau = $GATE_TAU ($gate_label);  pair certainty c = $CERTAINTY LLR"
 echo "  GPU    -> ${GPUS}x $GPU_TYPE, $SLOTS core(s), $MEM, 1 node; train $TRAIN_WAVES wave(s) of $SLOTS, test $TEST_JOBS at a time"
 echo "  time   -> $WALLTIME  (estimate ${estimated_minutes} min: $N_EPOCHS_BASE epoch(s) x $TRAIN_WAVES wave(s) train, $n_points tests $TEST_JOBS-way)"
 echo "  assert -> require_correlations = true on every CER arm"
 echo
 if [ "$PROFILE" = "spread" ]; then
-    echo "  THE SIGMA LADDER (measured on the CER files, before any decoding):"
-    echo "    sigma     R^2(J~structure)   sector CV   (1,1) sd   dead edges"
-    echo "    0.0            0.848            1.58%       0.927     206/540"
-    echo "    0.0005         0.709           18.88%       1.309     223/540"
-    echo "    0.001          0.619           23.61%       1.473     245/540"
-    echo
-    echo "  Rising sigma makes the priors much more informative and the surviving"
-    echo "  couplings somewhat more so, but clamping at zero kills more gates (66-81"
-    echo "  of 432 at sigma = 5e-4, 115-137 at 1e-3), so more couplings go dead."
-    echo
-    echo "  reading protocol, fixed in advance:"
-    echo "    PRIMARY   lam0 - nocer, as a function of sigma:"
-    echo "      margin grows monotonically with sigma  -> per-gate characterisation is"
-    echo "                                                what makes CER worth having"
-    echo "      margin flat across sigma               -> the win is LLR magnitude"
-    echo "                                                (saturation), not information"
-    echo "      margin shrinks                         -> the extra dead gates cost more"
-    echo "                                                than the extra spread buys"
-    echo "    SECONDARY lambda > 0 vs lam0 at sigma = 0.001, the most informative data:"
-    echo "      still worse                            -> couplings are done as a loss term"
-    echo "      finally better                         -> re-run the full lambda grid here"
-    echo
-    echo "  CAUTION: the sigmas are NOT matched on physical error rate. Mean per-gate"
-    echo "  rate is 5.0e-4 / 5.4e-4 / 7.1e-4 for sigma = 0 / 5e-4 / 1e-3, because the"
-    echo "  Normal is clamped at zero. Compare CER vs no-CER WITHIN a dataset; the"
-    echo "  sigma trend is only interpretable on that paired margin, never raw counts."
+    echo "  primary   : lam0 - nocer across sigma (does the CER prior advantage grow?)"
+    echo "  secondary : lambda > 0 vs lam0 at sigma = 0.001, the most informative data"
+    echo "  NOTE: the sigmas are not matched on physical error rate (mean per-gate rate"
+    echo "  5.0e-4 / 5.4e-4 / 7.1e-4), so compare CER vs no-CER WITHIN a dataset."
     echo
 fi
 if [ "$MODE" = "lambda_sweep" ]; then
-    echo "  THE DECOMPOSITION (this is why lambda = 0 and no-CER are both present):"
-    echo "    nocer -> lam0     isolates the single-qubit PRIORS"
-    echo "    lam0  -> lam>0    isolates the COUPLINGS"
-    echo "  Every CER-vs-no-CER number so far has confounded the two; this separates them."
+    echo "  nocer -> lam0 isolates the PRIORS; lam0 -> lam>0 isolates the COUPLINGS."
     echo
-    echo "  THE PREDICTION UNDER TEST, fixed in advance:"
-    echo "    coset selection is a discrete argmax flip, so its benefit should SATURATE in lambda;"
-    echo "    the convergence damage is a continuous distortion, so it should grow ~LINEARLY."
-    echo "  If so there is an interior optimum and lambda = 0.76 is already past it."
-    echo
-    echo "  reading protocol:"
-    echo "    net minimum at some 0 < lambda < 0.76  -> the trade is tunable; take that lambda to the p axis"
-    echo "    coset and convergence scale together   -> no lambda wins; the 1/|C| divisor is the problem"
-    echo "                                              (540 edges, ~0.05 firing per sample)"
-    echo "    lam0 already beats nocer               -> the win is the PRIORS, not the couplings"
-    echo "    nothing separates lam0 from lam0p75    -> the coset effect was not the couplings after all"
-    echo
-fi
-if [ "$MODE" = "primary" ] && [ -z "$PROFILE" ] && [ -z "$LAMBDAS" ]; then
-    echo "  reading protocol, fixed in advance:"
-    echo "    CER beats no-CER at every p, gap grows with p  -> couplings are working;"
-    echo "                                                      the p^2 co-firing scaling predicts exactly this"
-    echo "    CER beats no-CER uniformly, no p trend         -> it is the single-qubit PRIORS, not the couplings;"
-    echo "                                                      confirm with --lambda 0 (priors on, couplings off)"
-    echo "    no separation at any p                         -> the revised J did not rescue it either;"
-    echo "                                                      the 1/|C| normalisation is the remaining suspect"
-    echo "    CER WORSE, especially at large p               -> the reward is outrunning the syndrome term;"
-    echo "                                                      check gate_open_fraction, then lower --lambda"
-    echo
-    if [ "$gate_label" = "ungated" ]; then
-        echo "  WARNING: running UNGATED with sparsity = $SPARSITY. The aux terms enter layer"
-        echo "  selection and the certainty regulariser is ~batch_size stronger than in the"
-        echo "  gated path. This is a deliberate contrast against the default; do not read"
-        echo "  it as the primary result."
-        echo
-    fi
 fi
 echo "submit with:  sbatch $SLURM"

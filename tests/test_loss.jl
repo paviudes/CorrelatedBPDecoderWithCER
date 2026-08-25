@@ -1,121 +1,98 @@
-using SparseArrays
-using DelimitedFiles
 using CorrelatedBPDecoderWithCER
+using Test
 
-function test_loss()
-    """
-    Test the computation of the loss function for the NeuralBP model.
-    We will define a parity-check matrix, a syndrome, initial LLRs, and expected recoveries.
-    We will then compute the loss using the `compute_loss_error_from_llrs` function.
-    H = [
-        0 0 0 1 1 1 1 0;
-        0 1 1 0 0 1 1 0;
-        1 0 1 0 1 0 1 0
-        ]
-    H^⟂ = [
-            1 0 0 0 0 1 1 0;
-            0 1 0 0 1 0 1 0;
-            0 0 1 0 1 1 0 0;
-            0 0 0 1 1 1 1 0
-          ]
-    syndrome = [1, 0, 1] (indicating errors on qubits 1, 3, and 4)
-    errors = [1, 0, 1, 1, 0, 0, 0] (the actual error pattern)
-    posterior_llrs = [1.0663514264498881; 1.0663514264498881; 3.3280977282225512; 2.1972245773362196; 1.0663514264498881; -0.06452172443644333; 2.1972245773362196; 1.0663514264498881]
-    The Loss function is given by
-        L(μ, e) = ∑_i  f ( ∑_(jk) H^⟂_ij M_(jk) [ e_k + σ(μ_k)])
-    where
-        - σ(μ_k) = 1 / (1 + exp(μ_k))
-        - f(x) = |sin(π x / 2)|
-        - M = [0 I ; I 0] is the symplectic matrix
-        - H^⟂ is the parity-check matrix of the dual code.
-    """
-    # Define the parity-check matrix
-    H = [0 0 0 1 1 1 1 0;
-         0 1 1 0 0 1 1 0;
-         1 0 1 0 1 0 1 0]
-    H_dual = [1 0 0 0 0 1 1 0;
-              0 1 0 0 1 0 1 0;
-              0 0 1 0 1 1 0 0;
-              0 0 0 1 1 1 1 0]
-    # Example syndrome
-    # syndrome = [1; 0; 1;;]  # Indicates errors on qubits 1, 3, and 4
-    # Expected recovery
-    errors = convert.(Bool, [1; 0; 1; 1; 0; 0; 0; 0;;])
-    # Initial LLRs
-    posterior_llrs = convert.(Float32, [2.0663514264498881; 1.0663514264498881; -3.3280977282225512; -2.1972245773362196; -0.0663514264498881; -0.06452172443644333; 2.1972245773362196; 1.0663514264498881;;])
-    
-    # Compute the Loss function.
-    actual_loss = compute_loss_error_from_llrs(posterior_llrs, errors, convert.(Bool, H_dual))
+"""
+Exercise the two detached gates on the correlation term and the active-pair
+normalisation, on a hand-built 4-qubit example where every value is checkable by
+hand.
+"""
+function test_correlation_gates()::Nothing
+    n_bits = 4
+    n_samples = 3
 
-    println("Computed Loss:", actual_loss)
-end
+    # Columns: a decided co-flipped pair, an undecided pair, a decided pair that
+    # is not co-flipped.
+    posterior_llrs = Float32[
+        4.0   0.2   4.0
+        4.0   0.2  -4.0
+       -4.0  -4.0  -4.0
+       -4.0  -4.0  -4.0
+    ]
+    connectivity = [1 2]
+    correlation_strengths = Float32[3.0]
+    certainty_threshold = 2.2f0
 
-function test_correlation_loss()
-    """
-    Test the computation of the loss function that comes from encouraging correlations between errors.
-    The correlation loss is given by
-        L_corr(μ) = λ * ∑_((qi, qj) ∈ C) [ e_(qi) XOR e_(qj) ]
-    where
-        - λ is a hyperparameter that controls the strength of the correlation penalty.
-        - C is the set of correlated qubit index pairs.
-        - e_(qi) is the predicted error at qubit `qi`.
-    
-    We will define a small set of correlated qubit pairs, predicted LLRs, and compute the correlation loss explicitly using the formula above.
-    Additionally, we will compute the correlation loss using the `compute_additional_loss_from_ising_correlations` function and compare the results.
-    """
-    H_dual = [1 0 0 0 0 1 1 0;
-              0 1 0 0 1 0 1 0;
-              0 0 1 0 1 1 0 0;
-              0 0 0 1 1 1 1 0]
-    posterior_llrs = convert.(Float32, [
-        2.0663514264498881;     # qubit 1
-        1.0663514264498881;     # qubit 2
-        -3.3280977282225512;    # qubit 3
-        -2.1972245773362196;    # qubit 4
-        -0.0663514264498881;    # qubit 5
-        -0.06452172443644333;   # qubit 6
-        2.1972245773362196;     # qubit 7
-        1.0663514264498881;;    # qubit 8
-    ])
-    # Define correlated qubit pairs
-    connectivity_matrix = [1 2; 3 4; 5 6; 7 8]
-    correlation_strength = 0.5f0
-    # Expected recoveries
-    expected_recoveries = convert.(Bool, [1; 0; 1; 1; 0; 0; 0; 0;;])
-    
-    # Compute the correlation loss explicitly
-    expected_corr_loss = 0.0f0
-    for (qi, qj) in eachrow(connectivity_matrix)
-        e_qi = 1 / (1 + exp(posterior_llrs[qi]))
-        e_qj = 1 / (1 + exp(posterior_llrs[qj]))
-        xor_value = e_qi + e_qj - 2 * e_qi * e_qj
-        expected_corr_loss += xor_value
-    end
-    expected_corr_loss *= correlation_strength
-    
-    expected_bare_loss = compute_loss_error_from_llrs(
-        posterior_llrs, 
-        expected_recoveries,
-        convert.(Bool, H_dual)
-    )
-    expected_loss = expected_bare_loss + expected_corr_loss
-    
-    # Now compute the correlation loss using the function
-    actual_loss = compute_loss_including_correlations(
-        posterior_llrs, 
-        expected_recoveries,
-        convert.(Bool, H_dual),
-        connectivity_matrix, 
-        correlation_strength,
-        true
+    rewards = ising_correlation_reward_per_sample(
+        posterior_llrs, connectivity, correlation_strengths, certainty_threshold
     )
 
-    # Compare the two results
-    if isapprox(actual_loss, expected_loss, atol=1e-6)
-        println("Correlation loss computed by the function matches the expected value.")
-    else
-        println("Correlation loss computed by the function does not match the expected value.")
-        println("Explicitly computed loss: ", expected_loss)
-        println("Computed loss from function: ", actual_loss)
+    sigmoid_of_four::Float32 = 1.0f0 / (1.0f0 + exp(-4.0f0))
+
+    @testset "certainty gate" begin
+        # Sample 1: both endpoints decided (|μ| = 4 > 2.2), both flagged.
+        # One active pair, so the normaliser is 1 and r = -J σ σ.
+        @test rewards[1] ≈ -3.0f0 * sigmoid_of_four^2 atol=1e-5
+        # Sample 2: |μ| = 0.2 < 2.2, gate closed, no active pairs, r = 0.
+        # Ungated this pair would have contributed -3 * 0.55^2 = -0.91.
+        @test rewards[2] == 0.0f0
+        # Sample 3: decided, so the gate is open, but qubit 2 is σ ≈ 0 and the
+        # co-activation product is ~0. The gate admits it; the reward is ~0.
+        @test rewards[3] ≈ 0.0f0 atol=1e-3
     end
+
+    @testset "gate-open fraction" begin
+        open_fraction = correlation_gate_open_fraction(
+            posterior_llrs, connectivity, certainty_threshold
+        )
+        # Two of three samples clear the threshold on both endpoints.
+        @test open_fraction ≈ 2.0f0 / 3.0f0 atol=1e-6
+    end
+
+    @testset "active-pair normalisation" begin
+        # Two identical pairs must give the same per-sample reward as one, since
+        # the reward is a MEAN over active pairs, not a sum over all edges.
+        wide_llrs = Float32[4.0; 4.0; 4.0; 4.0;;]
+        one_pair = ising_correlation_reward_per_sample(
+            wide_llrs, [1 2], Float32[3.0], certainty_threshold
+        )
+        two_pairs = ising_correlation_reward_per_sample(
+            wide_llrs, [1 2; 3 4], Float32[3.0, 3.0], certainty_threshold
+        )
+        @test one_pair[1] ≈ two_pairs[1] atol=1e-6
+    end
+
+    @testset "reward is non-positive for positive couplings" begin
+        # Ordering safety: a gated solved sample can never score worse than a
+        # failing one, whose base loss is ≳ 1 per broken check.
+        @test all(rewards .<= 0.0f0)
+    end
+    return nothing
 end
+
+"""
+The syndrome gate is an indicator on the soft H-weight, so it must be exactly 0
+or 1 and must use the stabilizers alone.
+"""
+function test_syndrome_gate()::Nothing
+    parity_check_matrix = BitMatrix([1 1 0 0; 0 0 1 1])
+    expected_recoveries = BitMatrix([0 0; 0 0; 0 0; 0 0])
+    # Sample 1 is a clean solution; sample 2 flips one qubit of the first check.
+    posterior_llrs = Float32[-8.0 8.0; -8.0 -8.0; -8.0 -8.0; -8.0 -8.0]
+
+    weights = soft_syndrome_weight_per_sample(
+        posterior_llrs, expected_recoveries, parity_check_matrix
+    )
+    gate = syndrome_gate_per_sample(
+        posterior_llrs, expected_recoveries, parity_check_matrix, 0.5f0
+    )
+    @testset "syndrome gate" begin
+        @test weights[1] < 0.5f0
+        @test weights[2] > 0.5f0
+        @test gate == Float32[1.0, 0.0]
+        @test all(g -> g == 0.0f0 || g == 1.0f0, gate)
+    end
+    return nothing
+end
+
+test_correlation_gates()
+test_syndrome_gate()
