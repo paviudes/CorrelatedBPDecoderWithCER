@@ -300,9 +300,26 @@ echo "  gates     -> tau = $GATE_TAU, certainty c = $CERTAINTY;  sparsity = $SPA
 echo "  commands  -> $TRAIN_CMDS"
 echo "               $TEST_CMDS"
 echo
-echo "submit:"
-echo "  TRAIN=\$(sbatch --parsable $SLURM_TRAIN)"
-echo "  sbatch --dependency=afterok:\$TRAIN $SLURM_TEST"
+# The two jobs are SEPARATE submissions on DIFFERENT accounts: training is
+# CPU-only on $ACCOUNT_CPU, testing needs a GPU on $ACCOUNT_GPU. Nothing is
+# submitted automatically.
+FIRST_MODEL="neuralbp_weights_nlayers_${NLAYERS}_epochs_$(grep -E '^[[:space:]]*n_epochs' "$MODELS_DIR/$BASE_HP" | head -1 | sed -E 's/[^0-9]*([0-9]+).*/\1/')_trained_using_train_$(echo $DATASETS | awk '{print $1}')_hpcer_sp$(tag_of "$SPARSITY")_lam$(tag_of "$(echo $LAMBDAS | awk '{print $NF}')")_seed_$(echo $SEEDS | awk '{print $1}').json"
+echo "submit — TRAIN first (CPU, $ACCOUNT_CPU), then TEST (GPU, $ACCOUNT_GPU):"
+echo
+echo "  # 1. training"
+echo "  sbatch $SLURM_TRAIN"
+echo
+echo "  # 2. when it finishes, CHECK THE MODELS TRAINED before spending a GPU:"
+echo "  julia -e 'using JSON, Statistics; w=JSON.parsefile(\"$MODELS_DIR/$FIRST_MODEL\");"
+echo "            println(std(vcat(w[\"weights_c2v_v2c\"],w[\"weights_llrs\"],w[\"weights_c2v_readout\"])))'"
+echo "  # 0.058 => never trained (every batch NaN-skipped); larger => trained."
+echo
+echo "  # 3. testing"
+echo "  sbatch $SLURM_TEST"
+echo
+echo "  To chain them without the check instead:"
+echo "    TRAIN=\$(sbatch --parsable $SLURM_TRAIN)"
+echo "    sbatch --dependency=afterok:\$TRAIN $SLURM_TEST"
 
 if [ "$LOCAL" -eq 1 ]; then
     # A smoke test must not read the real datasets. They are 72 x 1e6, and
