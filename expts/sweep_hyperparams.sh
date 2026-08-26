@@ -49,7 +49,8 @@ n_hidden_layers  = 90
 seeds            = [1]
 
 # --- sweep axes -------------------------------------------------------------
-lambdas          = [0.0, 0.3, 3.0]   # correlation_weight, per ACTIVE pair
+lambdas          = [0.0, 3.0, 30.0]  # correlation_weight, per ACTIVE pair
+                                     # measured: 0.14% / 1.4% / 13.5% of base loss
 include_nocer    = true              # flat p = 0.1 baseline arm
 sparsity         = 0.0               # sparsity_importance, pinned constant
 syndrome_gate    = 0.5               # tau, softly broken checks
@@ -149,7 +150,9 @@ GPU_MEMORY_MB=$(( VRAM_PER_GPU * 1024 * 85 / (100 * JOBS_PER_GPU) ))
 MODELS_DIR="$WORKDIR/$CODENAME/models"
 CLUSTER_DIR="$WORKDIR/$CODENAME/cluster"
 [ -f "$MODELS_DIR/$BASE_HP" ] || { echo "no base hyperparameters: $MODELS_DIR/$BASE_HP" >&2; exit 1; }
-mkdir -p "$CLUSTER_DIR"
+# The stage-in tars the codename as it stands, so these have to exist here or
+# the job has nowhere to write and the stage-out finds nothing to bring back.
+mkdir -p "$CLUSTER_DIR" "$MODELS_DIR" "$WORKDIR/$CODENAME/results" "$WORKDIR/$CODENAME/logs"
 
 TRAIN_CMDS="$CLUSTER_DIR/hp_sweep_train_${TS}.txt"
 TEST_CMDS="$CLUSTER_DIR/hp_sweep_test_${TS}.txt"
@@ -235,7 +238,7 @@ export JULIA_PKG_PRECOMPILE_AUTO=0
 
 LOCAL="\$SLURM_TMPDIR/$CODENAME"
 tar -chf - -C "$WORKDIR" "$CODENAME" | tar -xf - -C "\$SLURM_TMPDIR"
-mkdir -p "\$LOCAL/logs" "\$LOCAL/cluster/logs/hp_${TS}_train"
+mkdir -p "\$LOCAL"/{models,results,logs} "\$LOCAL/cluster/logs/hp_${TS}_train"
 sed "s|\\\$WORKDIR_RUNTIME|\$SLURM_TMPDIR|g" "$TRAIN_CMDS" > "\$SLURM_TMPDIR/train.txt"
 
 stage_out() {
@@ -280,7 +283,7 @@ julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using CUDA; @info "CUDA functional: \$
 
 LOCAL="\$SLURM_TMPDIR/$CODENAME"
 tar -chf - -C "$WORKDIR" "$CODENAME" | tar -xf - -C "\$SLURM_TMPDIR"
-mkdir -p "\$LOCAL/logs" "\$LOCAL/cluster/logs/hp_${TS}_test"
+mkdir -p "\$LOCAL"/{models,results,logs} "\$LOCAL/cluster/logs/hp_${TS}_test"
 sed "s|\\\$WORKDIR_RUNTIME|\$SLURM_TMPDIR|g" "$TEST_CMDS" > "\$SLURM_TMPDIR/test.txt"
 
 # neural_bp_experiments.jl SKIPS testing when the results file already exists and
