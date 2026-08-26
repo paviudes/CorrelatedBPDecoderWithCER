@@ -68,11 +68,14 @@ train_cpus       = 20
 train_mem_per_cpu = "6G"
 train_wall_time  = "4:00:00"
 
-gpu_type         = "a100"
-n_gpus           = 1
-test_jobs        = 1                 # concurrent test processes; keep <= n_gpus
-test_mem         = "124G"
-test_cpus        = 12
+# GPU knobs mirror submit.sh. Sequential testing does not need a whole card;
+# a100_3g.20gb (a 20 GB MIG slice) schedules much sooner.
+gpu_type         = "a100_3g.20gb"
+n_gpus_per_node  = 1
+test_jobs        = 1                 # concurrent test processes; keep <= n_gpus_per_node
+mem_per_gpu      = "16G"             # SLURM HOST ram per GPU (not VRAM)
+vram_per_gpu     = ""                # VRAM in GB for the batch sizer; "" => infer from gpu_type
+test_cpus        = 6
 test_wall_time   = "4:00:00"
 EOF
 
@@ -120,9 +123,28 @@ EMAIL=$(get email);                  JULIA_MODULE=$(get julia_module)
 CUDA_MODULE=$(get cuda_module);      HEAP=$(get heap_size_hint)
 TRAIN_CPUS=$(get train_cpus);        TRAIN_MEM=$(get train_mem_per_cpu)
 TRAIN_WALL=$(get train_wall_time)
-GPU_TYPE=$(get gpu_type);            N_GPUS=$(get n_gpus)
-TEST_JOBS=$(get test_jobs);          TEST_MEM=$(get test_mem)
+GPU_TYPE=$(get gpu_type);            N_GPUS=$(get n_gpus_per_node)
+TEST_JOBS=$(get test_jobs);          MEM_PER_GPU=$(get mem_per_gpu)
+VRAM_PER_GPU=$(get vram_per_gpu)
 TEST_CPUS=$(get test_cpus);          TEST_WALL=$(get test_wall_time)
+
+# VRAM per card, for the prediction batch sizer. This is NOT --mem-per-gpu, which
+# is host RAM: GPU_MEMORY has to fit the CARD or the batch is sized too large and
+# the run dies at cuDevicePrimaryCtxRetain.
+if [ -z "$VRAM_PER_GPU" ]; then
+    case "$GPU_TYPE" in
+        a100_1g.5gb)  VRAM_PER_GPU=5  ;;
+        a100_2g.10gb) VRAM_PER_GPU=10 ;;
+        a100_3g.20gb) VRAM_PER_GPU=20 ;;
+        a100)         VRAM_PER_GPU=40 ;;
+        h100)         VRAM_PER_GPU=80 ;;
+        v100*)        VRAM_PER_GPU=32 ;;
+        *) echo "unknown gpu_type '$GPU_TYPE': set vram_per_gpu explicitly." >&2; exit 1 ;;
+    esac
+fi
+# 85% of one card, shared by the processes assigned to it.
+JOBS_PER_GPU=$(( TEST_JOBS / N_GPUS )); [ "$JOBS_PER_GPU" -lt 1 ] && JOBS_PER_GPU=1
+GPU_MEMORY_MB=$(( VRAM_PER_GPU * 1024 * 85 / (100 * JOBS_PER_GPU) ))
 
 MODELS_DIR="$WORKDIR/$CODENAME/models"
 CLUSTER_DIR="$WORKDIR/$CODENAME/cluster"
@@ -236,11 +258,11 @@ cat > "$SLURM_TEST" <<EOF
 #SBATCH --job-name=hptest_$TS
 #SBATCH --output=$CLUSTER_DIR/hp_sweep_test_${TS}.out
 #SBATCH --error=$CLUSTER_DIR/hp_sweep_test_${TS}.err
-#SBATCH --gpus=${GPU_TYPE}:${N_GPUS}
+#SBATCH --gpus-per-node=${GPU_TYPE}:${N_GPUS}
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=$TEST_CPUS
-#SBATCH --mem=$TEST_MEM
+#SBATCH --mem-per-gpu=$MEM_PER_GPU
 #SBATCH --time=$TEST_WALL
 #SBATCH --signal=B:TERM@600
 #SBATCH --mail-type=ALL
@@ -280,7 +302,7 @@ stage_out() {
 trap 'stage_out; exit 0' TERM
 trap stage_out EXIT
 
-export GPU_MEMORY=\$(( \${SLURM_GPUS_ON_NODE:-1} * 34816 / $TEST_JOBS ))M
+export GPU_MEMORY=${GPU_MEMORY_MB}M
 echo "[test] $N_POINTS point(s), $TEST_JOBS at a time on \${SLURM_GPUS_ON_NODE:-1} GPU(s): \$(date)"
 export SLURM_CUDA_VISIBLE_DEVICES=\${CUDA_VISIBLE_DEVICES:-0}
 parallel --jobs $TEST_JOBS --results "\$LOCAL/cluster/logs/hp_${TS}_test" \\
@@ -297,6 +319,9 @@ echo "  datasets  -> $DATASETS"
 echo "  ref       -> $REF_DATASETS   (lambda = 0 and no-CER only)"
 echo "  lambdas   -> $LAMBDAS   seeds -> $SEEDS"
 echo "  gates     -> tau = $GATE_TAU, certainty c = $CERTAINTY;  sparsity = $SPARSITY"
+echo "  train     -> $ACCOUNT_CPU: $TRAIN_CPUS cpu x $TRAIN_MEM, $TRAIN_WALL"
+echo "  test      -> $ACCOUNT_GPU: ${N_GPUS}x $GPU_TYPE (${VRAM_PER_GPU}G vram), $TEST_CPUS cpu,"
+echo "               --mem-per-gpu=$MEM_PER_GPU host ram, GPU_MEMORY=${GPU_MEMORY_MB}M, $TEST_JOBS at a time"
 echo "  commands  -> $TRAIN_CMDS"
 echo "               $TEST_CMDS"
 echo
