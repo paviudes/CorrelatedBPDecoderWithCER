@@ -488,6 +488,27 @@ function collect_per_run(results_dir::String, logs_dir::String)::DataFrame
             row[key] = value
         end
 
+        # STALENESS GUARD. A result file OLDER than the training log that
+        # supposedly produced its model was not regenerated after that training —
+        # a failed or killed test phase quietly leaves the previous run's results
+        # in place, and they collect as if fresh. This once paired a fixed
+        # training run with a broken run's test files, identical runtimes and all.
+        row[:result_mtime] = mtime(joinpath(results_dir, filename))
+        row[:result_fresh] = missing
+        log_candidates::Vector{String} = filter(
+            f -> startswith(f, "debugging_") && endswith(f, run_tail * ".csv"),
+            isdir(logs_dir) ? readdir(logs_dir) : String[])
+        if !isempty(log_candidates)
+            log_mtime::Float64 = mtime(joinpath(logs_dir, log_candidates[1]))
+            row[:result_fresh] = row[:result_mtime] >= log_mtime
+            if row[:result_fresh] === false
+                @warn "STALE RESULT for $(run_tail): the result file predates its own " *
+                      "training log by $(round((log_mtime - row[:result_mtime])/60; digits=1)) " *
+                      "minutes. The test phase did not run after that training; these " *
+                      "numbers belong to an earlier model."
+            end
+        end
+
         # THE PREMISE CHECK. This sweep only means anything if sparsity really was
         # pinned to zero; a non-zero realised value means the TOML override did not
         # take and the arm is not what it claims to be.
@@ -856,6 +877,13 @@ function print_report(per_run::DataFrame, per_arm::DataFrame, contrasts::DataFra
         @printf("  sparsity == 0 at final epoch  : %d / %d checked%s\n",
                 length(checked) - n_bad, length(checked),
                 n_bad > 0 ? "   <-- $(n_bad) VIOLATION(S), see warnings above" : "")
+    end
+    if hasproperty(per_run, :result_fresh)
+        fresh_checked::Vector{Any} = collect(skipmissing(per_run.result_fresh))
+        n_stale::Int = count(value -> value === false, fresh_checked)
+        @printf("  result newer than its log     : %d / %d checked%s\n",
+                length(fresh_checked) - n_stale, length(fresh_checked),
+                n_stale > 0 ? "   <-- $(n_stale) STALE: test phase did not rerun" : "")
     end
     if hasproperty(per_run, :lambda_matches_pin)
         lambda_checked::Vector{Any} = collect(skipmissing(per_run.lambda_matches_pin))
