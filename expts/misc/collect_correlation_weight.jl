@@ -832,6 +832,24 @@ function print_report(per_run::DataFrame, per_arm::DataFrame, contrasts::DataFra
     println(repeat("-", 100))
     n_logs::Int = count(value -> value === true, per_run.debug_log_found)
     @printf("  debug logs found              : %d / %d run(s)\n", n_logs, nrow(per_run))
+    if hasproperty(per_run, :debug_log_written_rows)
+        empty_logs::Vector{String} = String[]
+        for row in eachrow(per_run)
+            if row.debug_log_found === true && row.debug_log_written_rows == 0
+                push!(empty_logs, "$(row.dataset)/$(row.label)")
+            end
+        end
+        if !isempty(empty_logs)
+            @printf("  ZERO-WRITTEN debug logs       : %d run(s)   <-- TRAINING NEVER LOGGED A BATCH\n",
+                    length(empty_logs))
+            println("      A log that exists but has no written rows means every batch was")
+            println("      NaN-skipped and every epoch rolled back: the model tested is the")
+            println("      INITIAL weights, and its results are not a trained-decoder result.")
+            for name in empty_logs
+                println("        ", name)
+            end
+        end
+    end
     if hasproperty(per_run, :sparsity_is_zero)
         checked::Vector{Any} = collect(skipmissing(per_run.sparsity_is_zero))
         n_bad::Int = count(value -> value === false, checked)

@@ -400,6 +400,8 @@ function train_neuralbp_enzyme!(
     # -------------------------
     epoch_progress = is_quiet ? nothing : Progress(n_epochs, desc="Training Epochs: ")
 
+    n_applied_updates::Int = 0
+    n_rolled_back_epochs::Int = 0
     for epoch in 1:n_epochs
         batch_progress = is_quiet ? nothing : Progress(n_gradient_updates_per_epoch, desc="Epoch $epoch Batches: ")
 
@@ -513,6 +515,7 @@ function train_neuralbp_enzyme!(
                 weights_c2v_readout = grad_w_readout
             )
             (opt_state, bpnn) = Optimisers.update!(opt_state, bpnn, grads)
+            n_applied_updates += 1
             # -------------------------
 
             # -------------------------
@@ -569,6 +572,12 @@ function train_neuralbp_enzyme!(
             bpnn.weights_llrs        .= bpnn_checkpoint.weights_llrs
             bpnn.weights_c2v_readout .= bpnn_checkpoint.weights_c2v_readout
             opt_state = deepcopy(opt_state_checkpoint)
+            n_rolled_back_epochs += 1
+            # NOT gated on is_quiet: a rolled-back epoch discards its work, and a
+            # run where every epoch rolls back ships its initial weights. That
+            # once reached a full 20-point cluster sweep unnoticed because every
+            # warning sat behind the quiet flag.
+            @warn "Epoch $(epoch) ROLLED BACK: $(nan_skip_count) batches had non-finite gradients (limit $(max_nan_skips_per_epoch)). Weights and optimizer state restored to the start of the epoch."
         end
 
         if !is_quiet
@@ -578,6 +587,18 @@ function train_neuralbp_enzyme!(
 
     if is_debug
         save_training_debug_logs(debugging_logfile, hp_log, individual_losses_log)
+    end
+
+    if n_applied_updates == 0
+        error("train_neuralbp_enzyme!: not a single gradient update was applied — " *
+              "every batch had non-finite gradients and every epoch rolled back " *
+              "($(n_rolled_back_epochs) of $(n_epochs)). The weights are still at " *
+              "their initial values, and saving them would produce a model " *
+              "indistinguishable from an untrained one in every downstream file. " *
+              "Refusing. Check the loss terms for Enzyme-incompatible constructs.")
+    end
+    if n_rolled_back_epochs > 0
+        @warn "Training finished with $(n_rolled_back_epochs) of $(n_epochs) epochs rolled back and $(n_applied_updates) applied updates."
     end
 
     return bpnn

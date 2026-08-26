@@ -181,20 +181,28 @@ function ising_correlation_reward_per_sample(
     n_samples = size(posterior_llrs, 2)
     n_edges = size(connectivity, 1)
     rewards = zeros(Float32, n_samples)
+    # BRANCHLESS ON PURPOSE. The gate is Float32 of a comparison — zero derivative,
+    # so it is detached exactly like `syndrome_gate_per_sample` — and it MULTIPLIES
+    # rather than branching. An earlier version used `continue` plus a division by
+    # an Int active-pair count; under Enzyme reverse mode that produced non-finite
+    # gradients on every batch, which NaN-skipped every update and rolled back
+    # every epoch, silently shipping untrained weights. Straight-line Float32
+    # arithmetic is the form with a proven training record.
     @inbounds for j in 1:n_samples
         accumulated_reward::Float32 = 0.0f0
-        n_active::Int = 0
+        active_pair_count::Float32 = 0.0f0
         for e in 1:n_edges
             i = connectivity[e, 1]
             k = connectivity[e, 2]
-            if min(abs(posterior_llrs[i, j]), abs(posterior_llrs[k, j])) <= certainty_threshold
-                continue
-            end
-            n_active += 1
-            accumulated_reward += correlation_strengths[e] *
+            decided::Float32 = Float32(
+                (abs(posterior_llrs[i, j]) > certainty_threshold) &
+                (abs(posterior_llrs[k, j]) > certainty_threshold)
+            )
+            active_pair_count += decided
+            accumulated_reward += decided * correlation_strengths[e] *
                                   sigmoid(posterior_llrs[i, j]) * sigmoid(posterior_llrs[k, j])
         end
-        rewards[j] = -accumulated_reward / Float32(max(1, n_active))
+        rewards[j] = -accumulated_reward / max(1.0f0, active_pair_count)
     end
     return rewards
 end
@@ -214,17 +222,18 @@ function correlation_gate_open_fraction(
     if n_edges == 0 || n_samples == 0
         return 0.0f0
     end
-    n_open::Int = 0
+    open_count::Float32 = 0.0f0
     @inbounds for j in 1:n_samples
         for e in 1:n_edges
             i = connectivity[e, 1]
             k = connectivity[e, 2]
-            if min(abs(posterior_llrs[i, j]), abs(posterior_llrs[k, j])) > certainty_threshold
-                n_open += 1
-            end
+            open_count += Float32(
+                (abs(posterior_llrs[i, j]) > certainty_threshold) &
+                (abs(posterior_llrs[k, j]) > certainty_threshold)
+            )
         end
     end
-    open_fraction::Float32 = Float32(n_open) / Float32(n_edges * n_samples)
+    open_fraction::Float32 = open_count / Float32(n_edges * n_samples)
     return open_fraction
 end
 

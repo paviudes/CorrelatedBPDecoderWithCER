@@ -17,7 +17,13 @@
 #
 # Other flags:
 #     --datasets / --baseline_datasets / --lambdas / --seeds / --sparsity
-#     --tau / --certainty / --gpus / --test_jobs / --walltime / --base_hp
+#     --tau / --certainty / --base_hp / --walltime
+#     --gpus / --gpu_type / --test_jobs / --account_cpu / --account_gpu
+#
+# Two jobs: training is CPU-only (Enzyme AD cannot use a GPU) on def-jemerson,
+# testing is GPU on def-jemerson_gpu. Chain them with --dependency=afterok.
+# Test defaults to one process per whole card with full VRAM; --test_jobs 2 is
+# the fastest setting that still fits, --gpu_type a100_3g.20gb schedules sooner.
 #     --probe      one dataset, one seed          (implies --uniform)
 #     --lambda_sweep  the historical lambda grid  (implies --uniform)
 #     --ungated    tau = -1
@@ -67,7 +73,8 @@ WALLTIME_EXPLICIT=0
 BASELINE_DATASETS=""
 BASELINE_EXPLICIT=0
 
-ACCOUNT="def-jemerson_gpu"
+ACCOUNT_CPU="def-jemerson"     # training: no GPU, so no GPU allocation needed
+ACCOUNT_GPU="def-jemerson_gpu" # testing only
 EMAIL="pavithran.sridhar@gmail.com"
 JULIA_MODULE="julia/1.12.5"
 CUDA_MODULE="cuda"
@@ -86,6 +93,8 @@ GPU_TYPE=""
 GPUS=""
 # Empty = one test process per GPU. More than one per card OOMs and is slower.
 TEST_JOBS=""
+CPUS_PER_NODE=64               # Narval CPU node
+TRAIN_MEM_PER_CPU="6G"         # pooled: mem-per-cpu x cpus-per-task across the task
 # MEASURED, not guessed. The 18-point run of 2026-08-14 took 2h41m end to end:
 #   precompile + stage-in   8 min
 #   phase 1 (train, 2 waves of 12)  1h23m
@@ -127,7 +136,8 @@ while [ "$#" -gt 0 ]; do
         --gpus)      GPUS="$2";      shift 2;;
         --test_jobs) TEST_JOBS="$2";  shift 2;;
         --walltime)  WALLTIME="$2"; WALLTIME_EXPLICIT=1; shift 2;;
-        --account)   ACCOUNT="$2";   shift 2;;
+        --account_cpu) ACCOUNT_CPU="$2"; shift 2;;
+        --account_gpu) ACCOUNT_GPU="$2"; shift 2;;
         --outdir)    OUTDIR="$2";    shift 2;;
         -h|--help)   usage; exit 0;;
         *) echo "unknown flag: $1" >&2; exit 2;;
@@ -395,7 +405,8 @@ TS=$(date +%Y-%m-%d_%H-%M-%S)
 TRAIN_CMDS="$CLUSTER_DIR/cw_${MODE}_train_${TS}.txt"
 TEST_CMDS="$CLUSTER_DIR/cw_${MODE}_test_${TS}.txt"
 HP_LIST="$CLUSTER_DIR/cw_${MODE}_hp_${TS}.txt"
-SLURM="$CLUSTER_DIR/cw_${MODE}_${TS}.sh"
+SLURM_TRAIN="$CLUSTER_DIR/cw_${MODE}_train_${TS}.sh"
+SLURM_TEST="$CLUSTER_DIR/cw_${MODE}_test_${TS}.sh"
 : > "$TRAIN_CMDS"; : > "$TEST_CMDS"; : > "$HP_LIST"
 
 tag_of() { echo "$1" | tr '.' 'p' | tr -d '-'; }
@@ -562,101 +573,77 @@ case "$GPU_TYPE" in
     *) echo "unknown --gpu_type: $GPU_TYPE" >&2; exit 2;;
 esac
 
-# Default: as many whole GPUs as it takes to train in one wave, capped at a node.
-if [ -z "$GPUS" ]; then
-    if [ "$IS_MIG" = "1" ]; then
-        GPUS=1
-    else
-        GPUS=$(( (n_points + SLOTS_PER_GPU - 1) / SLOTS_PER_GPU ))
-        if [ "$GPUS" -lt 1 ]; then GPUS=1; fi
-        if [ "$GPUS" -gt 4 ]; then GPUS=4; fi
-    fi
+# TRAINING runs on a CPU node: no GPU means no GPU core ratio, and a Narval CPU
+# node has 64 cores, so any grid this script will generate trains in one wave.
+TRAIN_CPUS=$n_points
+if [ "$TRAIN_CPUS" -gt "$CPUS_PER_NODE" ]; then
+    TRAIN_CPUS=$CPUS_PER_NODE
 fi
+TRAIN_WAVES=$(( (n_points + TRAIN_CPUS - 1) / TRAIN_CPUS ))
 
-# MIG slices cannot be multiply allocated, and $SLURM_TMPDIR is node-local, so a
-# job spanning nodes would lose half its results.
+# TESTING: whole card, one process, full VRAM. That is the configuration with a
+# measured track record — 268 s/point, no failures. Four processes on one card
+# died at cuDevicePrimaryCtxRetain even though their NOMINAL GPU_MEMORY summed to
+# 34 of 40 GB, because GPU_MEMORY sizes the prediction batch and does not bound
+# the context, the densified check matrix or the layer state; the real footprint
+# is ~1.5x nominal. --test_jobs 2 on a whole card is the fastest setting that
+# still fits that factor; more is not.
+if [ -z "$GPUS" ]; then
+    GPUS=1
+fi
 if [ "$IS_MIG" = "1" ] && [ "$GPUS" -gt 1 ]; then
-    echo "ERROR: --gpus $GPUS with a MIG partition ($GPU_TYPE). MIG slices cannot be" >&2
-    echo "  multiply allocated; use --gpu_type a100 for more than one." >&2
+    echo "ERROR: --gpus $GPUS with a MIG partition ($GPU_TYPE); MIG slices cannot be" >&2
+    echo "  multiply allocated. Use --gpu_type a100." >&2
     exit 2
 fi
 if [ "$GPUS" -gt 4 ]; then
-    echo "ERROR: --gpus $GPUS exceeds the 4 GPUs on a Narval a100 node. The job would" >&2
-    echo "  span nodes, and \$SLURM_TMPDIR is node-local: the stage-out would silently" >&2
-    echo "  collect only the first node's results." >&2
+    echo "ERROR: --gpus $GPUS exceeds the 4 GPUs on an a100 node; the job would span" >&2
+    echo "  nodes and \$SLURM_TMPDIR is node-local." >&2
     exit 2
 fi
-
-SLOTS=$(( SLOTS_PER_GPU * GPUS ))
-MEM="$(( MEM_PER_GPU * GPUS ))G"
-[ "$n_points" -lt "$SLOTS" ] && SLOTS=$n_points
-TRAIN_WAVES=$(( (n_points + SLOTS - 1) / SLOTS ))
-
-# One test process per card. More than one per card OOMs (GPU_MEMORY sizes the
-# prediction batch, it does not bound the process) and measured slower than serial.
 if [ -z "$TEST_JOBS" ]; then
     TEST_JOBS=$GPUS
-    if [ "$TEST_JOBS" -gt "$n_points" ]; then
-        TEST_JOBS=$n_points
-    fi
 fi
-
+if [ "$TEST_JOBS" -gt "$n_points" ]; then
+    TEST_JOBS=$n_points
+fi
+TEST_CPUS=$(( SLOTS_PER_GPU * GPUS ))
+MEM="$(( MEM_PER_GPU * GPUS ))G"
 GPU_MEMORY_PER_SLOT="$(( (VRAM_GB * 1024 * GPUS * 85) / (TEST_JOBS * 100) ))M"
 
-# ---- walltime, derived from n_epochs -----------------------------------------
+# ---- walltimes, derived from n_epochs ----------------------------------------
 # Measured: 8.3 min per epoch per training wave, 4.5 min per test point, ~8 min
-# precompile + stage-in. Floored at 4h to cover in-job precompilation.
+# precompile + stage-in. Each job is floored at 4h to cover in-job precompilation,
+# which is roughly fixed and would otherwise dominate a short job.
 N_EPOCHS_BASE=$(grep -E '^[[:space:]]*n_epochs[[:space:]]*=' "$MODELS_DIR/$BASE_HP" \
                 | head -1 | sed -E 's/[^0-9]*([0-9]+).*/\1/')
 if [ -z "$N_EPOCHS_BASE" ]; then
     N_EPOCHS_BASE=5
 fi
-estimated_minutes=$(( (83 * N_EPOCHS_BASE * TRAIN_WAVES) / 10 + (45 * n_points) / (10 * TEST_JOBS) + 8 ))
-if [ "$WALLTIME_EXPLICIT" = "0" ]; then
-    # 1.3x margin, rounded up to a whole hour, floored at 4h.
-    walltime_hours=$(( ((estimated_minutes * 13) / 10 + 59) / 60 ))
-    if [ "$walltime_hours" -lt 4 ]; then
-        walltime_hours=4
-    fi
-    WALLTIME="${walltime_hours}:00:00"
+train_minutes=$(( (83 * N_EPOCHS_BASE * TRAIN_WAVES) / 10 + 8 ))
+test_minutes=$(( (45 * n_points) / (10 * TEST_JOBS) + 8 ))
+
+hours_for() {
+    local h=$(( (($1 * 13) / 10 + 59) / 60 ))
+    if [ "$h" -lt 4 ]; then h=4; fi
+    echo "${h}:00:00"
+}
+TRAIN_WALLTIME="$(hours_for $train_minutes)"
+TEST_WALLTIME="$(hours_for $test_minutes)"
+if [ "$WALLTIME_EXPLICIT" = "1" ]; then
+    TRAIN_WALLTIME="$WALLTIME"
+    TEST_WALLTIME="$WALLTIME"
 fi
 
-cat > "$SLURM" <<EOF
-#!/bin/bash
-#SBATCH --account=$ACCOUNT
-#SBATCH --job-name=cw_${MODE}_$TS
-#SBATCH --output=$CLUSTER_DIR/cw_${MODE}_${TS}.out
-#SBATCH --error=$CLUSTER_DIR/cw_${MODE}_${TS}.err
-#SBATCH --gpus=${GPU_TYPE}:${GPUS}
-#SBATCH --nodes=1
-#SBATCH --cpus-per-task=$SLOTS
-#SBATCH --mem=$MEM
-#SBATCH --time=$WALLTIME
-#SBATCH --signal=B:TERM@600
-#SBATCH --mail-type=ALL
-#SBATCH --mail-user=$EMAIL
-
-# CER vs no-CER across p, revised J convention, sparsity = $SPARSITY ($MODE), $n_points point(s).
-# PHASE 1 trains at $SLOTS-way concurrency, CPU only (Enzyme AD cannot use a GPU).
-# PHASE 2 tests $TEST_JOBS at a time — one MIG permits one CUDA context, and four
-# concurrent contexts on a 20 GB MIG previously killed 2 of 4 runs at
-# cuDevicePrimaryCtxRetain.
+# ---- shared preamble, identical in both jobs ---------------------------------
+common_preamble() {
+cat <<EOF
 set -uo pipefail
-
-# Must be submitted, not executed: SLURM_SUBMIT_DIR/SLURM_TMPDIR only exist in a job.
 if [ -z "\${SLURM_JOB_ID:-}" ]; then
-    echo "ERROR: this script must be SUBMITTED, not executed." >&2
-    echo "         sbatch $SLURM" >&2
-    echo "  (running it with 'bash' leaves SLURM_SUBMIT_DIR/SLURM_TMPDIR unset," >&2
-    echo "   and would put an 18-point training run on a login node.)" >&2
+    echo "ERROR: submit this with sbatch; SLURM_SUBMIT_DIR/SLURM_TMPDIR only exist in a job." >&2
     exit 1
 fi
-
-echo "correlation-weight sweep ($MODE) started: \$(date)"
-nvidia-smi || true
-
 module load $JULIA_MODULE
-module load $CUDA_MODULE
 if [ -z "\${JULIA_DEPOT_PATH:-}" ]; then
     if [ -n "\${SCRATCH:-}" ] && [ -d "\$SCRATCH/.julia" ]; then
         export JULIA_DEPOT_PATH="\$SCRATCH/.julia"
@@ -664,35 +651,24 @@ if [ -z "\${JULIA_DEPOT_PATH:-}" ]; then
         export JULIA_DEPOT_PATH="\$HOME/.julia"
     fi
 fi
-export GPU_BACKEND=cuda
 export JULIA_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 export JULIA_HEAP_SIZE_HINT=$HEAP_HINT
 export JULIA_PKG_OFFLINE=true
-
 cd \$SLURM_SUBMIT_DIR
+EOF
+}
 
-# Precompile HERE: CUDA_Runtime_jll must see a driver, or "no CUDA runtime found"
-# is baked in. LocalPreferences.toml must keep local_toolkit = true.
-if ! timeout 1800 julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'; then
-    echo "ERROR: precompilation failed or timed out." >&2; exit 1
-fi
-export JULIA_PKG_PRECOMPILE_AUTO=0
-julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using CUDA; @info "CUDA functional: \$(CUDA.functional())"' \\
-    || echo "WARNING: CUDA not functional — the test phase would fall back to CPU."
-
+# Stage the codename onto node-local disk and arrange for results to come back.
+# \$SLURM_TMPDIR is node-local, which is why each job stages independently: the
+# train job hands the test job its models through the shared filesystem.
+stage_block() {
+cat <<EOF
 LOCAL_WORK_DIR="\$SLURM_TMPDIR/$CODENAME"
 tar -chf - -C "\$(dirname $WORKDIR/$CODENAME)" "\$(basename $WORKDIR/$CODENAME)" | tar -xf - -C "\$SLURM_TMPDIR"
-
-TRAIN_LOCAL="\$SLURM_TMPDIR/cw_train.txt"; TEST_LOCAL="\$SLURM_TMPDIR/cw_test.txt"
-sed "s|\\\$WORKDIR_RUNTIME|\$SLURM_TMPDIR|g" "$TRAIN_CMDS" > "\$TRAIN_LOCAL"
-sed "s|\\\$WORKDIR_RUNTIME|\$SLURM_TMPDIR|g" "$TEST_CMDS"  > "\$TEST_LOCAL"
-
-LOCAL_LOGS="\$LOCAL_WORK_DIR/cluster/logs/cw_${MODE}_${TS}"
-mkdir -p "\$LOCAL_LOGS/train" "\$LOCAL_LOGS/test"
-
-# --isdebug writes training logs here; without the directory they are lost.
 mkdir -p "\$LOCAL_WORK_DIR/logs"
+LOCAL_LOGS="\$LOCAL_WORK_DIR/cluster/logs/cw_${MODE}_${TS}/\$1"
+mkdir -p "\$LOCAL_LOGS"
 
 stage_out_done=0
 stage_out() {
@@ -707,34 +683,109 @@ stage_out() {
 }
 trap 'stage_out; exit 0' TERM
 trap stage_out EXIT
+EOF
+}
 
+# ---- job 1: TRAINING, CPU only ----------------------------------------------
+# Enzyme reverse-mode AD cannot use a GPU, so this asks for none. That frees it
+# from the GPU core ratio (a whole a100 buys only 12 cores) and lets it take a
+# CPU node's worth instead, which also schedules far sooner.
+cat > "$SLURM_TRAIN" <<EOF
+#!/bin/bash
+#SBATCH --account=$ACCOUNT_CPU
+#SBATCH --job-name=cwtrain_${MODE}_$TS
+#SBATCH --output=$CLUSTER_DIR/cw_${MODE}_train_${TS}.out
+#SBATCH --error=$CLUSTER_DIR/cw_${MODE}_train_${TS}.err
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=$TRAIN_CPUS
+#SBATCH --mem-per-cpu=$TRAIN_MEM_PER_CPU
+#SBATCH --time=$TRAIN_WALLTIME
+#SBATCH --signal=B:TERM@600
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=$EMAIL
+
+# $n_points training point(s), $TRAIN_CPUS at a time, $TRAIN_WAVES wave(s).
+$(common_preamble)
 export USE_GPU=0
-echo "[phase 1] training \$(wc -l < "\$TRAIN_LOCAL") point(s), $SLOTS at a time: \$(date)"
-parallel --jobs $SLOTS --results "\$LOCAL_LOGS/train" < "\$TRAIN_LOCAL" &
-wait \$!
-echo "[phase 1] done: \$(date)"
 
+if ! timeout 1800 julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'; then
+    echo "ERROR: precompilation failed or timed out." >&2; exit 1
+fi
+export JULIA_PKG_PRECOMPILE_AUTO=0
+
+$(stage_block train)
+CMDS_LOCAL="\$SLURM_TMPDIR/cw_train.txt"
+sed "s|\\\$WORKDIR_RUNTIME|\$SLURM_TMPDIR|g" "$TRAIN_CMDS" > "\$CMDS_LOCAL"
+
+echo "[train] \$(wc -l < "\$CMDS_LOCAL") point(s), $TRAIN_CPUS at a time: \$(date)"
+parallel --jobs $TRAIN_CPUS --results "\$LOCAL_LOGS" < "\$CMDS_LOCAL" &
+wait \$!
+echo "[train] finished: \$(date)"
+EOF
+chmod +x "$SLURM_TRAIN"
+
+# ---- job 2: TESTING, GPU ------------------------------------------------------
+cat > "$SLURM_TEST" <<EOF
+#!/bin/bash
+#SBATCH --account=$ACCOUNT_GPU
+#SBATCH --job-name=cwtest_${MODE}_$TS
+#SBATCH --output=$CLUSTER_DIR/cw_${MODE}_test_${TS}.out
+#SBATCH --error=$CLUSTER_DIR/cw_${MODE}_test_${TS}.err
+#SBATCH --gpus=${GPU_TYPE}:${GPUS}
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=$TEST_CPUS
+#SBATCH --mem=$MEM
+#SBATCH --time=$TEST_WALLTIME
+#SBATCH --signal=B:TERM@600
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=$EMAIL
+
+# $n_points test point(s), $TEST_JOBS at a time on $GPUS GPU(s), $GPU_MEMORY_PER_SLOT each.
+$(common_preamble)
+module load $CUDA_MODULE
+export GPU_BACKEND=cuda
+export USE_GPU=1
+export GPU_MEMORY=$GPU_MEMORY_PER_SLOT
+nvidia-smi || true
+
+# Precompile with a driver visible, or "no CUDA runtime found" is baked in.
+# LocalPreferences.toml must keep local_toolkit = true.
+if ! timeout 1800 julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'; then
+    echo "ERROR: precompilation failed or timed out." >&2; exit 1
+fi
+export JULIA_PKG_PRECOMPILE_AUTO=0
+julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using CUDA; @info "CUDA functional: \$(CUDA.functional())"' \\
+    || echo "WARNING: CUDA not functional — this job would fall back to CPU."
+
+$(stage_block test)
+CMDS_LOCAL="\$SLURM_TMPDIR/cw_test.txt"
+sed "s|\\\$WORKDIR_RUNTIME|\$SLURM_TMPDIR|g" "$TEST_CMDS" > "\$CMDS_LOCAL"
+
+# The generator wrote retrain = true for the training job. Flip it locally so
+# this job loads those weights instead of retraining on a GPU it cannot use.
+n_missing=0
 while read -r hp; do
     f="\$LOCAL_WORK_DIR/models/\$hp"
     [ -f "\$f" ] || continue
     sed -E 's|^([[:space:]]*retrain[[:space:]]*=[[:space:]]*)true([[:space:]]*(#.*)?)\$|\1false\2|' "\$f" > "\$f.tmp" && mv "\$f.tmp" "\$f"
 done < "$HP_LIST"
+n_weights=\$(ls "\$LOCAL_WORK_DIR"/models/*.json 2>/dev/null | wc -l)
+echo "[test] \$n_weights trained model(s) staged in; expecting $n_points"
+if [ "\$n_weights" -lt "$n_points" ]; then
+    echo "WARNING: fewer models than points — the training job may not have finished." >&2
+fi
 
-export USE_GPU=1
-export GPU_MEMORY=$GPU_MEMORY_PER_SLOT
-echo "[phase 2] testing \$(wc -l < "\$TEST_LOCAL") point(s), $TEST_JOBS at a time on $GPUS GPU(s): \$(date)"
-
-# Pin each parallel slot to a card, round-robin. Capture SLURM's own list first:
-# on MIG it is UUIDs, not indices, so overwriting it with a number hides the GPU.
+echo "[test] \$(wc -l < "\$CMDS_LOCAL") point(s), $TEST_JOBS at a time on $GPUS GPU(s): \$(date)"
 export SLURM_CUDA_VISIBLE_DEVICES=\${CUDA_VISIBLE_DEVICES:-0}
-echo "[phase 2] SLURM gave CUDA_VISIBLE_DEVICES=\$SLURM_CUDA_VISIBLE_DEVICES"
-parallel --jobs $TEST_JOBS --results "\$LOCAL_LOGS/test" \\
+parallel --jobs $TEST_JOBS --results "\$LOCAL_LOGS" \\
     'card=\$(( ({%} - 1) % $GPUS + 1 )); export CUDA_VISIBLE_DEVICES=\$(echo \$SLURM_CUDA_VISIBLE_DEVICES | cut -d, -f\$card); bash -c {}' \\
-    < "\$TEST_LOCAL" &
+    < "\$CMDS_LOCAL" &
 wait \$!
-echo "correlation-weight sweep ($MODE) finished: \$(date)"
+echo "[test] finished: \$(date)"
 EOF
-chmod +x "$SLURM"
+chmod +x "$SLURM_TEST"
 
 n_p=$(echo $DATASETS | wc -w); n_seeds=$(echo $SEEDS | wc -w)
 echo "[correlation-weight $MODE] $n_points point(s)"
@@ -765,8 +816,9 @@ echo "  seeds  -> $SEEDS  (SAME set on every arm => paired contrasts)"
 echo "  grid   -> $n_cer CER + $n_nocer no-CER = $n_points point(s)"
 echo "  base   -> $MODELS_DIR/$BASE_HP"
 echo "  gates  -> syndrome tau = $GATE_TAU ($gate_label);  pair certainty c = $CERTAINTY LLR"
-echo "  GPU    -> ${GPUS}x $GPU_TYPE, $SLOTS core(s), $MEM, 1 node; train $TRAIN_WAVES wave(s) of $SLOTS, test $TEST_JOBS at a time"
-echo "  time   -> $WALLTIME  (estimate ${estimated_minutes} min: $N_EPOCHS_BASE epoch(s) x $TRAIN_WAVES wave(s) train, $n_points tests $TEST_JOBS-way)"
+echo "  train  -> CPU only, $ACCOUNT_CPU: $TRAIN_CPUS core(s) x $TRAIN_MEM_PER_CPU, $TRAIN_WAVES wave(s), $TRAIN_WALLTIME"
+echo "  test   -> $ACCOUNT_GPU: ${GPUS}x $GPU_TYPE, $TEST_CPUS core(s), $MEM, $TEST_JOBS at a time, $GPU_MEMORY_PER_SLOT each, $TEST_WALLTIME"
+echo "  est    -> train ${train_minutes} min ($N_EPOCHS_BASE epochs), test ${test_minutes} min"
 echo "  assert -> require_correlations = true on every CER arm"
 echo
 if [ "$PROFILE" = "spread" ]; then
@@ -780,4 +832,8 @@ if [ "$MODE" = "lambda_sweep" ]; then
     echo "  nocer -> lam0 isolates the PRIORS; lam0 -> lam>0 isolates the COUPLINGS."
     echo
 fi
-echo "submit with:  sbatch $SLURM"
+echo "submit:"
+echo "  TRAIN=\$(sbatch --parsable $SLURM_TRAIN)"
+echo "  sbatch --dependency=afterok:\$TRAIN $SLURM_TEST"
+echo
+echo "  (or submit the training job, wait for it, then sbatch the test job)"
