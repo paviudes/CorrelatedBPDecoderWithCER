@@ -88,7 +88,12 @@ const USAGE = """
 # The dataset KEY is captured whole (`p_0.0005_s_1`, or `p_0.0005_sig_0.0005_s_2`
 # for the per-gate-spread runs) and decomposed afterwards, so a new field in the
 # filename layout does not require a new capture group here.
-const RUN_PATTERN = r"_trained_using_train_(p_[0-9.eE+-]+(?:_sig_[0-9.eE+-]+)?_s_\d+)(_no_cer)?_cw(cer|nocer)_(ungated|gated)_sp([0-9p]+)(?:_lam([0-9p]+))?_seed_(\d+)\.csv$"
+# Two run-tag vintages, both collected by one pattern:
+#   _cw<arm>_<gate>_sp<tag>[_lam<tag>]_seed_<n>   sweep_correlation_weight.sh
+#   _hp<arm>_sp<tag>[_lam<tag>]_seed_<n>          sweep_hyperparams.sh
+# The gate token is optional because the second generator dropped it once the
+# ungated path was deleted from loss.jl: every run is gated now.
+const RUN_PATTERN = r"_trained_using_train_(p_[0-9.eE+-]+(?:_sig_[0-9.eE+-]+)?_s_\d+)(_no_cer)?_(?:cw|hp)(cer|nocer)(?:_(ungated|gated))?_sp([0-9p]+)(?:_lam([0-9p]+))?(?:_tau([0-9pe]+))?_seed_(\d+)\.csv$"
 
 """
     tag_to_number(tag) -> Float64
@@ -152,18 +157,28 @@ function parse_run(filename::String)::Union{NamedTuple, Nothing}
         data_sample = parse(Int, key_match.captures[3])
     end
 
+    # Which generator wrote this, and whether it emitted a gate token.
+    prefix::String = occursin("_hp$(arm)", filename) ? "hp" : "cw"
+    gate_segment::String = filename_match.captures[4] === nothing ? "" :
+                           "_" * String(filename_match.captures[4])
     run_key::NamedTuple = (
         dataset = dataset_key,
+        prefix = prefix,
+        gate_segment = gate_segment,
         p = p_string,
         sigma = sigma_string,
         data_seed = data_sample,
         arm = arm,
-        gate = String(filename_match.captures[4]),
+        gate = filename_match.captures[4] === nothing ? "gated" :
+                                                 String(filename_match.captures[4]),
         sparsity_tag = String(filename_match.captures[5]),
         lambda_tag = lambda_tag,
         lambda_pinned = lambda_pinned,
         lambda = lambda_value,
-        seed = parse(Int, filename_match.captures[7]),
+        tau_tag = filename_match.captures[7] === nothing ? "" : String(filename_match.captures[7]),
+        tau = filename_match.captures[7] === nothing ? NaN :
+              tag_to_number(String(filename_match.captures[7])),
+        seed = parse(Int, filename_match.captures[8]),
     )
     return run_key
 end
@@ -177,12 +192,15 @@ multiplies nothing) and is always just "nocer".
 """
 function label_for(run_key::NamedTuple)::String
     if run_key.arm == "nocer"
-        return "nocer"
+        return isempty(run_key.tau_tag) ? "nocer" : "nocer_tau$(run_key.tau_tag)"
     end
     if !run_key.lambda_pinned
         return "cer_annealed"
     end
     label::String = "lam$(run_key.lambda_tag)"
+    if !isempty(run_key.tau_tag)
+        label = label * "_tau$(run_key.tau_tag)"
+    end
     return label
 end
 
@@ -480,9 +498,13 @@ function collect_per_run(results_dir::String, logs_dir::String)::DataFrame
         if run_key.lambda_pinned
             lambda_segment = "_lam$(run_key.lambda_tag)"
         end
+        # Rebuild the tag exactly as the generator wrote it, or the training log
+        # will not be found and every premise check comes back blank.
         run_tail::String = "train_$(run_key.dataset)$(cer_tag)" *
-                           "_cw$(run_key.arm)_$(run_key.gate)_sp$(run_key.sparsity_tag)" *
-                           "$(lambda_segment)_seed_$(run_key.seed)"
+                           "_$(run_key.prefix)$(run_key.arm)$(run_key.gate_segment)" *
+                           "_sp$(run_key.sparsity_tag)$(lambda_segment)" *
+                           (isempty(run_key.tau_tag) ? "" : "_tau$(run_key.tau_tag)") *
+                           "_seed_$(run_key.seed)"
         debug_summary::Dict{Symbol, Any} = debug_log_summary(logs_dir, run_tail)
         for (key, value) in debug_summary
             row[key] = value
@@ -571,14 +593,15 @@ holds only by luck of string ordering, and "lam1p5" would sort before "lam0p3"
 the moment a two-digit lambda appears.
 """
 function arm_order(label::String)::Float64
-    if label == "nocer"
+    if startswith(label, "nocer")
         return -2.0
     end
     if label == "cer_annealed"
         return Inf
     end
     if startswith(label, "lam")
-        return tag_to_number(label[4:end])
+        base_part::String = split(label, "_tau")[1]
+        return tag_to_number(base_part[4:end])
     end
     return -1.0
 end

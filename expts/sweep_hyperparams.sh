@@ -14,14 +14,17 @@
 #   bash sweep_hyperparams.sh              edit settings, then generate
 #   bash sweep_hyperparams.sh --no-edit    use the defaults as written
 #   bash sweep_hyperparams.sh --local      also emit a 1-point local test command
+#   bash sweep_hyperparams.sh --collect    summarise the results of a finished sweep
 set -eu
 
 NO_EDIT=0
 LOCAL=0
+COLLECT=0
 SMOKE_N=5000
 for arg in "$@"; do
     case "$arg" in
         --no-edit) NO_EDIT=1 ;;
+        --collect) COLLECT=1 ;;
         --local)   LOCAL=1 ;;
         --local=*) LOCAL=1; SMOKE_N="${arg#*=}" ;;
         --help|-h) awk 'NR==1 {next} /^#/ {print; next} {exit}' "$0"; exit 0 ;;
@@ -42,18 +45,24 @@ codename         = "72q_BB_cycles_1_spread_comparison"
 # Dataset keys: train_<key>.txt, test_<key>.txt, correlated_weights_<key>.txt
 datasets         = ["p_0.0005_sig_0.001_s_1", "p_0.0005_sig_0.001_s_2", "p_0.0005_sig_0.001_s_3"]
 # These get only lambda = 0 and the no-CER baseline, not the full lambda grid.
-ref_datasets     = ["p_0.0005_sig_0.0_s_1", "p_0.0005_sig_0.0005_s_1", "p_0.0005_sig_0.0005_s_2", "p_0.0005_sig_0.0005_s_3"]
+ref_datasets     = []
 
 base_hyperparams = "hyperparams_epochs_5_corrs.toml"
 n_hidden_layers  = 90
 seeds            = [1]
 
 # --- sweep axes -------------------------------------------------------------
-lambdas          = [0.0, 3.0, 30.0]  # correlation_weight, per ACTIVE pair
-                                     # measured: 0.14% / 1.4% / 13.5% of base loss
+lambdas          = [0.0, 3.0]        # correlation_weight, per ACTIVE pair
 include_nocer    = true              # flat p = 0.1 baseline arm
 sparsity         = 0.0               # sparsity_importance, pinned constant
-syndrome_gate    = 0.5               # tau, softly broken checks
+
+# tau, in softly broken checks. This gates L2 AND L3, so it moves BOTH arms.
+#   0.5   current: aux only where the syndrome is essentially already cleared
+#   4.0   opens on the near-miss shell: 61% of convergence failures stall at
+#         min_syndrome_weight = 3, one flip short, and are invisible at 0.5
+#   1e6   always open: aux applies to every sample. Layer SELECTION still sees
+#         base alone, so this is not the historical ungated path.
+syndrome_gates   = [0.5, 4.0, 1e6]
 certainty_gate   = 2.2               # c, LLR units (2.2 <=> sigma > 0.9 or < 0.1)
 single_qubit_rescale = 0.1
 
@@ -65,7 +74,7 @@ julia_module     = "julia/1.12.5"
 cuda_module      = "cuda"
 heap_size_hint   = "4G"
 
-train_cpus       = 20
+train_cpus       = 27
 train_mem_per_cpu = "6G"
 train_wall_time  = "4:00:00"
 
@@ -102,7 +111,7 @@ open_editor() {
     "$editor_cmd" "$SETTINGS_FILE"
 }
 
-if [ "$NO_EDIT" -eq 0 ]; then
+if [ "$NO_EDIT" -eq 0 ] && [ "$COLLECT" -eq 0 ]; then
     open_editor || echo "[hp_sweep] edit $SETTINGS_FILE by hand, then re-run with --no-edit."
 fi
 
@@ -117,7 +126,7 @@ DATASETS=$(list datasets);           REF_DATASETS=$(list ref_datasets)
 BASE_HP=$(get base_hyperparams);     NLAYERS=$(get n_hidden_layers)
 SEEDS=$(list seeds);                 LAMBDAS=$(list lambdas)
 INCLUDE_NOCER=$(get include_nocer);  SPARSITY=$(get sparsity)
-GATE_TAU=$(get syndrome_gate);       CERTAINTY=$(get certainty_gate)
+GATE_TAUS=$(list syndrome_gates);    CERTAINTY=$(get certainty_gate)
 RESCALE=$(get single_qubit_rescale)
 ACCOUNT_CPU=$(get account_cpu);      ACCOUNT_GPU=$(get account_gpu)
 EMAIL=$(get email);                  JULIA_MODULE=$(get julia_module)
@@ -154,6 +163,16 @@ CLUSTER_DIR="$WORKDIR/$CODENAME/cluster"
 # the job has nowhere to write and the stage-out finds nothing to bring back.
 mkdir -p "$CLUSTER_DIR" "$MODELS_DIR" "$WORKDIR/$CODENAME/results" "$WORKDIR/$CODENAME/logs"
 
+# --------------------------------------------------------------- collect ---
+if [ "$COLLECT" -eq 1 ]; then
+    RESULTS_DIR="$WORKDIR/$CODENAME/results"
+    [ -d "$RESULTS_DIR" ] || { echo "no results dir: $RESULTS_DIR" >&2; exit 1; }
+    n_found=$(ls "$RESULTS_DIR"/simulation_results_*_hp*_seed_*.csv 2>/dev/null | wc -l)
+    echo "[hp_sweep] collecting $n_found result file(s) from $RESULTS_DIR"
+    rm -f "$SETTINGS_FILE"
+    exec julia --project="$SCRIPT_DIR/../" "$SCRIPT_DIR/misc/collect_correlation_weight.jl" "$RESULTS_DIR"
+fi
+
 TRAIN_CMDS="$CLUSTER_DIR/hp_sweep_train_${TS}.txt"
 TEST_CMDS="$CLUSTER_DIR/hp_sweep_test_${TS}.txt"
 SLURM_TRAIN="$CLUSTER_DIR/hp_sweep_train_${TS}.sh"
@@ -163,14 +182,17 @@ SLURM_TEST="$CLUSTER_DIR/hp_sweep_test_${TS}.sh"
 tag_of() { echo "$1" | tr '.' 'p' | tr -d '-'; }
 
 # ------------------------------------------------------------ emit points ---
-emit_point() {   # <key> <seed> <use_cer> <lambda|"">
-    local key="$1" seed="$2" use_cer="$3" lambda="$4"
+emit_point() {   # <key> <seed> <use_cer> <lambda|""> <tau>
+    local key="$1" seed="$2" use_cer="$3" lambda="$4" tau="$5"
     local lam_tag="" arm="cer" require="true"
     if [ -n "$lambda" ]; then lam_tag="_lam$(tag_of "$lambda")"; fi
     if [ "$use_cer" = "false" ]; then arm="nocer"; require="false"; lam_tag=""; fi
+    # tau is in the tag because it is a swept axis now: without it the three tau
+    # points would write the same weights and results files over each other.
+    local tau_tag="_tau$(tag_of "$tau")"
 
-    local run_tag="_hp${arm}_sp$(tag_of "$SPARSITY")${lam_tag}"
-    local hp="hyperparams_hp_${arm}_sp$(tag_of "$SPARSITY")${lam_tag}_$(tag_of "$key")_seed${seed}.toml"
+    local run_tag="_hp${arm}_sp$(tag_of "$SPARSITY")${lam_tag}${tau_tag}"
+    local hp="hyperparams_hp_${arm}_sp$(tag_of "$SPARSITY")${lam_tag}${tau_tag}_$(tag_of "$key")_seed${seed}.toml"
 
     grep -vE '^[[:space:]]*(sparsity_importance|retrain|run_tag|use_CER|seed|single_qubit_rescale|syndrome_gate_threshold|correlation_certainty_threshold|require_correlations|correlation_weight)[[:space:]]*=' \
         "$MODELS_DIR/$BASE_HP" > "$MODELS_DIR/$hp"
@@ -182,7 +204,7 @@ emit_point() {   # <key> <seed> <use_cer> <lambda|"">
         echo "use_CER = $use_cer"
         echo "seed = $seed"
         echo "sparsity_importance = \"${SPARSITY},${SPARSITY},0.8,up\""
-        echo "syndrome_gate_threshold = ${GATE_TAU}"
+        echo "syndrome_gate_threshold = ${tau}"
         echo "correlation_certainty_threshold = ${CERTAINTY}"
         echo "single_qubit_rescale = ${RESCALE}"
         echo "require_correlations = ${require}"
@@ -200,14 +222,19 @@ emit_point() {   # <key> <seed> <use_cer> <lambda|"">
 
 for key in $DATASETS; do
     for seed in $SEEDS; do
-        for lam in $LAMBDAS; do emit_point "$key" "$seed" true "$lam"; done
-        if [ "$INCLUDE_NOCER" = "true" ]; then emit_point "$key" "$seed" false ""; fi
+        for tau in $GATE_TAUS; do
+            for lam in $LAMBDAS; do emit_point "$key" "$seed" true "$lam" "$tau"; done
+            # tau gates L2 as well, so the baseline needs its own tau arm.
+            if [ "$INCLUDE_NOCER" = "true" ]; then emit_point "$key" "$seed" false "" "$tau"; fi
+        done
     done
 done
 for key in $REF_DATASETS; do
     for seed in $SEEDS; do
-        emit_point "$key" "$seed" true "0.0"
-        if [ "$INCLUDE_NOCER" = "true" ]; then emit_point "$key" "$seed" false ""; fi
+        for tau in $GATE_TAUS; do
+            emit_point "$key" "$seed" true "0.0" "$tau"
+            if [ "$INCLUDE_NOCER" = "true" ]; then emit_point "$key" "$seed" false "" "$tau"; fi
+        done
     done
 done
 N_POINTS=$(wc -l < "$TRAIN_CMDS")
@@ -277,9 +304,27 @@ module load $CUDA_MODULE
 export JULIA_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 JULIA_PKG_OFFLINE=true
 export GPU_BACKEND=cuda USE_GPU=1
 cd \$SLURM_SUBMIT_DIR
-julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()' || exit 1
+# CUDA_Runtime_jll bakes in whether a driver was visible AT PRECOMPILE TIME. The
+# CPU training job has no driver, so its Pkg.precompile() poisons the shared depot
+# with "no CUDA runtime found"; this job's precompile then finds everything up to
+# date and leaves the bad cache in place. Force a rebuild of that one JLL here,
+# where the driver IS present, in its own process so the next one loads it fresh.
+julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using Pkg; Pkg.instantiate()' || exit 1
+julia --project=\$SLURM_SUBMIT_DIR/.. -e '
+    pkg = Base.PkgId(Base.UUID("76a88914-d11a-5bdc-97e0-2f5a05c973a2"), "CUDA_Runtime_jll")
+    Base.compilecache(pkg)' || exit 1
+julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using Pkg; Pkg.precompile()' || exit 1
 export JULIA_PKG_PRECOMPILE_AUTO=0
-julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using CUDA; @info "CUDA functional: \$(CUDA.functional())"'
+
+# Hard gate. Without it the job proceeds and all $N_POINTS tests die one by one at
+# _to_dense_gpu, each burning its own startup, and the stage-out returns nothing.
+if ! julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using CUDA; CUDA.functional() || exit(1)'; then
+    echo "ERROR: CUDA is not functional on this node after forcing a JLL rebuild." >&2
+    echo "  Check that 'module load $CUDA_MODULE' succeeded and that" >&2
+    echo "  LocalPreferences.toml still has [CUDA_Runtime_jll] local_toolkit = true." >&2
+    exit 1
+fi
+echo "[test] CUDA functional."
 
 LOCAL="\$SLURM_TMPDIR/$CODENAME"
 tar -chf - -C "$WORKDIR" "$CODENAME" | tar -xf - -C "\$SLURM_TMPDIR"
@@ -321,7 +366,7 @@ echo "[hp_sweep] $N_POINTS point(s)"
 echo "  datasets  -> $DATASETS"
 echo "  ref       -> $REF_DATASETS   (lambda = 0 and no-CER only)"
 echo "  lambdas   -> $LAMBDAS   seeds -> $SEEDS"
-echo "  gates     -> tau = $GATE_TAU, certainty c = $CERTAINTY;  sparsity = $SPARSITY"
+echo "  gates     -> tau = $GATE_TAUS (swept);  certainty c = $CERTAINTY;  sparsity = $SPARSITY"
 echo "  train     -> $ACCOUNT_CPU: $TRAIN_CPUS cpu x $TRAIN_MEM, $TRAIN_WALL"
 echo "  test      -> $ACCOUNT_GPU: ${N_GPUS}x $GPU_TYPE (${VRAM_PER_GPU}G vram), $TEST_CPUS cpu,"
 echo "               --mem-per-gpu=$MEM_PER_GPU host ram, GPU_MEMORY=${GPU_MEMORY_MB}M, $TEST_JOBS at a time"
