@@ -82,16 +82,17 @@ train_wall_time  = "4:00:00"
 
 # GPU knobs mirror submit.sh. Sequential testing does not need a whole card;
 # a100_3g.20gb (a 20 GB MIG slice) schedules much sooner.
-# 54 sequential tests would be ~216 min. Two processes on a WHOLE a100 gives each
-# 40*1024*0.85/2 = 17408 MB, exactly the per-process VRAM that completed 27/27 on
-# the 20 GB MIG slice — same budget, half the wall time. (Four processes is what
-# OOMed at cuDevicePrimaryCtxRetain; do not raise this without re-deriving it.)
+# ONE TEST PROCESS PER PHYSICAL CARD, full VRAM. Never share an unpartitioned
+# card: the real footprint is ~1.5x the nominal GPU_MEMORY, so two processes on
+# one 40 GB a100 overcommit (2 x ~26 GB) and die stochastically at OOM — that
+# killed 21/54 tests on 2026-08-28. The MIG case only ever worked because MIG is
+# a HARD partition. Sharing is safe only when the hardware partitions it.
 gpu_type         = "a100"
-n_gpus_per_node  = 1
-test_jobs        = 2                 # concurrent test processes
+n_gpus_per_node  = 2                 # two cards, one process each (round-robin pinned)
+test_jobs        = 2                 # = n_gpus_per_node; do not exceed it
 mem_per_gpu      = "32G"             # SLURM HOST ram per GPU (not VRAM)
 vram_per_gpu     = ""                # VRAM in GB for the batch sizer; "" => infer from gpu_type
-test_cpus        = 12
+test_cpus        = 24
 test_wall_time   = "4:00:00"
 EOF
 
@@ -282,7 +283,14 @@ trap 'stage_out; exit 0' TERM
 trap stage_out EXIT
 
 echo "[train] $N_POINTS point(s), \$SLURM_CPUS_PER_TASK at a time: \$(date)"
-parallel --jobs \$SLURM_CPUS_PER_TASK --results "\$LOCAL/cluster/logs/hp_${TS}_train" < "\$SLURM_TMPDIR/train.txt"
+# --joblog records seq / exit status / command per point in ONE readable file.
+# The --results directories are named after the full command with / = " escaped
+# to +z +e +22, so they cannot be cat'd without quoting; the joblog is the index.
+JOBLOG="\$LOCAL/cluster/logs/hp_${TS}_train.joblog"
+parallel --jobs \$SLURM_CPUS_PER_TASK --joblog "\$JOBLOG" \\
+    --results "\$LOCAL/cluster/logs/hp_${TS}_train" < "\$SLURM_TMPDIR/train.txt"
+awk 'NR>1 && \$7 != 0 {print "  FAILED (exit " \$7 "): " \$9}' "\$JOBLOG" || true
+echo "[train] \$(awk 'NR>1 && \$7 == 0' "\$JOBLOG" | wc -l)/$N_POINTS point(s) exited 0"
 echo "[train] done: \$(date)"
 EOF
 chmod +x "$SLURM_TRAIN"
@@ -359,9 +367,12 @@ trap stage_out EXIT
 export GPU_MEMORY=${GPU_MEMORY_MB}M
 echo "[test] $N_POINTS point(s), $TEST_JOBS at a time on \${SLURM_GPUS_ON_NODE:-1} GPU(s): \$(date)"
 export SLURM_CUDA_VISIBLE_DEVICES=\${CUDA_VISIBLE_DEVICES:-0}
-parallel --jobs $TEST_JOBS --results "\$LOCAL/cluster/logs/hp_${TS}_test" \\
+JOBLOG="\$LOCAL/cluster/logs/hp_${TS}_test.joblog"
+parallel --jobs $TEST_JOBS --joblog "\$JOBLOG" --results "\$LOCAL/cluster/logs/hp_${TS}_test" \\
     'card=\$(( ({%} - 1) % \${SLURM_GPUS_ON_NODE:-1} + 1 )); export CUDA_VISIBLE_DEVICES=\$(echo \$SLURM_CUDA_VISIBLE_DEVICES | cut -d, -f\$card); bash -c {}' \\
     < "\$SLURM_TMPDIR/test.txt"
+awk 'NR>1 && \$7 != 0 {print "  FAILED (exit " \$7 "): " \$9}' "\$JOBLOG" || true
+echo "[test] \$(awk 'NR>1 && \$7 == 0' "\$JOBLOG" | wc -l)/$N_POINTS point(s) exited 0"
 echo "[test] done: \$(date)"
 EOF
 chmod +x "$SLURM_TEST"
