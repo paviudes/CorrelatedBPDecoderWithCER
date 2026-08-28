@@ -43,7 +43,9 @@ workdir          = "./../data"
 codename         = "72q_BB_cycles_1_spread_comparison"
 
 # Dataset keys: train_<key>.txt, test_<key>.txt, correlated_weights_<key>.txt
-datasets         = ["p_0.0005_sig_0.001_s_1", "p_0.0005_sig_0.001_s_2", "p_0.0005_sig_0.001_s_3"]
+# KEEP EACH ARRAY ON ONE LINE: the reader below is grep | head -1, so a wrapped
+# array silently loses everything after the first line.
+datasets         = ["p_0.0005_sig_0.001_s_1", "p_0.0005_sig_0.001_s_2", "p_0.0005_sig_0.001_s_3", "p_0.0007_sig_0.001_s_1", "p_0.0007_sig_0.001_s_2", "p_0.0007_sig_0.001_s_3"]
 # These get only lambda = 0 and the no-CER baseline, not the full lambda grid.
 ref_datasets     = []
 
@@ -74,18 +76,22 @@ julia_module     = "julia/1.12.5"
 cuda_module      = "cuda"
 heap_size_hint   = "4G"
 
-train_cpus       = 27
+train_cpus       = 54   # 54 points, one wave; a CPU node has 64
 train_mem_per_cpu = "6G"
 train_wall_time  = "4:00:00"
 
 # GPU knobs mirror submit.sh. Sequential testing does not need a whole card;
 # a100_3g.20gb (a 20 GB MIG slice) schedules much sooner.
-gpu_type         = "a100_3g.20gb"
+# 54 sequential tests would be ~216 min. Two processes on a WHOLE a100 gives each
+# 40*1024*0.85/2 = 17408 MB, exactly the per-process VRAM that completed 27/27 on
+# the 20 GB MIG slice — same budget, half the wall time. (Four processes is what
+# OOMed at cuDevicePrimaryCtxRetain; do not raise this without re-deriving it.)
+gpu_type         = "a100"
 n_gpus_per_node  = 1
-test_jobs        = 1                 # concurrent test processes; keep <= n_gpus_per_node
-mem_per_gpu      = "16G"             # SLURM HOST ram per GPU (not VRAM)
+test_jobs        = 2                 # concurrent test processes
+mem_per_gpu      = "32G"             # SLURM HOST ram per GPU (not VRAM)
 vram_per_gpu     = ""                # VRAM in GB for the batch sizer; "" => infer from gpu_type
-test_cpus        = 6
+test_cpus        = 12
 test_wall_time   = "4:00:00"
 EOF
 
@@ -376,7 +382,9 @@ echo
 # The two jobs are SEPARATE submissions on DIFFERENT accounts: training is
 # CPU-only on $ACCOUNT_CPU, testing needs a GPU on $ACCOUNT_GPU. Nothing is
 # submitted automatically.
-FIRST_MODEL="neuralbp_weights_nlayers_${NLAYERS}_epochs_$(grep -E '^[[:space:]]*n_epochs' "$MODELS_DIR/$BASE_HP" | head -1 | sed -E 's/[^0-9]*([0-9]+).*/\1/')_trained_using_train_$(echo $DATASETS | awk '{print $1}')_hpcer_sp$(tag_of "$SPARSITY")_lam$(tag_of "$(echo $LAMBDAS | awk '{print $NF}')")_seed_$(echo $SEEDS | awk '{print $1}').json"
+# Must match emit_point's tag exactly, tau included, or the check reads a path
+# that was never written and reports a missing file instead of a weights spread.
+FIRST_MODEL="neuralbp_weights_nlayers_${NLAYERS}_epochs_$(grep -E '^[[:space:]]*n_epochs' "$MODELS_DIR/$BASE_HP" | head -1 | sed -E 's/[^0-9]*([0-9]+).*/\1/')_trained_using_train_$(echo $DATASETS | awk '{print $1}')_hpcer_sp$(tag_of "$SPARSITY")_lam$(tag_of "$(echo $LAMBDAS | awk '{print $NF}')")_tau$(tag_of "$(echo $GATE_TAUS | awk '{print $1}')")_seed_$(echo $SEEDS | awk '{print $1}').json"
 echo "submit — TRAIN first (CPU, $ACCOUNT_CPU), then TEST (GPU, $ACCOUNT_GPU):"
 echo
 echo "  # 1. training"
