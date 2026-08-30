@@ -8,6 +8,8 @@ function get_loss_value(
     sparsity_regularizer, # term for encouraging sparsity in the LLRs, to be annealed during training.
     syndrome_gate_threshold, # τ for the per-sample detached syndrome gate on the aux terms.
     correlation_certainty_threshold, # c for the per-pair detached certainty gate on the correlation term.
+    certainty_penalty_kind, # which certainty penalty f to use (see `certainty_per_sample`).
+    certainty_hinge_width, # w for the hinge certainty penalty; ignored by the others.
     warmup_loss_layers, # First number of layers to leave unconstrained in the Loss function.
     base, # constant parameters of the model, including the parity-check matrix, connectivity, correlation strengths, etc.
     llrs_batch, # batch of initial LLRs for the bits, to be used as input to the network
@@ -47,6 +49,8 @@ function get_loss_value(
         sparsity_regularizer, # term for encouraging sparsity in the LLRs, to be annealed during training.
         syndrome_gate_threshold, # τ for the per-sample detached syndrome gate.
         correlation_certainty_threshold, # c for the per-pair detached certainty gate.
+        certainty_penalty_kind, # which certainty penalty f to use.
+        certainty_hinge_width, # w for the hinge certainty penalty.
         warmup_loss_layers # first number of layers that should be unconstrained since the optimizer doesn't know what the right beliefs are.
     )
     return total_loss
@@ -62,6 +66,8 @@ function get_individual_loss_values(
     sparsity_importance::Float32, # term for encouraging sparsity in the LLRs, to be annealed during training.
     syndrome_gate_threshold::Float32, # τ for the per-sample detached syndrome gate.
     correlation_certainty_threshold::Float32, # c for the per-pair detached certainty gate.
+    certainty_penalty_kind::Int, # which certainty penalty f to use (see `certainty_per_sample`).
+    certainty_hinge_width::Float32, # w for the hinge certainty penalty; ignored by the others.
     warmup_loss_layers::Int, # first number of layers that should be excluded from the loss function.
     base::NeuralBPBase, # constant parameters of the model, including the parity-check matrix, connectivity, correlation strengths, etc.
     llrs_batch::Matrix{Float32}, # batch of initial LLRs for the bits, to be used as input to the network
@@ -110,7 +116,7 @@ function get_individual_loss_values(
         gate = syndrome_gate_per_sample(
             post, expected_recoveries, parity_check_matrix, syndrome_gate_threshold
         )
-        cert_j   = certainty_per_sample(post)
+        cert_j   = certainty_per_sample(post, certainty_penalty_kind, certainty_hinge_width)
         sparse_j = sparsity_per_sample(post)
         corr_j   = zeros(Float32, n_samples)
         corr_open::Float32 = 0.0f0
@@ -335,6 +341,15 @@ function train_neuralbp_enzyme!(
     # from the TOML) disables the gate.
     syndrome_gate_threshold = Float32(get(hyperparameters, "syndrome_gate_threshold", 0.5))
     correlation_certainty_threshold = Float32(get(hyperparameters, "correlation_certainty_threshold", 2.2))
+    # Which certainty penalty f to use in the aux loss, and the hinge width.
+    # Resolved from the string ONCE here so an unknown name throws before the
+    # first epoch rather than inside the Enzyme call.
+    certainty_penalty_kind::Int = certainty_penalty_code(
+        String(get(hyperparameters, "certainty_penalty", "entropy")))
+    certainty_hinge_width::Float32 = Float32(get(hyperparameters, "certainty_hinge_width", 2.2))
+    if certainty_hinge_width <= 0.0f0
+        throw(ArgumentError("certainty_hinge_width must be > 0, got $(certainty_hinge_width)."))
+    end
     annealing_schedule = Dict(
         key => hyperparameters[key]
         for key in [
@@ -410,6 +425,7 @@ function train_neuralbp_enzyme!(
         # read one consistent value.
         hp[:syndrome_gate_threshold] = syndrome_gate_threshold
         hp[:correlation_certainty_threshold] = correlation_certainty_threshold
+        hp[:certainty_hinge_width] = certainty_hinge_width
 
         # -------------------------
         # Per-epoch checkpoint — restored at end-of-epoch if too many batches
@@ -465,6 +481,8 @@ function train_neuralbp_enzyme!(
                 Enzyme.Const(hp[:sparsity_importance]),
                 Enzyme.Const(hp[:syndrome_gate_threshold]),
                 Enzyme.Const(hp[:correlation_certainty_threshold]),
+                Enzyme.Const(certainty_penalty_kind),
+                Enzyme.Const(hp[:certainty_hinge_width]),
                 Enzyme.Const(warmup_loss_layers),
                 Enzyme.Const(base),
                 Enzyme.Const(llrs_batch),
@@ -538,6 +556,8 @@ function train_neuralbp_enzyme!(
                     hp[:sparsity_importance],
                     hp[:syndrome_gate_threshold],
                     hp[:correlation_certainty_threshold],
+                    certainty_penalty_kind,
+                    hp[:certainty_hinge_width],
                     warmup_loss_layers,
                     base,
                     llrs_batch,

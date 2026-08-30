@@ -119,17 +119,68 @@ function syndrome_gate_per_sample(
     return gate
 end
 
-function certainty_per_sample(posterior_llrs::Matrix{Float32})::Vector{Float32}
-    """
-    Per-sample binary entropy ∑_v h(σ(μ_v)), in nats. ≈ 0 at binary
-    configurations and maximal (n_bits · log 2) at σ = 0.5, so under the gate it
-    acts almost exclusively on fractional aliases, pushing them to binary.
+# Integer codes for the certainty penalty. An Int rather than a Symbol or a
+# function value because this is passed to Enzyme as a `Const`, and the branch on
+# it is lifted OUT of the per-element work below: the three broadcasts are each
+# branchless, so the choice costs nothing per element and Enzyme differentiates
+# whichever branch was taken exactly as if it were the only one.
+const CERTAINTY_PENALTY_ENTROPY::Int     = 1
+const CERTAINTY_PENALTY_EXPONENTIAL::Int = 2
+const CERTAINTY_PENALTY_HINGE::Int       = 3
 
-    Note h is symmetric under σ ↔ 1-σ, which forces dh/dμ = 0 at σ = 0.5. The
-    alias is therefore an unstable equilibrium of this term rather than a point
-    it actively repairs; |μ| grows from any perturbation but slowly near zero.
+function certainty_penalty_code(name::String)::Int
     """
-    certainties = vec(sum(binary_entropy_of_sigmoid.(posterior_llrs); dims = 1))
+    Map the `certainty_penalty` hyperparameter string onto its integer code.
+    Throws on an unknown name rather than silently falling back, so a typo in a
+    sweep TOML fails at startup instead of quietly training the default.
+    """
+    normalised_name::String = lowercase(strip(name))
+    codes_by_name::Dict{String, Int} = Dict(
+        "entropy"     => CERTAINTY_PENALTY_ENTROPY,
+        "exponential" => CERTAINTY_PENALTY_EXPONENTIAL,
+        "hinge"       => CERTAINTY_PENALTY_HINGE
+    )
+    if !haskey(codes_by_name, normalised_name)
+        throw(ArgumentError(
+            "Unknown certainty_penalty \"$(name)\". Must be one of: " *
+            join(sort(collect(keys(codes_by_name))), ", ") * "."
+        ))
+    end
+    code::Int = codes_by_name[normalised_name]
+    return code
+end
+
+function certainty_per_sample(
+    posterior_llrs::Matrix{Float32},
+    certainty_penalty_kind::Int,
+    certainty_hinge_width::Float32
+)::Vector{Float32}
+    """
+    Per-sample certainty penalty ∑_v f(μ_v). Every choice of f is symmetric in μ,
+    maximal at μ = 0 and decaying to 0 as |μ| → ∞, so all of them reward
+    certainty; they differ in the force they exert on an undecided qubit.
+
+        ENTROPY      h(σ(μ)), in nats. Max n_bits·log 2 at σ = 0.5. Symmetry
+                     forces dh/dμ = 0 exactly at σ = 0.5, so a perfect fractional
+                     alias is an unstable equilibrium this term does not actively
+                     repair; its force peaks out at |μ| ≈ 2.4 instead.
+        EXPONENTIAL  exp(-|μ|). Cusped at 0, so its force is LARGEST precisely
+                     where the entropy's is zero.
+        HINGE        max(0, 1 - |μ|/w). Constant force 1/w inside the width and
+                     none outside, so it repairs aliases without also inflating
+                     LLRs that are already decided.
+    """
+    penalties::Matrix{Float32} = similar(posterior_llrs)
+    if certainty_penalty_kind == CERTAINTY_PENALTY_ENTROPY
+        penalties = binary_entropy_of_sigmoid.(posterior_llrs)
+    elseif certainty_penalty_kind == CERTAINTY_PENALTY_EXPONENTIAL
+        penalties = exponential_certainty_penalty.(posterior_llrs)
+    elseif certainty_penalty_kind == CERTAINTY_PENALTY_HINGE
+        penalties = hinge_certainty_penalty.(posterior_llrs, certainty_hinge_width)
+    else
+        throw(ArgumentError("Unknown certainty_penalty_kind: $(certainty_penalty_kind)."))
+    end
+    certainties::Vector{Float32} = vec(sum(penalties; dims = 1))
     return certainties
 end
 
@@ -251,6 +302,8 @@ function compute_loss_including_correlations(
     sparsity_importance::Float32,
     syndrome_gate_threshold::Float32,           # τ, in softly broken checks
     correlation_certainty_threshold::Float32,   # c, in LLR units
+    certainty_penalty_kind::Int,                # which f in `certainty_per_sample`
+    certainty_hinge_width::Float32,             # w, only used by the hinge penalty
     warmup_loss_layers::Int
 )::Float32
     """
@@ -282,7 +335,7 @@ function compute_loss_including_correlations(
         gate = syndrome_gate_per_sample(
             post, expected_recoveries, parity_check_matrix, syndrome_gate_threshold
         )
-        cert_j   = certainty_per_sample(post)
+        cert_j   = certainty_per_sample(post, certainty_penalty_kind, certainty_hinge_width)
         sparse_j = sparsity_per_sample(post)
         if is_correlated
             corr_j = ising_correlation_reward_per_sample(

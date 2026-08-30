@@ -93,7 +93,7 @@ const USAGE = """
 #   _hp<arm>_sp<tag>[_lam<tag>]_seed_<n>          sweep_hyperparams.sh
 # The gate token is optional because the second generator dropped it once the
 # ungated path was deleted from loss.jl: every run is gated now.
-const RUN_PATTERN = r"_trained_using_train_(p_[0-9.eE+-]+(?:_sig_[0-9.eE+-]+)?_s_\d+)(_no_cer)?_(?:cw|hp)(cer|nocer)(?:_(ungated|gated))?_sp([0-9p]+)(?:_lam([0-9p]+))?(?:_tau([0-9pe]+))?_seed_(\d+)\.csv$"
+const RUN_PATTERN = r"_trained_using_train_(p_[0-9.eE+-]+(?:_sig_[0-9.eE+-]+)?_s_\d+)(_no_cer)?_(?:cw|hp)(cer|nocer)(?:_(ungated|gated))?_sp([0-9p]+)(?:_lam([0-9p]+))?(?:_tau([0-9pe]+))?(?:_cp([a-z]+))?_seed_(\d+)\.csv$"
 
 """
     tag_to_number(tag) -> Float64
@@ -178,7 +178,9 @@ function parse_run(filename::String)::Union{NamedTuple, Nothing}
         tau_tag = filename_match.captures[7] === nothing ? "" : String(filename_match.captures[7]),
         tau = filename_match.captures[7] === nothing ? NaN :
               tag_to_number(String(filename_match.captures[7])),
-        seed = parse(Int, filename_match.captures[8]),
+        certainty_penalty = filename_match.captures[8] === nothing ? "entropy" :
+                            String(filename_match.captures[8]),
+        seed = parse(Int, filename_match.captures[9]),
     )
     return run_key
 end
@@ -191,16 +193,28 @@ lambda (with `use_CER = false` the couplings do not exist, so the weight
 multiplies nothing) and is always just "nocer".
 """
 function label_for(run_key::NamedTuple)::String
+    # The certainty penalty changes L2, which BOTH arms carry, so it has to be
+    # part of the label: otherwise runs with different L2 terms would be pooled
+    # into one arm mean and the contrast would compare mixtures.
+    certainty_tag::String = ""
+    if run_key.certainty_penalty != "entropy"
+        certainty_tag = "_cp$(run_key.certainty_penalty)"
+    end
     if run_key.arm == "nocer"
-        return isempty(run_key.tau_tag) ? "nocer" : "nocer_tau$(run_key.tau_tag)"
+        base_label::String = "nocer"
+        if !isempty(run_key.tau_tag)
+            base_label = "nocer_tau$(run_key.tau_tag)"
+        end
+        return base_label * certainty_tag
     end
     if !run_key.lambda_pinned
-        return "cer_annealed"
+        return "cer_annealed" * certainty_tag
     end
     label::String = "lam$(run_key.lambda_tag)"
     if !isempty(run_key.tau_tag)
         label = label * "_tau$(run_key.tau_tag)"
     end
+    label = label * certainty_tag
     return label
 end
 

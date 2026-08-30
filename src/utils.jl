@@ -234,6 +234,53 @@ function binary_entropy_of_sigmoid(μ::Float32)::Float32
     return softplus(μ) - (1f0 - sigmoid(μ)) * μ
 end
 
+# =============================================================================
+#              Alternative certainty penalties: the cusp family
+# =============================================================================
+# All three penalties below are symmetric in μ, maximal at μ = 0, and decay to 0
+# as |μ| → ∞, so all three "reward certainty". They differ ONLY in how much force
+# they exert on a nearly-undecided qubit:
+#
+#     penalty              value at 0    |d/dμ| at 0     |d/dμ| peaks at
+#     entropy (default)      log 2          0.0             |μ| ≈ 2.4
+#     exponential            1.0            1.0             |μ| = 0
+#     hinge                  1.0            1/width         everywhere < width
+#
+# The entropy's vanishing derivative at μ = 0 is not an accident of the formula:
+# any penalty symmetric under μ → -μ AND differentiable at 0 must have f'(0) = 0.
+# Getting force at μ = 0 therefore REQUIRES giving up differentiability there —
+# a cusp. Both alternatives below are cusped at 0, which is the whole point.
+#
+# A pole (e.g. tan(μ + π/2) = -cot μ) is NOT a usable way to get that force: it
+# is odd rather than symmetric, so it would push +μ and -μ in the same direction
+# and thereby impose a sign preference on qubits it knows nothing about; it is
+# unbounded, so a single near-zero LLR would swamp the batch loss; and it is
+# periodic, so it repeats its poles at every μ = kπ. Cusped-but-bounded is the
+# shape that delivers the intent without any of that.
+
+function exponential_certainty_penalty(μ::Float32)::Float32
+    """
+    exp(-|μ|). Bounded in (0, 1], maximal at μ = 0, and its derivative
+    -sign(μ)·exp(-|μ|) attains its LARGEST magnitude exactly at μ = 0 — the
+    opposite of the entropy, whose force vanishes there.
+    """
+    penalty::Float32 = exp(-abs(μ))
+    return penalty
+end
+
+function hinge_certainty_penalty(μ::Float32, width::Float32)::Float32
+    """
+    max(0, 1 - |μ|/width): a linear ramp of CONSTANT force 1/width for
+    |μ| < width, and exactly zero (no force, no value) beyond it.
+
+    The flat exterior is the useful property — unlike the entropy and the
+    exponential, this penalty stops acting entirely once a qubit is decided, so
+    it cannot keep inflating already-saturated LLRs.
+    """
+    penalty::Float32 = max(0.0f0, 1.0f0 - abs(μ) / width)
+    return penalty
+end
+
 function xor_affine!(
     out::AbstractMatrix{Bool},
     A,

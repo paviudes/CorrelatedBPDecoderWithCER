@@ -66,6 +66,16 @@ sparsity         = 0.0               # sparsity_importance, pinned constant
 #         base alone, so this is not the historical ungated path.
 syndrome_gates   = [0.5, 4.0, 1e6]
 certainty_gate   = 2.2               # c, LLR units (2.2 <=> sigma > 0.9 or < 0.1)
+
+# Certainty penalty f in the L2 term. All are symmetric and peak at mu = 0; they
+# differ ONLY in the force they exert on an undecided qubit:
+#   entropy      h(sigma(mu)).  dh/dmu is EXACTLY 0 at mu = 0 by symmetry; its
+#                force peaks at |mu| ~ 2.4. This is what every run so far used.
+#   exponential  exp(-|mu|).    Cusped at 0, so force is LARGEST at mu = 0.
+#   hinge        max(0, 1-|mu|/w). Constant force 1/w inside w, none outside, so
+#                it repairs aliases without inflating already-decided LLRs.
+certainty_penalties = ["entropy", "exponential", "hinge"]
+certainty_hinge_width = 2.2          # w, only used by the hinge penalty
 single_qubit_rescale = 0.1
 
 # --- cluster ----------------------------------------------------------------
@@ -76,23 +86,34 @@ julia_module     = "julia/1.12.5"
 cuda_module      = "cuda"
 heap_size_hint   = "4G"
 
-train_cpus       = 54   # 54 points, one wave; a CPU node has 64
+# Job arrays. Each array task is an INDEPENDENT allocation running an
+# interleaved slice of the point list (task t takes lines t, t+K, t+2K, ...), so
+# K tasks cut the wall time by ~K without any task needing a bigger node. Slurm
+# schedules small allocations sooner, so more/smaller tasks generally start
+# earlier than one large one.
+#   162 points / 3 tasks = 54 per task = one 54-core wave = ~45 min.
+train_array_tasks = 3
+train_cpus       = 54   # points per task per wave; a CPU node has 64
 train_mem_per_cpu = "6G"
 train_wall_time  = "4:00:00"
 
-# GPU knobs mirror submit.sh. Sequential testing does not need a whole card;
-# a100_3g.20gb (a 20 GB MIG slice) schedules much sooner.
-# ONE TEST PROCESS PER PHYSICAL CARD, full VRAM. Never share an unpartitioned
-# card: the real footprint is ~1.5x the nominal GPU_MEMORY, so two processes on
-# one 40 GB a100 overcommit (2 x ~26 GB) and die stochastically at OOM — that
-# killed 21/54 tests on 2026-08-28. The MIG case only ever worked because MIG is
+# Measured: 3.7 min per test per process. ONE CARD PER ARRAY TASK, one process
+# on it: a 1-GPU request schedules far sooner than a whole 4-GPU node, and the
+# no-sharing rule (see below) is satisfied trivially rather than by arithmetic.
+# Scale throughput with test_array_tasks, NOT with processes per card.
+#   162 points / 6 tasks = 27 per task x 3.7 min = ~100 min.
+#
+# NEVER put two processes on one unpartitioned card: the real footprint is ~1.5x
+# the nominal GPU_MEMORY, so two on a 40 GB a100 overcommit and die stochastically
+# at OOM — that killed 21/54 tests on 2026-08-28. MIG only worked because MIG is
 # a HARD partition. Sharing is safe only when the hardware partitions it.
+test_array_tasks = 6
 gpu_type         = "a100"
-n_gpus_per_node  = 2                 # two cards, one process each (round-robin pinned)
-test_jobs        = 2                 # = n_gpus_per_node; do not exceed it
+n_gpus_per_node  = 1                 # one card per array task
+test_jobs        = 1                 # one process on it; do not raise
 mem_per_gpu      = "32G"             # SLURM HOST ram per GPU (not VRAM)
 vram_per_gpu     = ""                # VRAM in GB for the batch sizer; "" => infer from gpu_type
-test_cpus        = 24
+test_cpus        = 12
 test_wall_time   = "4:00:00"
 EOF
 
@@ -135,10 +156,12 @@ SEEDS=$(list seeds);                 LAMBDAS=$(list lambdas)
 INCLUDE_NOCER=$(get include_nocer);  SPARSITY=$(get sparsity)
 GATE_TAUS=$(list syndrome_gates);    CERTAINTY=$(get certainty_gate)
 RESCALE=$(get single_qubit_rescale)
+CERT_PENALTIES=$(list certainty_penalties); HINGE_W=$(get certainty_hinge_width)
 ACCOUNT_CPU=$(get account_cpu);      ACCOUNT_GPU=$(get account_gpu)
 EMAIL=$(get email);                  JULIA_MODULE=$(get julia_module)
 CUDA_MODULE=$(get cuda_module);      HEAP=$(get heap_size_hint)
 TRAIN_CPUS=$(get train_cpus);        TRAIN_MEM=$(get train_mem_per_cpu)
+TRAIN_ARRAY=$(get train_array_tasks); TEST_ARRAY=$(get test_array_tasks)
 TRAIN_WALL=$(get train_wall_time)
 GPU_TYPE=$(get gpu_type);            N_GPUS=$(get n_gpus_per_node)
 TEST_JOBS=$(get test_jobs);          MEM_PER_GPU=$(get mem_per_gpu)
@@ -189,7 +212,7 @@ SLURM_TEST="$CLUSTER_DIR/hp_sweep_test_${TS}.sh"
 tag_of() { echo "$1" | tr '.' 'p' | tr -d '-'; }
 
 # ------------------------------------------------------------ emit points ---
-emit_point() {   # <key> <seed> <use_cer> <lambda|""> <tau>
+emit_point() {   # <key> <seed> <use_cer> <lambda|""> <tau> <certainty_penalty>
     local key="$1" seed="$2" use_cer="$3" lambda="$4" tau="$5"
     local lam_tag="" arm="cer" require="true"
     if [ -n "$lambda" ]; then lam_tag="_lam$(tag_of "$lambda")"; fi
@@ -197,11 +220,19 @@ emit_point() {   # <key> <seed> <use_cer> <lambda|""> <tau>
     # tau is in the tag because it is a swept axis now: without it the three tau
     # points would write the same weights and results files over each other.
     local tau_tag="_tau$(tag_of "$tau")"
+    # The certainty penalty changes L2, which BOTH arms carry, so it must be in
+    # the tag or the three penalties overwrite each other's weights and results.
+    # "entropy" stays untagged so the historical filenames remain valid.
+    local cert_penalty="${6:-entropy}"
+    local cert_tag=""
+    if [ "$cert_penalty" != "entropy" ]; then
+        cert_tag="_cp${cert_penalty}"
+    fi
 
-    local run_tag="_hp${arm}_sp$(tag_of "$SPARSITY")${lam_tag}${tau_tag}"
-    local hp="hyperparams_hp_${arm}_sp$(tag_of "$SPARSITY")${lam_tag}${tau_tag}_$(tag_of "$key")_seed${seed}.toml"
+    local run_tag="_hp${arm}_sp$(tag_of "$SPARSITY")${lam_tag}${tau_tag}${cert_tag}"
+    local hp="hyperparams_hp_${arm}_sp$(tag_of "$SPARSITY")${lam_tag}${tau_tag}${cert_tag}_$(tag_of "$key")_seed${seed}.toml"
 
-    grep -vE '^[[:space:]]*(sparsity_importance|retrain|run_tag|use_CER|seed|single_qubit_rescale|syndrome_gate_threshold|correlation_certainty_threshold|require_correlations|correlation_weight)[[:space:]]*=' \
+    grep -vE '^[[:space:]]*(sparsity_importance|retrain|run_tag|use_CER|seed|single_qubit_rescale|syndrome_gate_threshold|correlation_certainty_threshold|require_correlations|correlation_weight|certainty_penalty|certainty_hinge_width)[[:space:]]*=' \
         "$MODELS_DIR/$BASE_HP" > "$MODELS_DIR/$hp"
     {
         echo ""
@@ -213,6 +244,8 @@ emit_point() {   # <key> <seed> <use_cer> <lambda|""> <tau>
         echo "sparsity_importance = \"${SPARSITY},${SPARSITY},0.8,up\""
         echo "syndrome_gate_threshold = ${tau}"
         echo "correlation_certainty_threshold = ${CERTAINTY}"
+        echo "certainty_penalty = \"${cert_penalty}\""
+        echo "certainty_hinge_width = ${HINGE_W}"
         echo "single_qubit_rescale = ${RESCALE}"
         echo "require_correlations = ${require}"
         if [ -n "$lambda" ]; then
@@ -230,17 +263,22 @@ emit_point() {   # <key> <seed> <use_cer> <lambda|""> <tau>
 for key in $DATASETS; do
     for seed in $SEEDS; do
         for tau in $GATE_TAUS; do
-            for lam in $LAMBDAS; do emit_point "$key" "$seed" true "$lam" "$tau"; done
-            # tau gates L2 as well, so the baseline needs its own tau arm.
-            if [ "$INCLUDE_NOCER" = "true" ]; then emit_point "$key" "$seed" false "" "$tau"; fi
+            for cp in $CERT_PENALTIES; do
+                for lam in $LAMBDAS; do emit_point "$key" "$seed" true "$lam" "$tau" "$cp"; done
+                # tau AND the certainty penalty both act on L2, which the
+                # baseline also carries, so it needs its own arm for each.
+                if [ "$INCLUDE_NOCER" = "true" ]; then emit_point "$key" "$seed" false "" "$tau" "$cp"; fi
+            done
         done
     done
 done
 for key in $REF_DATASETS; do
     for seed in $SEEDS; do
         for tau in $GATE_TAUS; do
-            emit_point "$key" "$seed" true "0.0" "$tau"
-            if [ "$INCLUDE_NOCER" = "true" ]; then emit_point "$key" "$seed" false "" "$tau"; fi
+            for cp in $CERT_PENALTIES; do
+                emit_point "$key" "$seed" true "0.0" "$tau" "$cp"
+                if [ "$INCLUDE_NOCER" = "true" ]; then emit_point "$key" "$seed" false "" "$tau" "$cp"; fi
+            done
         done
     done
 done
@@ -251,8 +289,9 @@ cat > "$SLURM_TRAIN" <<EOF
 #!/bin/bash
 #SBATCH --account=$ACCOUNT_CPU
 #SBATCH --job-name=hptrain_$TS
-#SBATCH --output=$CLUSTER_DIR/hp_sweep_train_${TS}.out
-#SBATCH --error=$CLUSTER_DIR/hp_sweep_train_${TS}.err
+#SBATCH --output=$CLUSTER_DIR/hp_sweep_train_${TS}_task%a.out
+#SBATCH --error=$CLUSTER_DIR/hp_sweep_train_${TS}_task%a.err
+#SBATCH --array=0-$((TRAIN_ARRAY - 1))
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=$TRAIN_CPUS
@@ -270,10 +309,20 @@ cd \$SLURM_SUBMIT_DIR
 julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()' || exit 1
 export JULIA_PKG_PRECOMPILE_AUTO=0
 
+TASK=\${SLURM_ARRAY_TASK_ID:-0}
 LOCAL="\$SLURM_TMPDIR/$CODENAME"
 tar -chf - -C "$WORKDIR" "$CODENAME" | tar -xf - -C "\$SLURM_TMPDIR"
-mkdir -p "\$LOCAL"/{models,results,logs} "\$LOCAL/cluster/logs/hp_${TS}_train"
-sed "s|\\\$WORKDIR_RUNTIME|\$SLURM_TMPDIR|g" "$TRAIN_CMDS" > "\$SLURM_TMPDIR/train.txt"
+mkdir -p "\$LOCAL"/{models,results,logs} "\$LOCAL/cluster/logs/hp_${TS}_train_task\${TASK}"
+# Interleaved slice: task t runs lines t+1, t+1+K, ... of the full point list.
+# Interleaved rather than contiguous so a slow region of the grid is spread over
+# all tasks instead of landing entirely on one.
+sed "s|\\\$WORKDIR_RUNTIME|\$SLURM_TMPDIR|g" "$TRAIN_CMDS" \\
+    | awk -v k=$TRAIN_ARRAY -v t="\$TASK" '(NR - 1) % k == t' > "\$SLURM_TMPDIR/train.txt"
+N_TASK=\$(wc -l < "\$SLURM_TMPDIR/train.txt")
+if [ "\$N_TASK" -eq 0 ]; then
+    echo "[train task \$TASK] no points in this slice ($TRAIN_ARRAY tasks > $N_POINTS points); nothing to do."
+    exit 0
+fi
 
 stage_out() {
     tar -cf - --exclude='hyperparams_hp_*.toml' -C "\$LOCAL" models logs cluster/logs \\
@@ -282,16 +331,16 @@ stage_out() {
 trap 'stage_out; exit 0' TERM
 trap stage_out EXIT
 
-echo "[train] $N_POINTS point(s), \$SLURM_CPUS_PER_TASK at a time: \$(date)"
+echo "[train task \$TASK/$TRAIN_ARRAY] \$N_TASK of $N_POINTS point(s), \$SLURM_CPUS_PER_TASK at a time: \$(date)"
 # --joblog records seq / exit status / command per point in ONE readable file.
 # The --results directories are named after the full command with / = " escaped
 # to +z +e +22, so they cannot be cat'd without quoting; the joblog is the index.
-JOBLOG="\$LOCAL/cluster/logs/hp_${TS}_train.joblog"
+JOBLOG="\$LOCAL/cluster/logs/hp_${TS}_train_task\${TASK}.joblog"
 parallel --jobs \$SLURM_CPUS_PER_TASK --joblog "\$JOBLOG" \\
-    --results "\$LOCAL/cluster/logs/hp_${TS}_train" < "\$SLURM_TMPDIR/train.txt"
+    --results "\$LOCAL/cluster/logs/hp_${TS}_train_task\${TASK}" < "\$SLURM_TMPDIR/train.txt"
 awk 'NR>1 && \$7 != 0 {print "  FAILED (exit " \$7 "): " \$9}' "\$JOBLOG" || true
-echo "[train] \$(awk 'NR>1 && \$7 == 0' "\$JOBLOG" | wc -l)/$N_POINTS point(s) exited 0"
-echo "[train] done: \$(date)"
+echo "[train task \$TASK] \$(awk 'NR>1 && \$7 == 0' "\$JOBLOG" | wc -l)/\$N_TASK point(s) exited 0"
+echo "[train task \$TASK] done: \$(date)"
 EOF
 chmod +x "$SLURM_TRAIN"
 
@@ -300,8 +349,9 @@ cat > "$SLURM_TEST" <<EOF
 #!/bin/bash
 #SBATCH --account=$ACCOUNT_GPU
 #SBATCH --job-name=hptest_$TS
-#SBATCH --output=$CLUSTER_DIR/hp_sweep_test_${TS}.out
-#SBATCH --error=$CLUSTER_DIR/hp_sweep_test_${TS}.err
+#SBATCH --output=$CLUSTER_DIR/hp_sweep_test_${TS}_task%a.out
+#SBATCH --error=$CLUSTER_DIR/hp_sweep_test_${TS}_task%a.err
+#SBATCH --array=0-$((TEST_ARRAY - 1))
 #SBATCH --gpus-per-node=${GPU_TYPE}:${N_GPUS}
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -340,14 +390,25 @@ if ! julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using CUDA; CUDA.functional() || 
 fi
 echo "[test] CUDA functional."
 
+TASK=\${SLURM_ARRAY_TASK_ID:-0}
 LOCAL="\$SLURM_TMPDIR/$CODENAME"
 tar -chf - -C "$WORKDIR" "$CODENAME" | tar -xf - -C "\$SLURM_TMPDIR"
-mkdir -p "\$LOCAL"/{models,results,logs} "\$LOCAL/cluster/logs/hp_${TS}_test"
-sed "s|\\\$WORKDIR_RUNTIME|\$SLURM_TMPDIR|g" "$TEST_CMDS" > "\$SLURM_TMPDIR/test.txt"
+mkdir -p "\$LOCAL"/{models,results,logs} "\$LOCAL/cluster/logs/hp_${TS}_test_task\${TASK}"
+sed "s|\\\$WORKDIR_RUNTIME|\$SLURM_TMPDIR|g" "$TEST_CMDS" \\
+    | awk -v k=$TEST_ARRAY -v t="\$TASK" '(NR - 1) % k == t' > "\$SLURM_TMPDIR/test.txt"
+N_TASK=\$(wc -l < "\$SLURM_TMPDIR/test.txt")
+if [ "\$N_TASK" -eq 0 ]; then
+    echo "[test task \$TASK] no points in this slice ($TEST_ARRAY tasks > $N_POINTS points); nothing to do."
+    exit 0
+fi
 
 # neural_bp_experiments.jl SKIPS testing when the results file already exists and
 # reports the old numbers as if fresh. The staged-in copy carries the previous
 # run's results, so remove this sweep's targets before testing.
+# Safe to clear ALL of them even under a job array: this deletes only the
+# node-local staged copy, and stage_out untars this task's files INTO the shared
+# directory without removing anything already there. So a sibling's results that
+# this task wipes locally still survive in $WORKDIR.
 rm -f "\$LOCAL"/results/simulation_results_*_hp*_seed_*.csv
 
 # The generator wrote retrain = true; flip it so this job loads the trained
@@ -355,7 +416,7 @@ rm -f "\$LOCAL"/results/simulation_results_*_hp*_seed_*.csv
 for f in "\$LOCAL"/models/hyperparams_hp_*.toml; do
     sed -E 's|^([[:space:]]*retrain[[:space:]]*=[[:space:]]*)true|\1false|' "\$f" > "\$f.tmp" && mv "\$f.tmp" "\$f"
 done
-echo "[test] \$(ls "\$LOCAL"/models/*.json 2>/dev/null | wc -l) trained model(s) staged in; expecting $N_POINTS"
+echo "[test task \$TASK/$TEST_ARRAY] \$(ls "\$LOCAL"/models/*.json 2>/dev/null | wc -l) trained model(s) staged in; expecting $N_POINTS"
 
 stage_out() {
     tar -cf - --exclude='hyperparams_hp_*.toml' -C "\$LOCAL" results logs cluster/logs \\
@@ -365,15 +426,15 @@ trap 'stage_out; exit 0' TERM
 trap stage_out EXIT
 
 export GPU_MEMORY=${GPU_MEMORY_MB}M
-echo "[test] $N_POINTS point(s), $TEST_JOBS at a time on \${SLURM_GPUS_ON_NODE:-1} GPU(s): \$(date)"
+echo "[test task \$TASK] \$N_TASK of $N_POINTS point(s), $TEST_JOBS at a time on \${SLURM_GPUS_ON_NODE:-1} GPU(s): \$(date)"
 export SLURM_CUDA_VISIBLE_DEVICES=\${CUDA_VISIBLE_DEVICES:-0}
-JOBLOG="\$LOCAL/cluster/logs/hp_${TS}_test.joblog"
-parallel --jobs $TEST_JOBS --joblog "\$JOBLOG" --results "\$LOCAL/cluster/logs/hp_${TS}_test" \\
+JOBLOG="\$LOCAL/cluster/logs/hp_${TS}_test_task\${TASK}.joblog"
+parallel --jobs $TEST_JOBS --joblog "\$JOBLOG" --results "\$LOCAL/cluster/logs/hp_${TS}_test_task\${TASK}" \\
     'card=\$(( ({%} - 1) % \${SLURM_GPUS_ON_NODE:-1} + 1 )); export CUDA_VISIBLE_DEVICES=\$(echo \$SLURM_CUDA_VISIBLE_DEVICES | cut -d, -f\$card); bash -c {}' \\
     < "\$SLURM_TMPDIR/test.txt"
 awk 'NR>1 && \$7 != 0 {print "  FAILED (exit " \$7 "): " \$9}' "\$JOBLOG" || true
-echo "[test] \$(awk 'NR>1 && \$7 == 0' "\$JOBLOG" | wc -l)/$N_POINTS point(s) exited 0"
-echo "[test] done: \$(date)"
+echo "[test task \$TASK] \$(awk 'NR>1 && \$7 == 0' "\$JOBLOG" | wc -l)/\$N_TASK point(s) exited 0"
+echo "[test task \$TASK] done: \$(date)"
 EOF
 chmod +x "$SLURM_TEST"
 
@@ -384,8 +445,8 @@ echo "  datasets  -> $DATASETS"
 echo "  ref       -> $REF_DATASETS   (lambda = 0 and no-CER only)"
 echo "  lambdas   -> $LAMBDAS   seeds -> $SEEDS"
 echo "  gates     -> tau = $GATE_TAUS (swept);  certainty c = $CERTAINTY;  sparsity = $SPARSITY"
-echo "  train     -> $ACCOUNT_CPU: $TRAIN_CPUS cpu x $TRAIN_MEM, $TRAIN_WALL"
-echo "  test      -> $ACCOUNT_GPU: ${N_GPUS}x $GPU_TYPE (${VRAM_PER_GPU}G vram), $TEST_CPUS cpu,"
+echo "  train     -> $ACCOUNT_CPU: array 0-$((TRAIN_ARRAY-1)) ($TRAIN_ARRAY tasks x $TRAIN_CPUS cpu x $TRAIN_MEM), $TRAIN_WALL"
+echo "  test      -> $ACCOUNT_GPU: array 0-$((TEST_ARRAY-1)) ($TEST_ARRAY tasks x ${N_GPUS}x $GPU_TYPE (${VRAM_PER_GPU}G vram), $TEST_CPUS cpu),"
 echo "               --mem-per-gpu=$MEM_PER_GPU host ram, GPU_MEMORY=${GPU_MEMORY_MB}M, $TEST_JOBS at a time"
 echo "  commands  -> $TRAIN_CMDS"
 echo "               $TEST_CMDS"
@@ -430,7 +491,7 @@ if [ "$LOCAL" -eq 1 ]; then
           "$DATA/correlated_weights/correlated_weights_${SMOKE_KEY}.txt"
 
     SMOKE_HP="hyperparams_hp_smoke.toml"
-    grep -vE '^[[:space:]]*(sparsity_importance|retrain|run_tag|use_CER|seed|single_qubit_rescale|syndrome_gate_threshold|correlation_certainty_threshold|require_correlations|correlation_weight|n_epochs|n_gradient_updates_per_epoch)[[:space:]]*=' \
+    grep -vE '^[[:space:]]*(sparsity_importance|retrain|run_tag|use_CER|seed|single_qubit_rescale|syndrome_gate_threshold|correlation_certainty_threshold|require_correlations|correlation_weight|certainty_penalty|certainty_hinge_width|n_epochs|n_gradient_updates_per_epoch)[[:space:]]*=' \
         "$MODELS_DIR/$BASE_HP" > "$MODELS_DIR/$SMOKE_HP"
     {
         echo ""
@@ -444,6 +505,8 @@ if [ "$LOCAL" -eq 1 ]; then
         echo "sparsity_importance = \"${SPARSITY},${SPARSITY},0.8,up\""
         echo "syndrome_gate_threshold = ${GATE_TAU}"
         echo "correlation_certainty_threshold = ${CERTAINTY}"
+        echo "certainty_penalty = \"$(set -- $CERT_PENALTIES; echo ${1:-entropy})\""
+        echo "certainty_hinge_width = ${HINGE_W}"
         echo "single_qubit_rescale = ${RESCALE}"
         echo "require_correlations = true"
         echo "correlation_weight = \"3.0,3.0,0.7,up\""

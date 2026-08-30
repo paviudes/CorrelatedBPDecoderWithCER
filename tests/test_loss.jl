@@ -96,3 +96,52 @@ end
 
 test_correlation_gates()
 test_syndrome_gate()
+
+# =============================================================================
+#  Certainty penalty family: the point of the alternatives is the force at mu=0
+# =============================================================================
+@testset "certainty penalty family" begin
+    # --- shape: all three are symmetric, peak at 0, decay to 0 ---------------
+    for penalty_function in (binary_entropy_of_sigmoid,
+                             exponential_certainty_penalty,
+                             μ -> hinge_certainty_penalty(μ, 2.2f0))
+        @test penalty_function(1.5f0) ≈ penalty_function(-1.5f0) atol = 1f-6
+        @test penalty_function(0.0f0) > penalty_function(1.0f0)
+        @test penalty_function(1.0f0) > penalty_function(4.0f0)
+        @test penalty_function(20.0f0) ≈ 0.0f0 atol = 1f-5
+    end
+
+    # --- the whole reason these exist: force at a perfectly undecided qubit --
+    # Central differences, so a cusp reports ~0 by symmetry; take the one-sided
+    # slope just off zero, which is what the optimizer actually sees.
+    step::Float32 = 1f-3
+    entropy_force::Float32 =
+        abs(binary_entropy_of_sigmoid(step) - binary_entropy_of_sigmoid(0.0f0)) / step
+    exponential_force::Float32 =
+        abs(exponential_certainty_penalty(step) - exponential_certainty_penalty(0.0f0)) / step
+    hinge_force::Float32 =
+        abs(hinge_certainty_penalty(step, 2.2f0) - hinge_certainty_penalty(0.0f0, 2.2f0)) / step
+    @test entropy_force < 1f-2                     # vanishes, as symmetry demands
+    @test exponential_force > 0.9f0                # ~1, its maximum
+    @test hinge_force ≈ 1.0f0 / 2.2f0 rtol = 1f-2  # exactly 1/w
+
+    # --- hinge is exactly inert beyond its width ----------------------------
+    @test hinge_certainty_penalty(2.2f0, 2.2f0) == 0.0f0
+    @test hinge_certainty_penalty(5.0f0, 2.2f0) == 0.0f0
+
+    # --- code lookup is strict ----------------------------------------------
+    @test certainty_penalty_code("entropy")      == CERTAINTY_PENALTY_ENTROPY
+    @test certainty_penalty_code("  Hinge  ")    == CERTAINTY_PENALTY_HINGE
+    @test_throws ArgumentError certainty_penalty_code("gaussian")
+
+    # --- per-sample sum dispatches and stays finite --------------------------
+    posterior_llrs::Matrix{Float32} = Float32[0.0 3.0; -0.5 -8.0; 1.0 0.2]
+    for kind in (CERTAINTY_PENALTY_ENTROPY, CERTAINTY_PENALTY_EXPONENTIAL, CERTAINTY_PENALTY_HINGE)
+        certainties::Vector{Float32} = certainty_per_sample(posterior_llrs, kind, 2.2f0)
+        @test length(certainties) == 2
+        @test all(isfinite, certainties)
+        @test all(certainties .>= 0.0f0)
+        # sample 1 is far less decided than sample 2, for every penalty
+        @test certainties[1] > certainties[2]
+    end
+end

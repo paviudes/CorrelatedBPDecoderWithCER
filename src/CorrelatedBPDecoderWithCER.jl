@@ -204,7 +204,8 @@ export predict_neuralbp, check_bp_solutions, predict_and_check_neuralbp, neuralb
 # Utility functions
 include("utils.jl")
 export safe_atanh_exp_signed, safe_atanh_exp_signed!, safe_log_tanh_split, safe_log_tanh_split!, random_values_around_one, compute_std_assuming_bernoulli,
-       debug_log_tanh_split, xor_affine!, sparse_multiply!, sigmoid, binary_entropy, binary_entropy_of_sigmoid, fmt_probs,
+       debug_log_tanh_split, xor_affine!, sparse_multiply!, sigmoid, binary_entropy, binary_entropy_of_sigmoid,
+       exponential_certainty_penalty, hinge_certainty_penalty, certainty_penalty_code, fmt_probs,
        parse_memory, compute_optimal_batch_size_for
 
 #===============================================================================
