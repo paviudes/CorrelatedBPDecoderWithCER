@@ -51,10 +51,29 @@ ref_datasets     = []
 
 base_hyperparams = "hyperparams_epochs_5_corrs.toml"
 n_hidden_layers  = 90
-seeds            = [1]
+seeds            = [1]                 # network seeds for the MAIN grid
+
+# Replication grid: extra network seeds on a REDUCED set of cells, to get the
+# seed error bar on the result we would actually quote. Dataset-to-dataset spread
+# has dominated every effect so far and seed spread is still unmeasured.
+# Empty replication_seeds disables this grid entirely.
+replication_seeds   = [2, 3, 4, 5]
+replication_lambdas = ["0.0", "3.0"]   # plus the no-CER baseline, always
+replication_taus    = [4.0, 1e6]
 
 # --- sweep axes -------------------------------------------------------------
-lambdas          = [0.0, 3.0]        # correlation_weight, per ACTIVE pair
+# correlation_weight (lambda), per ACTIVE pair. A bare number is CONSTANT across
+# epochs; a trailing letter anneals it, using the schedule machinery that already
+# exists in command_line.jl ("min,max,decay,direction"):
+#   3.0    constant 3.0                       tag _lam3p0
+#   3.0d   DOWN from 3.0 toward 0             tag _lam3p0d
+#   3.0u   UP from 0 toward 3.0               tag _lam3p0u
+# "down" tests the hypothesis that the couplings should guide early exploration
+# and then get out of L1's way -- which is also the natural fix for the constant
+# lambda = 3 blowups seen at p = 7e-4 with open gates. "up" is the opposite:
+# couplings refine only once the decoder is roughly right.
+lambdas          = ["0.0", "3.0", "3.0d", "3.0u"]
+lambda_anneal_decay = 0.3            # per-epoch factor for the annealed forms
 include_nocer    = true              # flat p = 0.1 baseline arm
 sparsity         = 0.0               # sparsity_importance, pinned constant
 
@@ -74,7 +93,16 @@ certainty_gate   = 2.2               # c, LLR units (2.2 <=> sigma > 0.9 or < 0.
 #   exponential  exp(-|mu|).    Cusped at 0, so force is LARGEST at mu = 0.
 #   hinge        max(0, 1-|mu|/w). Constant force 1/w inside w, none outside, so
 #                it repairs aliases without inflating already-decided LLRs.
-certainty_penalties = ["entropy", "exponential", "hinge"]
+# SETTLED 2026-08-31 (162-point sweep): the cusped penalties do not work. Both
+# were correctly signed -- positive, maximal at mu = 0, non-increasing in |mu| --
+# so minimising them does drive |mu| up. They fail on FORCE, not direction:
+# instability rose monotonically with |df/dmu| at mu = 0 (entropy 0.00 -> 1/36
+# blown-up runs; hinge 0.45 -> 2/36; exponential 1.00 -> 7/36), and the blowups
+# concentrated in the lam0 arm where the coupling weight is exactly zero, so L2
+# alone caused them. The CER priors effect survived ONLY under entropy
+# (14/18, p = 0.031; both others exactly 9/18 = chance).
+# Keep this axis at entropy alone unless testing a new penalty deliberately.
+certainty_penalties = ["entropy"]
 certainty_hinge_width = 2.2          # w, only used by the hinge penalty
 single_qubit_rescale = 0.1
 
@@ -91,8 +119,8 @@ heap_size_hint   = "4G"
 # K tasks cut the wall time by ~K without any task needing a bigger node. Slurm
 # schedules small allocations sooner, so more/smaller tasks generally start
 # earlier than one large one.
-#   162 points / 3 tasks = 54 per task = one 54-core wave = ~45 min.
-train_array_tasks = 3
+#   234 points / 5 tasks = 47 per task = one 54-core wave = ~45 min.
+train_array_tasks = 5
 train_cpus       = 54   # points per task per wave; a CPU node has 64
 train_mem_per_cpu = "6G"
 train_wall_time  = "4:00:00"
@@ -101,13 +129,13 @@ train_wall_time  = "4:00:00"
 # on it: a 1-GPU request schedules far sooner than a whole 4-GPU node, and the
 # no-sharing rule (see below) is satisfied trivially rather than by arithmetic.
 # Scale throughput with test_array_tasks, NOT with processes per card.
-#   162 points / 6 tasks = 27 per task x 3.7 min = ~100 min.
+#   234 points / 8 tasks = 30 per task x 3.7 min = ~110 min.
 #
 # NEVER put two processes on one unpartitioned card: the real footprint is ~1.5x
 # the nominal GPU_MEMORY, so two on a 40 GB a100 overcommit and die stochastically
 # at OOM — that killed 21/54 tests on 2026-08-28. MIG only worked because MIG is
 # a HARD partition. Sharing is safe only when the hardware partitions it.
-test_array_tasks = 6
+test_array_tasks = 8
 gpu_type         = "a100"
 n_gpus_per_node  = 1                 # one card per array task
 test_jobs        = 1                 # one process on it; do not raise
@@ -153,6 +181,9 @@ WORKDIR=$(get workdir);              CODENAME=$(get codename)
 DATASETS=$(list datasets);           REF_DATASETS=$(list ref_datasets)
 BASE_HP=$(get base_hyperparams);     NLAYERS=$(get n_hidden_layers)
 SEEDS=$(list seeds);                 LAMBDAS=$(list lambdas)
+LAMBDA_DECAY=$(get lambda_anneal_decay)
+REP_SEEDS=$(list replication_seeds); REP_LAMBDAS=$(list replication_lambdas)
+REP_TAUS=$(list replication_taus)
 INCLUDE_NOCER=$(get include_nocer);  SPARSITY=$(get sparsity)
 GATE_TAUS=$(list syndrome_gates);    CERTAINTY=$(get certainty_gate)
 RESCALE=$(get single_qubit_rescale)
@@ -215,6 +246,17 @@ tag_of() { echo "$1" | tr '.' 'p' | tr -d '-'; }
 emit_point() {   # <key> <seed> <use_cer> <lambda|""> <tau> <certainty_penalty>
     local key="$1" seed="$2" use_cer="$3" lambda="$4" tau="$5"
     local lam_tag="" arm="cer" require="true"
+    # A lambda spec is <value>[d|u]: bare = constant, d = anneal down from
+    # <value> to 0, u = anneal up from 0 to <value>. Build the four-field
+    # "min,max,decay,direction" string command_line.jl expects.
+    local lam_value="$lambda"
+    local lam_schedule=""
+    case "$lambda" in
+        *d) lam_value="${lambda%d}"; lam_schedule="0.0,${lam_value},${LAMBDA_DECAY},down" ;;
+        *u) lam_value="${lambda%u}"; lam_schedule="0.0,${lam_value},${LAMBDA_DECAY},up" ;;
+        "") lam_schedule="" ;;
+        *)  lam_schedule="${lambda},${lambda},0.7,up" ;;
+    esac
     if [ -n "$lambda" ]; then lam_tag="_lam$(tag_of "$lambda")"; fi
     if [ "$use_cer" = "false" ]; then arm="nocer"; require="false"; lam_tag=""; fi
     # tau is in the tag because it is a swept axis now: without it the three tau
@@ -248,8 +290,8 @@ emit_point() {   # <key> <seed> <use_cer> <lambda|""> <tau> <certainty_penalty>
         echo "certainty_hinge_width = ${HINGE_W}"
         echo "single_qubit_rescale = ${RESCALE}"
         echo "require_correlations = ${require}"
-        if [ -n "$lambda" ]; then
-            echo "correlation_weight = \"${lambda},${lambda},0.7,up\""
+        if [ -n "$lam_schedule" ]; then
+            echo "correlation_weight = \"${lam_schedule}\""
         fi
     } >> "$MODELS_DIR/$hp"
 
@@ -282,6 +324,23 @@ for key in $REF_DATASETS; do
         done
     done
 done
+# --- replication grid: extra seeds on a reduced set of cells ----------------
+# Runs only if replication_seeds is non-empty. Same emit_point, so these points
+# are indistinguishable from main-grid points except for their seed tag, and the
+# collector groups them by (label, seed) automatically.
+for rep_seed in $REP_SEEDS; do
+    for key in $DATASETS; do
+        for rep_tau in $REP_TAUS; do
+            for rep_lam in $REP_LAMBDAS; do
+                emit_point "$key" "$rep_seed" true "$rep_lam" "$rep_tau" "entropy"
+            done
+            if [ "$INCLUDE_NOCER" = "true" ]; then
+                emit_point "$key" "$rep_seed" false "" "$rep_tau" "entropy"
+            fi
+        done
+    done
+done
+
 N_POINTS=$(wc -l < "$TRAIN_CMDS")
 
 # ------------------------------------------------------------ SLURM: train ---

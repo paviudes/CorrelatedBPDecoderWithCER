@@ -93,7 +93,7 @@ const USAGE = """
 #   _hp<arm>_sp<tag>[_lam<tag>]_seed_<n>          sweep_hyperparams.sh
 # The gate token is optional because the second generator dropped it once the
 # ungated path was deleted from loss.jl: every run is gated now.
-const RUN_PATTERN = r"_trained_using_train_(p_[0-9.eE+-]+(?:_sig_[0-9.eE+-]+)?_s_\d+)(_no_cer)?_(?:cw|hp)(cer|nocer)(?:_(ungated|gated))?_sp([0-9p]+)(?:_lam([0-9p]+))?(?:_tau([0-9pe]+))?(?:_cp([a-z]+))?_seed_(\d+)\.csv$"
+const RUN_PATTERN = r"_trained_using_train_(p_[0-9.eE+-]+(?:_sig_[0-9.eE+-]+)?_s_\d+)(_no_cer)?_(?:cw|hp)(cer|nocer)(?:_(ungated|gated))?_sp([0-9p]+)(?:_lam([0-9p]+[du]?))?(?:_tau([0-9pe]+))?(?:_cp([a-z]+))?_seed_(\d+)\.csv$"
 
 """
     tag_to_number(tag) -> Float64
@@ -137,9 +137,21 @@ function parse_run(filename::String)::Union{NamedTuple, Nothing}
     if lambda_pinned
         lambda_tag = String(filename_match.captures[6])
     end
+    # A trailing d/u marks an ANNEALED lambda (down/up). Strip it for the numeric
+    # value and keep it as a separate field: an annealed run and a constant run at
+    # the same peak lambda are different experiments and must not be pooled.
+    lambda_schedule::String = "constant"
+    lambda_numeric_tag::String = lambda_tag
+    if endswith(lambda_tag, "d")
+        lambda_schedule = "down"
+        lambda_numeric_tag = chop(lambda_tag)
+    elseif endswith(lambda_tag, "u")
+        lambda_schedule = "up"
+        lambda_numeric_tag = chop(lambda_tag)
+    end
     lambda_value::Float64 = NaN
     if lambda_pinned
-        lambda_value = tag_to_number(lambda_tag)
+        lambda_value = tag_to_number(lambda_numeric_tag)
     end
 
     # Decompose the key. `sigma` is "" on the uniform-p datasets, which is what
@@ -175,6 +187,7 @@ function parse_run(filename::String)::Union{NamedTuple, Nothing}
         lambda_tag = lambda_tag,
         lambda_pinned = lambda_pinned,
         lambda = lambda_value,
+        lambda_schedule = lambda_schedule,
         tau_tag = filename_match.captures[7] === nothing ? "" : String(filename_match.captures[7]),
         tau = filename_match.captures[7] === nothing ? NaN :
               tag_to_number(String(filename_match.captures[7])),
