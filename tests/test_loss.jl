@@ -257,3 +257,95 @@ end
     @test correlation_form_code(" Log_Agreement ") == CORRELATION_FORM_LOG_AGREEMENT
     @test_throws ArgumentError correlation_form_code("ising")
 end
+
+# =============================================================================
+#  tau_2: L2's own syndrome gate. The narrow hinge is DEAD under a shared gate.
+# =============================================================================
+
+function gated_certainty_contribution(
+    posterior_llrs::Matrix{Float32},
+    expected_recoveries::BitMatrix,
+    parity_check_matrix::BitMatrix,
+    syndrome_gate_threshold::Float32,
+    certainty_syndrome_gate_threshold::Float32,
+    certainty_penalty_kind::Int,
+    certainty_hinge_width::Float32
+)::Float32
+    """
+    The part of L2 that actually reaches the gradient: gate x penalty, summed.
+    Testing the penalty VALUE alone is what let a structurally dead term ship --
+    both hinge widths logged non-zero penalties while contributing exactly zero.
+    """
+    syndrome_weights::Vector{Float32} = soft_syndrome_weight_per_sample(
+        posterior_llrs, expected_recoveries, parity_check_matrix)
+    effective_threshold::Float32 = certainty_syndrome_gate_threshold
+    if certainty_syndrome_gate_threshold < 0.0f0
+        effective_threshold = syndrome_gate_threshold
+    end
+    certainty_gate::Vector{Float32} = Float32.(syndrome_weights .< effective_threshold)
+    penalties::Vector{Float32} = certainty_per_sample(
+        posterior_llrs, certainty_penalty_kind, certainty_hinge_width)
+    total::Float32 = sum(certainty_gate .* penalties)
+    return total
+end
+
+@testset "L2 gate decoupling" begin
+    # Two weight-2 checks on 4 qubits. Sample 1 carries TWO undecided qubits
+    # (mu = 0.0 and 0.4); sample 2 is fully decided and clean. mu = 0.4 matters:
+    # at mu = 0 the hinge is 1.0 for EVERY width, so a fixture with only that
+    # qubit could not tell two widths apart even with the gate open.
+    parity_check_matrix = BitMatrix([1 1 0 0; 0 0 1 1])
+    expected_recoveries = BitMatrix([0 0; 0 0; 0 0; 0 0])
+    posterior_llrs = Float32[0.0 8.0; 0.4 8.0; 8.0 8.0; 8.0 8.0]
+
+    syndrome_weights::Vector{Float32} = soft_syndrome_weight_per_sample(
+        posterior_llrs, expected_recoveries, parity_check_matrix)
+    # An undecided qubit lifts |s| far above tau = 0.5. That is the whole
+    # mechanism: the shared gate drops exactly the sample L2 wants to fix.
+    @test syndrome_weights[1] > 0.5f0     # ~0.989
+    @test syndrome_weights[2] < 0.5f0     # ~0.002
+
+    narrow::Float32 = 0.3f0
+    wider::Float32  = 0.5f0
+    inherit_tau::Float32 = -1.0f0
+    opened::Float32 = 1.0f6
+
+    shared_narrow::Float32 = gated_certainty_contribution(posterior_llrs,
+        expected_recoveries, parity_check_matrix, 0.5f0, inherit_tau,
+        CERTAINTY_PENALTY_HINGE, narrow)
+    shared_wider::Float32 = gated_certainty_contribution(posterior_llrs,
+        expected_recoveries, parity_check_matrix, 0.5f0, inherit_tau,
+        CERTAINTY_PENALTY_HINGE, wider)
+    opened_narrow::Float32 = gated_certainty_contribution(posterior_llrs,
+        expected_recoveries, parity_check_matrix, 0.5f0, opened,
+        CERTAINTY_PENALTY_HINGE, narrow)
+    opened_wider::Float32 = gated_certainty_contribution(posterior_llrs,
+        expected_recoveries, parity_check_matrix, 0.5f0, opened,
+        CERTAINTY_PENALTY_HINGE, wider)
+
+    # Under the INHERITED gate a narrow hinge contributes nothing at all, and the
+    # two widths are indistinguishable -- the exact symptom that shipped 72 dead
+    # runs whose weights came out bit-identical.
+    @test shared_narrow == 0.0f0
+    @test shared_wider == 0.0f0
+    @test shared_narrow == shared_wider
+    # DECOUPLED, it fires, and the widths separate.
+    @test opened_narrow ≈ 1.0f0 atol = 1f-4
+    @test opened_wider ≈ 1.2f0 atol = 1f-4
+    @test opened_narrow != opened_wider
+
+    # The entropy survives a shared gate: its tail reaches the decided sample.
+    shared_entropy::Float32 = gated_certainty_contribution(posterior_llrs,
+        expected_recoveries, parity_check_matrix, 0.5f0, inherit_tau,
+        CERTAINTY_PENALTY_ENTROPY, narrow)
+    @test shared_entropy > 0.0f0
+
+    # tau_2 < 0 must reproduce the shared gate exactly, for every penalty: this
+    # is what keeps every pre-split run bit-for-bit reproducible.
+    for kind in (CERTAINTY_PENALTY_ENTROPY, CERTAINTY_PENALTY_EXPONENTIAL, CERTAINTY_PENALTY_HINGE)
+        @test gated_certainty_contribution(posterior_llrs, expected_recoveries,
+                  parity_check_matrix, 0.5f0, -1.0f0, kind, 2.2f0) ==
+              gated_certainty_contribution(posterior_llrs, expected_recoveries,
+                  parity_check_matrix, 0.5f0, 0.5f0, kind, 2.2f0)
+    end
+end

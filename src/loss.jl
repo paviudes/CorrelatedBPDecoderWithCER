@@ -427,6 +427,7 @@ function compute_loss_including_correlations(
     llr_certainty_importance::Float32,
     sparsity_importance::Float32,
     syndrome_gate_threshold::Float32,           # τ, in softly broken checks
+    certainty_syndrome_gate_threshold::Float32, # τ₂ for L2 alone; < 0 inherits τ
     correlation_certainty_threshold::Float32,   # c, in LLR units
     certainty_penalty_kind::Int,                # which f in `certainty_per_sample`
     certainty_hinge_width::Float32,             # w, only used by the hinge penalty
@@ -438,14 +439,29 @@ function compute_loss_including_correlations(
     Total per-batch loss.
 
         total = softmin_over_layers( base_l )
-              + mean_over_layers( mean_over_samples( g_(l,j) · aux_(l,j) ) )
+              + mean_over_layers( mean_over_samples(
+                    g2_(l,j) · α_cert · cert_j
+                  + g_(l,j)  · (λ · corr_j + α₃ · sparse_j) ) )
 
-        g_(l,j) = 1[ soft H-syndrome weight of sample j at layer l < τ ]
-        aux_(l,j) = α_cert · cert_j + λ · corr_j + α₃ · sparse_j
+        g_(l,j)  = 1[ soft H-syndrome weight of sample j at layer l < τ  ]
+        g2_(l,j) = 1[ soft H-syndrome weight of sample j at layer l < τ₂ ]
 
-    The auxiliary terms act only on the flat solution manifold of `base`, where
-    `base` provides no gradient and they are the only forces. `corr_j` carries a
-    second, per-pair gate on `c`; see `ising_correlation_reward_per_sample`.
+    TWO SYNDROME GATES, because τ and the certainty penalty are not independent
+    knobs. L2 fires hardest on qubits near μ = 0, but a single qubit at σ ≈ 0.5
+    sits in 3 Z-checks (HZ column weight 3) and contributes |sin(π/2 · 0.5)| =
+    0.707 to each, driving |s| ≈ 2.1 — four times τ = 0.5. So at a shared gate
+    the samples L2 most wants to fix are precisely the ones the gate excludes. A
+    narrow hinge measured 0.000 gated contribution across 200 000 layer-samples
+    for exactly this reason: not small, identically zero. τ₂ decouples them.
+
+    τ₂ < 0 inherits τ, which reproduces every run made before this split, bit for
+    bit. Use τ₂ = 1e6 to let L2 act everywhere while L3 stays confined to solved
+    samples. Note a threshold of exactly 0 means "never open" (|s| ≥ 0 always),
+    which is how you would switch a term off rather than inherit.
+
+    The auxiliary terms act on the flat solution manifold of `base`, where `base`
+    provides no gradient and they are the only forces. `corr_j` carries a second,
+    per-pair gate on `c`; see `ising_correlation_reward_per_sample`.
 
     All hyperparameters are plain `Float32` scalars.
     """
@@ -460,23 +476,36 @@ function compute_loss_including_correlations(
         base_per_layer[layer - warmup_loss_layers] =
             compute_smooth_loss_from_llrs(post, expected_recoveries, parity_check_matrix_dual)
 
-        gate = syndrome_gate_per_sample(
-            post, expected_recoveries, parity_check_matrix, syndrome_gate_threshold
+        # One soft-syndrome pass, two thresholds. The weight is the expensive part
+        # (a parity-check matrix multiply), and thresholding it twice costs a
+        # comparison, so the split is free rather than doubling the gate cost.
+        syndrome_weights = soft_syndrome_weight_per_sample(
+            post, expected_recoveries, parity_check_matrix
         )
+        effective_certainty_threshold::Float32 = certainty_syndrome_gate_threshold
+        if certainty_syndrome_gate_threshold < 0.0f0
+            effective_certainty_threshold = syndrome_gate_threshold
+        end
+        # Detached, exactly as before: comparisons have zero derivative, so the
+        # optimizer cannot lower gate x aux by breaking the syndrome.
+        gate           = Float32.(syndrome_weights .< syndrome_gate_threshold)
+        certainty_gate = Float32.(syndrome_weights .< effective_certainty_threshold)
+
         cert_j   = certainty_per_sample(post, certainty_penalty_kind, certainty_hinge_width)
         sparse_j = sparsity_per_sample(post)
+        certainty_contribution = @. certainty_gate * llr_certainty_importance * cert_j
         if is_correlated
             corr_j = correlation_term_per_sample(
                 post, connectivity, correlation_strengths, correlation_certainty_threshold,
                 correlation_form, correlation_agreement_floor
             )
-            aux_j = @. llr_certainty_importance * cert_j +
-                       correlation_weight * corr_j +
-                       sparsity_importance * sparse_j
+            correlation_contribution = @. gate * (correlation_weight * corr_j +
+                                                  sparsity_importance * sparse_j)
         else
-            aux_j = @. llr_certainty_importance * cert_j + sparsity_importance * sparse_j
+            correlation_contribution = @. gate * sparsity_importance * sparse_j
         end
-        gated_aux_per_layer[layer - warmup_loss_layers] = sum(gate .* aux_j) / n_samples
+        gated_aux_per_layer[layer - warmup_loss_layers] =
+            sum(certainty_contribution .+ correlation_contribution) / n_samples
     end
 
     selection_loss = softmin_loss(base_per_layer, loss_layer_temperature)

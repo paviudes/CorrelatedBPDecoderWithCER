@@ -119,7 +119,18 @@ certainty_importance = 0.01
 #         min_syndrome_weight = 3, one flip short, and are invisible at 0.5
 #   1e6   always open: aux applies to every sample. Layer SELECTION still sees
 #         base alone, so this is not the historical ungated path.
-syndrome_gates   = [0.5]             # already swept; 0.5 is the incumbent
+syndrome_gates   = [0.5]             # tau, gating L3 + sparsity; 0.5 is the incumbent
+
+# tau_2: L2's OWN syndrome gate, decoupled from tau. "inherit" reproduces the
+# historical shared-gate behaviour exactly.
+#   inherit  L2 uses tau. A narrow hinge is then structurally dead: one qubit at
+#            sigma = 0.5 drives |s| to ~2.1 against tau = 0.5, so the samples L2
+#            wants are exactly the ones the gate drops. Measured on 2026-09-01:
+#            0.000 gated contribution over 200000 layer-samples, and the two
+#            hinge widths produced bit-identical weights.
+#   1e6      L2 acts on every sample while L3 stays confined to solved ones.
+#            The only setting under which a narrow hinge is testable at all.
+certainty_gates  = ["inherit", "1e6"]
 certainty_gate   = 2.2               # c, LLR units (2.2 <=> sigma > 0.9 or < 0.1)
 
 # Certainty penalty f in the L2 term. All are symmetric and peak at mu = 0; they
@@ -230,6 +241,7 @@ REP_TAUS=$(list replication_taus)
 REP_FORM=$(get replication_correlation_form); REP_CP=$(get replication_certainty_penalty)
 INCLUDE_NOCER=$(get include_nocer);  SPARSITIES=$(list sparsities)
 GATE_TAUS=$(list syndrome_gates);    CERTAINTY=$(get certainty_gate)
+CERT_GATES=$(list certainty_gates)
 RESCALE=$(get single_qubit_rescale)
 CORR_FORMS=$(list correlation_forms); AGREE_FLOOR=$(get correlation_agreement_floor)
 CERT_IMPORTANCE=$(get certainty_importance)
@@ -289,7 +301,7 @@ SLURM_TEST="$CLUSTER_DIR/hp_sweep_test_${TS}.sh"
 tag_of() { echo "$1" | tr '.' 'p' | tr -d '-'; }
 
 # ------------------------------------------------------------ emit points ---
-emit_point() {   # <key> <seed> <use_cer> <lambda|""> <tau> <certainty_penalty> <correlation_form>
+emit_point() {   # <key> <seed> <use_cer> <lambda|""> <tau> <cert_penalty[:w]> <corr_form> <sparsity> <tau2>
     local key="$1" seed="$2" use_cer="$3" lambda="$4" tau="$5"
     local lam_tag="" arm="cer" require="true"
     # A lambda spec is <value>[d|u]: bare = constant, d = anneal down from
@@ -320,6 +332,15 @@ emit_point() {   # <key> <seed> <use_cer> <lambda|""> <tau> <certainty_penalty> 
         cert_width="${cert_spec#*:}"
     fi
     local sparsity_value="${8:-0.0}"
+    # tau_2. "inherit" writes -1.0, which the loss reads as "use tau", and leaves
+    # the filename untagged so every historical name stays valid.
+    local certainty_gate_spec="${9:-inherit}"
+    local certainty_gate_value="-1.0"
+    local certainty_gate_tag=""
+    if [ "$certainty_gate_spec" != "inherit" ]; then
+        certainty_gate_value="$certainty_gate_spec"
+        certainty_gate_tag="_ct$(tag_of "$certainty_gate_spec")"
+    fi
     # The L3 form changes only the CER arms -- with use_CER = false the term is
     # multiplied by nothing -- so the baseline is deliberately left untagged and
     # shared between forms rather than trained twice identically.
@@ -333,10 +354,10 @@ emit_point() {   # <key> <seed> <use_cer> <lambda|""> <tau> <certainty_penalty> 
         cert_tag="_cp${cert_penalty}$(tag_of "$cert_width")"
     fi
 
-    local run_tag="_hp${arm}_sp$(tag_of "$sparsity_value")${lam_tag}${tau_tag}${cert_tag}${corr_tag}"
-    local hp="hyperparams_hp_${arm}_sp$(tag_of "$sparsity_value")${lam_tag}${tau_tag}${cert_tag}${corr_tag}_$(tag_of "$key")_seed${seed}.toml"
+    local run_tag="_hp${arm}_sp$(tag_of "$sparsity_value")${lam_tag}${tau_tag}${certainty_gate_tag}${cert_tag}${corr_tag}"
+    local hp="hyperparams_hp_${arm}_sp$(tag_of "$sparsity_value")${lam_tag}${tau_tag}${certainty_gate_tag}${cert_tag}${corr_tag}_$(tag_of "$key")_seed${seed}.toml"
 
-    grep -vE '^[[:space:]]*(sparsity_importance|retrain|run_tag|use_CER|seed|single_qubit_rescale|syndrome_gate_threshold|correlation_certainty_threshold|require_correlations|correlation_weight|certainty_penalty|certainty_hinge_width|correlation_form|correlation_agreement_floor|llr_certainty_importance)[[:space:]]*=' \
+    grep -vE '^[[:space:]]*(sparsity_importance|retrain|run_tag|use_CER|seed|single_qubit_rescale|syndrome_gate_threshold|correlation_certainty_threshold|require_correlations|correlation_weight|certainty_penalty|certainty_hinge_width|certainty_syndrome_gate_threshold|correlation_form|correlation_agreement_floor|llr_certainty_importance)[[:space:]]*=' \
         "$MODELS_DIR/$BASE_HP" > "$MODELS_DIR/$hp"
     {
         echo ""
@@ -347,6 +368,7 @@ emit_point() {   # <key> <seed> <use_cer> <lambda|""> <tau> <certainty_penalty> 
         echo "seed = $seed"
         echo "sparsity_importance = \"${sparsity_value},${sparsity_value},0.8,up\""
         echo "syndrome_gate_threshold = ${tau}"
+        echo "certainty_syndrome_gate_threshold = ${certainty_gate_value}"
         echo "correlation_certainty_threshold = ${CERTAINTY}"
         echo "certainty_penalty = \"${cert_penalty}\""
         echo "certainty_hinge_width = ${cert_width}"
@@ -370,23 +392,24 @@ emit_point() {   # <key> <seed> <use_cer> <lambda|""> <tau> <certainty_penalty> 
 for key in $DATASETS; do
     for seed in $SEEDS; do
         for tau in $GATE_TAUS; do
-            for sp in $SPARSITIES; do
-                for cp in $CERT_PENALTIES; do
-                    for lam in $LAMBDAS; do
-                        if [ "$lam" = "0.0" ]; then
-                            # lambda = 0 kills L3, so the forms train identically.
-                            emit_point "$key" "$seed" true "$lam" "$tau" "$cp" "bilinear" "$sp"
-                        else
-                            for cf in $CORR_FORMS; do
-                                emit_point "$key" "$seed" true "$lam" "$tau" "$cp" "$cf" "$sp"
-                            done
+            for ct in $CERT_GATES; do
+                for sp in $SPARSITIES; do
+                    for cp in $CERT_PENALTIES; do
+                        for lam in $LAMBDAS; do
+                            if [ "$lam" = "0.0" ]; then
+                                emit_point "$key" "$seed" true "$lam" "$tau" "$cp" "bilinear" "$sp" "$ct"
+                            else
+                                for cf in $CORR_FORMS; do
+                                    emit_point "$key" "$seed" true "$lam" "$tau" "$cp" "$cf" "$sp" "$ct"
+                                done
+                            fi
+                        done
+                        # tau, tau_2, the L2 form and alpha3 all act on the
+                        # baseline too, so it needs an arm for each combination.
+                        if [ "$INCLUDE_NOCER" = "true" ]; then
+                            emit_point "$key" "$seed" false "" "$tau" "$cp" "bilinear" "$sp" "$ct"
                         fi
                     done
-                    # tau, the L2 form and alpha3 all act on the baseline too, so
-                    # it needs its own arm for each combination.
-                    if [ "$INCLUDE_NOCER" = "true" ]; then
-                        emit_point "$key" "$seed" false "" "$tau" "$cp" "bilinear" "$sp"
-                    fi
                 done
             done
         done
@@ -650,7 +673,7 @@ if [ "$LOCAL" -eq 1 ]; then
           "$DATA/correlated_weights/correlated_weights_${SMOKE_KEY}.txt"
 
     SMOKE_HP="hyperparams_hp_smoke.toml"
-    grep -vE '^[[:space:]]*(sparsity_importance|retrain|run_tag|use_CER|seed|single_qubit_rescale|syndrome_gate_threshold|correlation_certainty_threshold|require_correlations|correlation_weight|certainty_penalty|certainty_hinge_width|correlation_form|correlation_agreement_floor|llr_certainty_importance|n_epochs|n_gradient_updates_per_epoch)[[:space:]]*=' \
+    grep -vE '^[[:space:]]*(sparsity_importance|retrain|run_tag|use_CER|seed|single_qubit_rescale|syndrome_gate_threshold|correlation_certainty_threshold|require_correlations|correlation_weight|certainty_penalty|certainty_hinge_width|certainty_syndrome_gate_threshold|correlation_form|correlation_agreement_floor|llr_certainty_importance|n_epochs|n_gradient_updates_per_epoch)[[:space:]]*=' \
         "$MODELS_DIR/$BASE_HP" > "$MODELS_DIR/$SMOKE_HP"
     {
         echo ""

@@ -93,7 +93,7 @@ const USAGE = """
 #   _hp<arm>_sp<tag>[_lam<tag>]_seed_<n>          sweep_hyperparams.sh
 # The gate token is optional because the second generator dropped it once the
 # ungated path was deleted from loss.jl: every run is gated now.
-const RUN_PATTERN = r"_trained_using_train_(p_[0-9.eE+-]+(?:_sig_[0-9.eE+-]+)?_s_\d+)(_no_cer)?_(?:cw|hp)(cer|nocer)(?:_(ungated|gated))?_sp([0-9p]+)(?:_lam([0-9p]+[du]?))?(?:_tau([0-9pe]+))?(?:_cp([a-z]+[0-9p]*))?(?:_cf([a-z_]+))?_seed_(\d+)\.csv$"
+const RUN_PATTERN = r"_trained_using_train_(p_[0-9.eE+-]+(?:_sig_[0-9.eE+-]+)?_s_\d+)(_no_cer)?_(?:cw|hp)(cer|nocer)(?:_(ungated|gated))?_sp([0-9p]+)(?:_lam([0-9p]+[du]?))?(?:_tau([0-9pe]+))?(?:_ct([0-9pe]+))?(?:_cp([a-z]+[0-9p]*))?(?:_cf([a-z_]+))?_seed_(\d+)\.csv$"
 
 """
     tag_to_number(tag) -> Float64
@@ -191,11 +191,13 @@ function parse_run(filename::String)::Union{NamedTuple, Nothing}
         tau_tag = filename_match.captures[7] === nothing ? "" : String(filename_match.captures[7]),
         tau = filename_match.captures[7] === nothing ? NaN :
               tag_to_number(String(filename_match.captures[7])),
-        certainty_penalty = filename_match.captures[8] === nothing ? "entropy" :
-                            String(filename_match.captures[8]),
-        correlation_form = filename_match.captures[9] === nothing ? "bilinear" :
+        certainty_gate_tag = filename_match.captures[8] === nothing ? "" :
+                             String(filename_match.captures[8]),
+        certainty_penalty = filename_match.captures[9] === nothing ? "entropy" :
+                            String(filename_match.captures[10]),
+        correlation_form = filename_match.captures[10] === nothing ? "bilinear" :
                            String(filename_match.captures[9]),
-        seed = parse(Int, filename_match.captures[10]),
+        seed = parse(Int, filename_match.captures[11]),
     )
     return run_key
 end
@@ -221,21 +223,33 @@ function label_for(run_key::NamedTuple)::String
     if run_key.correlation_form != "bilinear"
         correlation_form_tag = "_cf$(run_key.correlation_form)"
     end
+    # alpha3 is a swept axis, so it belongs in the label. Without it the three
+    # sparsity arms pooled into one group and their COUNT was reported as the
+    # seed count: nocer_tau0p5 showed "7 seeds" (5 real seeds of sp0p0, plus one
+    # each of sp0p003 and sp0p01) and every hinge arm showed a spurious 3.
+    certainty_gate_label::String = ""
+    if !isempty(run_key.certainty_gate_tag)
+        certainty_gate_label = "_ct$(run_key.certainty_gate_tag)"
+    end
+    sparsity_tag_segment::String = ""
+    if run_key.sparsity_tag != "0p0"
+        sparsity_tag_segment = "_sp$(run_key.sparsity_tag)"
+    end
     if run_key.arm == "nocer"
         base_label::String = "nocer"
         if !isempty(run_key.tau_tag)
             base_label = "nocer_tau$(run_key.tau_tag)"
         end
-        return base_label * certainty_tag
+        return base_label * certainty_gate_label * sparsity_tag_segment * certainty_tag
     end
     if !run_key.lambda_pinned
-        return "cer_annealed" * certainty_tag
+        return "cer_annealed" * certainty_gate_label * sparsity_tag_segment * certainty_tag
     end
     label::String = "lam$(run_key.lambda_tag)"
     if !isempty(run_key.tau_tag)
         label = label * "_tau$(run_key.tau_tag)"
     end
-    label = label * certainty_tag * correlation_form_tag
+    label = label * certainty_gate_label * sparsity_tag_segment * certainty_tag * correlation_form_tag
     return label
 end
 
@@ -535,10 +549,31 @@ function collect_per_run(results_dir::String, logs_dir::String)::DataFrame
         end
         # Rebuild the tag exactly as the generator wrote it, or the training log
         # will not be found and every premise check comes back blank.
+        # EVERY tag that emit_point puts in the run_tag must be reproduced here,
+        # in the same order. The debug log is matched by `endswith(f, run_tail)`,
+        # so a missing segment does not merely fail to match -- it silently
+        # matches a DIFFERENT run whose name happens to end that way. Omitting
+        # _cp/_cf once made all three certainty penalties resolve to the entropy
+        # run's log: the same warning fired three times, the hinge arms inherited
+        # entropy's diagnostics, and the 90 runs carrying those tags found no log
+        # at all (156/246).
+        certainty_gate_segment::String = ""
+        if !isempty(run_key.certainty_gate_tag)
+            certainty_gate_segment = "_ct$(run_key.certainty_gate_tag)"
+        end
+        certainty_segment::String = ""
+        if run_key.certainty_penalty != "entropy"
+            certainty_segment = "_cp$(run_key.certainty_penalty)"
+        end
+        correlation_segment::String = ""
+        if run_key.correlation_form != "bilinear"
+            correlation_segment = "_cf$(run_key.correlation_form)"
+        end
         run_tail::String = "train_$(run_key.dataset)$(cer_tag)" *
                            "_$(run_key.prefix)$(run_key.arm)$(run_key.gate_segment)" *
                            "_sp$(run_key.sparsity_tag)$(lambda_segment)" *
                            (isempty(run_key.tau_tag) ? "" : "_tau$(run_key.tau_tag)") *
+                           certainty_gate_segment * certainty_segment * correlation_segment *
                            "_seed_$(run_key.seed)"
         debug_summary::Dict{Symbol, Any} = debug_log_summary(logs_dir, run_tail)
         for (key, value) in debug_summary
@@ -566,18 +601,26 @@ function collect_per_run(results_dir::String, logs_dir::String)::DataFrame
             end
         end
 
-        # THE PREMISE CHECK. This sweep only means anything if sparsity really was
-        # pinned to zero; a non-zero realised value means the TOML override did not
-        # take and the arm is not what it claims to be.
+        # THE PREMISE CHECK. sparsity_importance is a SWEPT AXIS, not a constant
+        # pinned to zero, so the test is that the realised value matches the one
+        # in this run's own filename tag (_sp0p003 -> 0.003) -- exactly the test
+        # lambda already gets below. Asserting == 0 here flagged every deliberate
+        # alpha3 arm as a violation.
         logged_sparsity = debug_summary[:sparsity_final_epoch]
+        pinned_sparsity::Float64 = tag_to_number(run_key.sparsity_tag)
+        row[:sparsity_matches_pin] = missing
         row[:sparsity_is_zero] = missing
         if logged_sparsity isa Number && !isnan(logged_sparsity)
             row[:sparsity_is_zero] = isapprox(logged_sparsity, 0.0; atol = 1e-8)
-            if !row[:sparsity_is_zero]
-                @warn "PREMISE VIOLATED for $(run_tail): the training log reports " *
-                      "sparsity_importance = $(logged_sparsity) at the final epoch, not 0. " *
-                      "The sparsity counterweight was active and this run does not test " *
-                      "what the sweep claims to test."
+            if !isnan(pinned_sparsity)
+                row[:sparsity_matches_pin] =
+                    isapprox(logged_sparsity, pinned_sparsity; rtol = 1e-3, atol = 1e-8)
+                if !row[:sparsity_matches_pin]
+                    @warn "PREMISE VIOLATED for $(run_tail): pinned sparsity = " *
+                          "$(pinned_sparsity) from the filename tag, but the training log " *
+                          "reports sparsity_importance = $(logged_sparsity) at the final " *
+                          "epoch. The TOML override did not take."
+                end
             end
         end
 
@@ -929,10 +972,10 @@ function print_report(per_run::DataFrame, per_arm::DataFrame, contrasts::DataFra
             end
         end
     end
-    if hasproperty(per_run, :sparsity_is_zero)
-        checked::Vector{Any} = collect(skipmissing(per_run.sparsity_is_zero))
+    if hasproperty(per_run, :sparsity_matches_pin)
+        checked::Vector{Any} = collect(skipmissing(per_run.sparsity_matches_pin))
         n_bad::Int = count(value -> value === false, checked)
-        @printf("  sparsity == 0 at final epoch  : %d / %d checked%s\n",
+        @printf("  realised sparsity == pinned   : %d / %d checked%s\n",
                 length(checked) - n_bad, length(checked),
                 n_bad > 0 ? "   <-- $(n_bad) VIOLATION(S), see warnings above" : "")
     end
