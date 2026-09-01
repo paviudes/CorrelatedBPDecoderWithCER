@@ -57,9 +57,15 @@ seeds            = [1]                 # network seeds for the MAIN grid
 # seed error bar on the result we would actually quote. Dataset-to-dataset spread
 # has dominated every effect so far and seed spread is still unmeasured.
 # Empty replication_seeds disables this grid entirely.
-replication_seeds   = []
-replication_lambdas = ["0.0", "3.0"]   # plus the no-CER baseline, always
-replication_taus    = [4.0, 1e6]
+# Here it carries the log_agreement lambda study AND its seed error bar: the
+# lam = 0.3 optimum found on 2026-09-01 is bracketed by two blow-up regions, so
+# the peak needs locating, and the variance result that made it interesting
+# rested on a single seed.
+replication_seeds   = [1, 2, 3, 4, 5]
+replication_lambdas = ["0.0", "0.1", "0.3", "1.0"]   # plus the no-CER baseline
+replication_taus    = [0.5]
+replication_correlation_form = "log_agreement"
+replication_certainty_penalty = "entropy"
 
 # --- sweep axes -------------------------------------------------------------
 # correlation_weight (lambda), per ACTIVE pair. A bare number is CONSTANT across
@@ -75,7 +81,7 @@ replication_taus    = [4.0, 1e6]
 # NOTE lambda is NOT comparable across correlation_forms: bilinear is a reward
 # (<= 0, bounded by |J| ~ 5.4) and log_agreement is a penalty (>= 0, reaching
 # ~|J|*log(1/eps) ~ 49 at eps = 1e-4). Roughly 10x the scale, so sweep low.
-lambdas          = ["0.0", "0.03", "0.3", "3.0"]
+lambdas          = ["0.0"]
 lambda_anneal_decay = 0.3            # per-epoch factor for the annealed forms
 
 # L3 functional form.
@@ -89,15 +95,23 @@ lambda_anneal_decay = 0.3            # per-epoch factor for the annealed forms
 #                  -> |J| at the two DISCORDANT corners and 0 at the concordant
 #                  ones. sgn(J) sits inside the argument because a raw -J log A
 #                  is unbounded BELOW wherever J < 0 (24% of the couplings).
-correlation_forms = ["bilinear", "log_agreement"]
+correlation_forms = ["bilinear"]      # irrelevant here: the main grid is lambda = 0
 correlation_agreement_floor = 1e-4   # eps; mandatory, see command_line.jl
 include_nocer    = true              # flat p = 0.1 baseline arm
-sparsity         = 0.0               # sparsity_importance, pinned constant
 
-# L2 weight. Set to 0 to switch the certainty term OFF entirely and isolate
-# L1 + L3, which is what the log_agreement comparison needs: with L2 live, tau
-# moves both terms and the two L3 forms cannot be compared cleanly.
-certainty_importance = 0.0
+# sparsity_importance (alpha3), now a swept LIST. sum sigma(mu) is the expected
+# error weight -- a minimum-weight prior, NOT a certainty measure (sigma is
+# monotone, so it scores a certainly-flipped qubit and a certainly-clean one at
+# opposite extremes). Positive alpha3 pushes mu UP, i.e. "assume clean".
+# Ordering constraint from loss.jl: alpha3 x typical error weight must stay <~ 1,
+# or a gated solved sample scores worse than a failing one.
+# This has been pinned to 0 in every sweep to date; this is its first test.
+sparsities       = [0.0, 0.003, 0.01]
+
+# L2 weight, held at the annealed schedule's ceiling. The previous sweep ran this
+# at 0 to isolate L1 + L3; that cost the priors their p = 5e-4 advantage
+# (+0.8% vs -11.8% with L2 on), so L2 is back on for anything headline-bearing.
+certainty_importance = 0.01
 
 # tau, in softly broken checks. This gates L2 AND L3, so it moves BOTH arms.
 #   0.5   current: aux only where the syndrome is essentially already cleared
@@ -105,7 +119,7 @@ certainty_importance = 0.0
 #         min_syndrome_weight = 3, one flip short, and are invisible at 0.5
 #   1e6   always open: aux applies to every sample. Layer SELECTION still sees
 #         base alone, so this is not the historical ungated path.
-syndrome_gates   = [0.5, 1e6]
+syndrome_gates   = [0.5]             # already swept; 0.5 is the incumbent
 certainty_gate   = 2.2               # c, LLR units (2.2 <=> sigma > 0.9 or < 0.1)
 
 # Certainty penalty f in the L2 term. All are symmetric and peak at mu = 0; they
@@ -124,7 +138,14 @@ certainty_gate   = 2.2               # c, LLR units (2.2 <=> sigma > 0.9 or < 0.
 # alone caused them. The CER priors effect survived ONLY under entropy
 # (14/18, p = 0.031; both others exactly 9/18 = chance).
 # Keep this axis at entropy alone unless testing a new penalty deliberately.
-certainty_penalties = ["entropy"]
+# "hinge:<w>" sets certainty_hinge_width for that arm. Support, not peak force,
+# is what decides who a cusped penalty touches: the hinge is EXACTLY zero beyond
+# w. w = 2.2 (tested, 2/36 blowups, priors effect destroyed) covers the whole
+# lower edge of the decided population. w = 0.3 has the highest force at zero of
+# anything tried (3.3) on the SMALLEST footprint -- inert on 99.99% of qubits --
+# so it can repair a qubit parked at mu ~ 0 on L1's flat manifold without
+# fighting L1 for the qubits it is still legitimately deciding.
+certainty_penalties = ["entropy", "hinge:0.3", "hinge:0.5"]
 certainty_hinge_width = 2.2          # w, only used by the hinge penalty
 single_qubit_rescale = 0.1
 
@@ -141,8 +162,8 @@ heap_size_hint   = "4G"
 # K tasks cut the wall time by ~K without any task needing a bigger node. Slurm
 # schedules small allocations sooner, so more/smaller tasks generally start
 # earlier than one large one.
-#   96 points / 2 tasks = 48 per task = one 54-core wave = ~45 min.
-train_array_tasks = 2
+#   246 points / 5 tasks = 50 per task = one 54-core wave = ~45 min.
+train_array_tasks = 5
 train_cpus       = 54   # points per task per wave; a CPU node has 64
 train_mem_per_cpu = "6G"
 train_wall_time  = "4:00:00"
@@ -151,13 +172,13 @@ train_wall_time  = "4:00:00"
 # on it: a 1-GPU request schedules far sooner than a whole 4-GPU node, and the
 # no-sharing rule (see below) is satisfied trivially rather than by arithmetic.
 # Scale throughput with test_array_tasks, NOT with processes per card.
-#   96 points / 4 tasks = 24 per task x 3.7 min = ~90 min.
+#   246 points / 8 tasks = 31 per task x 3.7 min = ~115 min.
 #
 # NEVER put two processes on one unpartitioned card: the real footprint is ~1.5x
 # the nominal GPU_MEMORY, so two on a 40 GB a100 overcommit and die stochastically
 # at OOM — that killed 21/54 tests on 2026-08-28. MIG only worked because MIG is
 # a HARD partition. Sharing is safe only when the hardware partitions it.
-test_array_tasks = 4
+test_array_tasks = 8
 gpu_type         = "a100"
 n_gpus_per_node  = 1                 # one card per array task
 test_jobs        = 1                 # one process on it; do not raise
@@ -206,7 +227,8 @@ SEEDS=$(list seeds);                 LAMBDAS=$(list lambdas)
 LAMBDA_DECAY=$(get lambda_anneal_decay)
 REP_SEEDS=$(list replication_seeds); REP_LAMBDAS=$(list replication_lambdas)
 REP_TAUS=$(list replication_taus)
-INCLUDE_NOCER=$(get include_nocer);  SPARSITY=$(get sparsity)
+REP_FORM=$(get replication_correlation_form); REP_CP=$(get replication_certainty_penalty)
+INCLUDE_NOCER=$(get include_nocer);  SPARSITIES=$(list sparsities)
 GATE_TAUS=$(list syndrome_gates);    CERTAINTY=$(get certainty_gate)
 RESCALE=$(get single_qubit_rescale)
 CORR_FORMS=$(list correlation_forms); AGREE_FLOOR=$(get correlation_agreement_floor)
@@ -289,7 +311,15 @@ emit_point() {   # <key> <seed> <use_cer> <lambda|""> <tau> <certainty_penalty> 
     # The certainty penalty changes L2, which BOTH arms carry, so it must be in
     # the tag or the three penalties overwrite each other's weights and results.
     # "entropy" stays untagged so the historical filenames remain valid.
-    local cert_penalty="${6:-entropy}"
+    # "hinge:0.3" -> penalty "hinge", width 0.3, tag "_cphinge0p3". The width MUST
+    # be in the tag or two widths overwrite each other's weights and results.
+    local cert_spec="${6:-entropy}"
+    local cert_penalty="${cert_spec%%:*}"
+    local cert_width="$HINGE_W"
+    if [ "$cert_spec" != "$cert_penalty" ]; then
+        cert_width="${cert_spec#*:}"
+    fi
+    local sparsity_value="${8:-0.0}"
     # The L3 form changes only the CER arms -- with use_CER = false the term is
     # multiplied by nothing -- so the baseline is deliberately left untagged and
     # shared between forms rather than trained twice identically.
@@ -300,11 +330,11 @@ emit_point() {   # <key> <seed> <use_cer> <lambda|""> <tau> <certainty_penalty> 
     fi
     local cert_tag=""
     if [ "$cert_penalty" != "entropy" ]; then
-        cert_tag="_cp${cert_penalty}"
+        cert_tag="_cp${cert_penalty}$(tag_of "$cert_width")"
     fi
 
-    local run_tag="_hp${arm}_sp$(tag_of "$SPARSITY")${lam_tag}${tau_tag}${cert_tag}${corr_tag}"
-    local hp="hyperparams_hp_${arm}_sp$(tag_of "$SPARSITY")${lam_tag}${tau_tag}${cert_tag}${corr_tag}_$(tag_of "$key")_seed${seed}.toml"
+    local run_tag="_hp${arm}_sp$(tag_of "$sparsity_value")${lam_tag}${tau_tag}${cert_tag}${corr_tag}"
+    local hp="hyperparams_hp_${arm}_sp$(tag_of "$sparsity_value")${lam_tag}${tau_tag}${cert_tag}${corr_tag}_$(tag_of "$key")_seed${seed}.toml"
 
     grep -vE '^[[:space:]]*(sparsity_importance|retrain|run_tag|use_CER|seed|single_qubit_rescale|syndrome_gate_threshold|correlation_certainty_threshold|require_correlations|correlation_weight|certainty_penalty|certainty_hinge_width|correlation_form|correlation_agreement_floor|llr_certainty_importance)[[:space:]]*=' \
         "$MODELS_DIR/$BASE_HP" > "$MODELS_DIR/$hp"
@@ -315,11 +345,11 @@ emit_point() {   # <key> <seed> <use_cer> <lambda|""> <tau> <certainty_penalty> 
         echo "run_tag = \"${run_tag}\""
         echo "use_CER = $use_cer"
         echo "seed = $seed"
-        echo "sparsity_importance = \"${SPARSITY},${SPARSITY},0.8,up\""
+        echo "sparsity_importance = \"${sparsity_value},${sparsity_value},0.8,up\""
         echo "syndrome_gate_threshold = ${tau}"
         echo "correlation_certainty_threshold = ${CERTAINTY}"
         echo "certainty_penalty = \"${cert_penalty}\""
-        echo "certainty_hinge_width = ${HINGE_W}"
+        echo "certainty_hinge_width = ${cert_width}"
         echo "correlation_form = \"${corr_form}\""
         echo "correlation_agreement_floor = ${AGREE_FLOOR}"
         echo "llr_certainty_importance = \"${CERT_IMPORTANCE},${CERT_IMPORTANCE},0.7,up\""
@@ -340,19 +370,24 @@ emit_point() {   # <key> <seed> <use_cer> <lambda|""> <tau> <certainty_penalty> 
 for key in $DATASETS; do
     for seed in $SEEDS; do
         for tau in $GATE_TAUS; do
-            for cp in $CERT_PENALTIES; do
-                for lam in $LAMBDAS; do
-                    if [ "$lam" = "0.0" ]; then
-                        # lambda = 0 kills L3 entirely, so the two forms would
-                        # train identically. Emit it once, untagged.
-                        emit_point "$key" "$seed" true "$lam" "$tau" "$cp" "bilinear"
-                    else
-                        for cf in $CORR_FORMS; do
-                            emit_point "$key" "$seed" true "$lam" "$tau" "$cp" "$cf"
-                        done
+            for sp in $SPARSITIES; do
+                for cp in $CERT_PENALTIES; do
+                    for lam in $LAMBDAS; do
+                        if [ "$lam" = "0.0" ]; then
+                            # lambda = 0 kills L3, so the forms train identically.
+                            emit_point "$key" "$seed" true "$lam" "$tau" "$cp" "bilinear" "$sp"
+                        else
+                            for cf in $CORR_FORMS; do
+                                emit_point "$key" "$seed" true "$lam" "$tau" "$cp" "$cf" "$sp"
+                            done
+                        fi
+                    done
+                    # tau, the L2 form and alpha3 all act on the baseline too, so
+                    # it needs its own arm for each combination.
+                    if [ "$INCLUDE_NOCER" = "true" ]; then
+                        emit_point "$key" "$seed" false "" "$tau" "$cp" "bilinear" "$sp"
                     fi
                 done
-                if [ "$INCLUDE_NOCER" = "true" ]; then emit_point "$key" "$seed" false "" "$tau" "$cp"; fi
             done
         done
     done
@@ -360,9 +395,13 @@ done
 for key in $REF_DATASETS; do
     for seed in $SEEDS; do
         for tau in $GATE_TAUS; do
-            for cp in $CERT_PENALTIES; do
-                emit_point "$key" "$seed" true "0.0" "$tau" "$cp"
-                if [ "$INCLUDE_NOCER" = "true" ]; then emit_point "$key" "$seed" false "" "$tau" "$cp"; fi
+            for sp in $SPARSITIES; do
+                for cp in $CERT_PENALTIES; do
+                    emit_point "$key" "$seed" true "0.0" "$tau" "$cp" "bilinear" "$sp"
+                    if [ "$INCLUDE_NOCER" = "true" ]; then
+                        emit_point "$key" "$seed" false "" "$tau" "$cp" "bilinear" "$sp"
+                    fi
+                done
             done
         done
     done
@@ -375,14 +414,32 @@ for rep_seed in $REP_SEEDS; do
     for key in $DATASETS; do
         for rep_tau in $REP_TAUS; do
             for rep_lam in $REP_LAMBDAS; do
-                emit_point "$key" "$rep_seed" true "$rep_lam" "$rep_tau" "entropy" "bilinear"
+                if [ "$rep_lam" = "0.0" ]; then
+                    emit_point "$key" "$rep_seed" true "$rep_lam" "$rep_tau" "$REP_CP" "bilinear" "0.0"
+                else
+                    emit_point "$key" "$rep_seed" true "$rep_lam" "$rep_tau" "$REP_CP" "$REP_FORM" "0.0"
+                fi
             done
             if [ "$INCLUDE_NOCER" = "true" ]; then
-                emit_point "$key" "$rep_seed" false "" "$rep_tau" "entropy"
+                emit_point "$key" "$rep_seed" false "" "$rep_tau" "$REP_CP" "bilinear" "0.0"
             fi
         done
     done
 done
+
+N_RAW_POINTS=$(wc -l < "$TRAIN_CMDS")
+# The replication grid can restate main-grid cells (same dataset, seed, tau, L2
+# form and lambda). Two identical commands are not merely wasted cores: both
+# write the SAME weights and results files, concurrently, from different array
+# tasks. Deduplicate, preserving first-appearance order so the interleaved array
+# split stays balanced across datasets.
+for cmd_file in "$TRAIN_CMDS" "$TEST_CMDS"; do
+    awk '!seen[$0]++' "$cmd_file" > "$cmd_file.tmp" && mv "$cmd_file.tmp" "$cmd_file"
+done
+N_DUPLICATES=$(( N_RAW_POINTS - $(wc -l < "$TRAIN_CMDS") ))
+if [ "$N_DUPLICATES" -gt 0 ]; then
+    echo "[hp_sweep] removed $N_DUPLICATES duplicate point(s) shared by the two grids."
+fi
 
 N_POINTS=$(wc -l < "$TRAIN_CMDS")
 
@@ -546,7 +603,7 @@ echo "[hp_sweep] $N_POINTS point(s)"
 echo "  datasets  -> $DATASETS"
 echo "  ref       -> $REF_DATASETS   (lambda = 0 and no-CER only)"
 echo "  lambdas   -> $LAMBDAS   seeds -> $SEEDS"
-echo "  gates     -> tau = $GATE_TAUS (swept);  certainty c = $CERTAINTY;  sparsity = $SPARSITY"
+echo "  gates     -> tau = $GATE_TAUS;  certainty c = $CERTAINTY;  sparsity = $SPARSITIES"
 echo "  train     -> $ACCOUNT_CPU: array 0-$((TRAIN_ARRAY-1)) ($TRAIN_ARRAY tasks x $TRAIN_CPUS cpu x $TRAIN_MEM), $TRAIN_WALL"
 echo "  test      -> $ACCOUNT_GPU: array 0-$((TEST_ARRAY-1)) ($TEST_ARRAY tasks x ${N_GPUS}x $GPU_TYPE (${VRAM_PER_GPU}G vram), $TEST_CPUS cpu),"
 echo "               --mem-per-gpu=$MEM_PER_GPU host ram, GPU_MEMORY=${GPU_MEMORY_MB}M, $TEST_JOBS at a time"
@@ -558,7 +615,7 @@ echo
 # submitted automatically.
 # Must match emit_point's tag exactly, tau included, or the check reads a path
 # that was never written and reports a missing file instead of a weights spread.
-FIRST_MODEL="neuralbp_weights_nlayers_${NLAYERS}_epochs_$(grep -E '^[[:space:]]*n_epochs' "$MODELS_DIR/$BASE_HP" | head -1 | sed -E 's/[^0-9]*([0-9]+).*/\1/')_trained_using_train_$(echo $DATASETS | awk '{print $1}')_hpcer_sp$(tag_of "$SPARSITY")_lam$(tag_of "$(echo $LAMBDAS | awk '{print $NF}')")_tau$(tag_of "$(echo $GATE_TAUS | awk '{print $1}')")_seed_$(echo $SEEDS | awk '{print $1}').json"
+FIRST_MODEL="neuralbp_weights_nlayers_${NLAYERS}_epochs_$(grep -E '^[[:space:]]*n_epochs' "$MODELS_DIR/$BASE_HP" | head -1 | sed -E 's/[^0-9]*([0-9]+).*/\1/')_trained_using_train_$(echo $DATASETS | awk '{print $1}')_hpcer_sp$(tag_of "$(echo $SPARSITIES | awk '{print $1}')")_lam$(tag_of "$(echo $LAMBDAS | awk '{print $NF}')")_tau$(tag_of "$(echo $GATE_TAUS | awk '{print $1}')")_seed_$(echo $SEEDS | awk '{print $1}').json"
 echo "submit — TRAIN first (CPU, $ACCOUNT_CPU), then TEST (GPU, $ACCOUNT_GPU):"
 echo
 echo "  # 1. training"
@@ -604,7 +661,8 @@ if [ "$LOCAL" -eq 1 ]; then
         echo "seed = 1"
         echo "n_epochs = 1"
         echo "n_gradient_updates_per_epoch = 20"
-        echo "sparsity_importance = \"${SPARSITY},${SPARSITY},0.8,up\""
+        SMOKE_SP=$(echo $SPARSITIES | awk '{print $1}')
+        echo "sparsity_importance = \"${SMOKE_SP},${SMOKE_SP},0.8,up\""
         echo "syndrome_gate_threshold = ${GATE_TAU}"
         echo "correlation_certainty_threshold = ${CERTAINTY}"
         echo "certainty_penalty = \"$(set -- $CERT_PENALTIES; echo ${1:-entropy})\""

@@ -93,7 +93,7 @@ const USAGE = """
 #   _hp<arm>_sp<tag>[_lam<tag>]_seed_<n>          sweep_hyperparams.sh
 # The gate token is optional because the second generator dropped it once the
 # ungated path was deleted from loss.jl: every run is gated now.
-const RUN_PATTERN = r"_trained_using_train_(p_[0-9.eE+-]+(?:_sig_[0-9.eE+-]+)?_s_\d+)(_no_cer)?_(?:cw|hp)(cer|nocer)(?:_(ungated|gated))?_sp([0-9p]+)(?:_lam([0-9p]+[du]?))?(?:_tau([0-9pe]+))?(?:_cp([a-z]+))?(?:_cf([a-z_]+))?_seed_(\d+)\.csv$"
+const RUN_PATTERN = r"_trained_using_train_(p_[0-9.eE+-]+(?:_sig_[0-9.eE+-]+)?_s_\d+)(_no_cer)?_(?:cw|hp)(cer|nocer)(?:_(ungated|gated))?_sp([0-9p]+)(?:_lam([0-9p]+[du]?))?(?:_tau([0-9pe]+))?(?:_cp([a-z]+[0-9p]*))?(?:_cf([a-z_]+))?_seed_(\d+)\.csv$"
 
 """
     tag_to_number(tag) -> Float64
