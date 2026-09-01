@@ -93,7 +93,7 @@ const USAGE = """
 #   _hp<arm>_sp<tag>[_lam<tag>]_seed_<n>          sweep_hyperparams.sh
 # The gate token is optional because the second generator dropped it once the
 # ungated path was deleted from loss.jl: every run is gated now.
-const RUN_PATTERN = r"_trained_using_train_(p_[0-9.eE+-]+(?:_sig_[0-9.eE+-]+)?_s_\d+)(_no_cer)?_(?:cw|hp)(cer|nocer)(?:_(ungated|gated))?_sp([0-9p]+)(?:_lam([0-9p]+[du]?))?(?:_tau([0-9pe]+))?(?:_cp([a-z]+))?_seed_(\d+)\.csv$"
+const RUN_PATTERN = r"_trained_using_train_(p_[0-9.eE+-]+(?:_sig_[0-9.eE+-]+)?_s_\d+)(_no_cer)?_(?:cw|hp)(cer|nocer)(?:_(ungated|gated))?_sp([0-9p]+)(?:_lam([0-9p]+[du]?))?(?:_tau([0-9pe]+))?(?:_cp([a-z]+))?(?:_cf([a-z_]+))?_seed_(\d+)\.csv$"
 
 """
     tag_to_number(tag) -> Float64
@@ -193,7 +193,9 @@ function parse_run(filename::String)::Union{NamedTuple, Nothing}
               tag_to_number(String(filename_match.captures[7])),
         certainty_penalty = filename_match.captures[8] === nothing ? "entropy" :
                             String(filename_match.captures[8]),
-        seed = parse(Int, filename_match.captures[9]),
+        correlation_form = filename_match.captures[9] === nothing ? "bilinear" :
+                           String(filename_match.captures[9]),
+        seed = parse(Int, filename_match.captures[10]),
     )
     return run_key
 end
@@ -213,6 +215,12 @@ function label_for(run_key::NamedTuple)::String
     if run_key.certainty_penalty != "entropy"
         certainty_tag = "_cp$(run_key.certainty_penalty)"
     end
+    # The L3 form changes the CER arms only; the baseline is shared between forms
+    # and stays untagged, so it can serve as the control for both.
+    correlation_form_tag::String = ""
+    if run_key.correlation_form != "bilinear"
+        correlation_form_tag = "_cf$(run_key.correlation_form)"
+    end
     if run_key.arm == "nocer"
         base_label::String = "nocer"
         if !isempty(run_key.tau_tag)
@@ -227,7 +235,7 @@ function label_for(run_key::NamedTuple)::String
     if !isempty(run_key.tau_tag)
         label = label * "_tau$(run_key.tau_tag)"
     end
-    label = label * certainty_tag
+    label = label * certainty_tag * correlation_form_tag
     return label
 end
 

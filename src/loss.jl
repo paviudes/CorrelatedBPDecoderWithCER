@@ -258,6 +258,132 @@ function ising_correlation_reward_per_sample(
     return rewards
 end
 
+# Integer codes for the correlation term. Same Enzyme reasoning as the certainty
+# penalty codes above: passed as a `Const`, branched on OUTSIDE the elementwise
+# work, each branch straight-line Float32.
+const CORRELATION_FORM_BILINEAR::Int      = 1
+const CORRELATION_FORM_LOG_AGREEMENT::Int = 2
+
+function correlation_form_code(name::String)::Int
+    """
+    Map the `correlation_form` hyperparameter string onto its integer code.
+    Throws on an unknown name so a typo in a sweep TOML fails at startup rather
+    than quietly training the historical default.
+    """
+    normalised_name::String = lowercase(strip(name))
+    codes_by_name::Dict{String, Int} = Dict(
+        "bilinear"      => CORRELATION_FORM_BILINEAR,
+        "log_agreement" => CORRELATION_FORM_LOG_AGREEMENT
+    )
+    if !haskey(codes_by_name, normalised_name)
+        throw(ArgumentError(
+            "Unknown correlation_form \"$(name)\". Must be one of: " *
+            join(sort(collect(keys(codes_by_name))), ", ") * "."
+        ))
+    end
+    code::Int = codes_by_name[normalised_name]
+    return code
+end
+
+function ising_log_agreement_penalty_per_sample(
+    posterior_llrs::Matrix{Float32},
+    connectivity::Matrix{Int},
+    correlation_strengths::Vector{Float32},
+    certainty_threshold::Float32,
+    agreement_floor::Float32
+)::Vector{Float32}
+    """
+    Weighted negative log-likelihood of pair CONCORDANCE:
+
+        t_i        = tanh(μ_i / 2)                     (= 1 - 2σ(μ_i), the magnetisation)
+        A_(i,k),j  = ( 1 + sgn(J) · t_i · t_k ) / 2
+        r_j        = ( ∑ d · |J_(i,k)| · (-log max(A, ε)) ) / max(1, ∑ d)
+
+    WHY THIS SHAPE. (1 + t_i t_k)/2 is exactly P(pair agrees) = p_i p_k +
+    (1-p_i)(1-p_k). The bilinear form σ_i σ_k has ∂/∂μ_i = σ_i(1-σ_i)σ_k, which
+    vanishes at ALL FOUR corners because σ(1-σ) → 0 for either sign of μ: it can
+    reward a configuration it likes but exerts no force to REACH it. Here the
+    log's 1/(1+t_i t_k) divergence exactly cancels the (1 - t_i²) saturation, so
+    the gradient tends to |J| at the two DISCORDANT corners and to 0 at the two
+    concordant ones — force precisely where a pair is in the wrong configuration.
+
+    WHY sgn(J) IS INSIDE AND |J| OUTSIDE. With a raw -J log A and J < 0 the term
+    is unbounded BELOW: the optimizer wins arbitrarily by driving anti-correlated
+    pairs to A → 0, ignoring the syndrome. About a quarter of the measured
+    couplings are negative, so that escape is real, not hypothetical. Folding the
+    sign into the argument puts the barrier on agreement for J < 0 and on
+    disagreement for J > 0, leaving r_j ≥ 0 always: zero where the coupling is
+    satisfied, growing where it is violated.
+
+    Not ordering-safe the way the bilinear reward was. That one was ≤ 0, so a
+    gated solved sample could never lose to a failing one. This is a PENALTY, so
+    a solved sample carrying a violated coupling scores above a solved sample
+    without one. That is intended — it is what gives the term force — but it
+    means λ has to stay small enough that L1's separation between solved and
+    unsolved is not overturned.
+
+    ε (`agreement_floor`) IS MANDATORY. tanh(μ/2) saturates to exactly 1.0f0 in
+    Float32 by |μ| ≈ 18, so A hits exactly 0 and log(0) = -Inf, giving a NaN
+    gradient, a NaN-skipped batch, a rolled-back epoch and silently untrained
+    weights. Clamping is what stops that.
+    """
+    n_samples = size(posterior_llrs, 2)
+    n_edges = size(connectivity, 1)
+    penalties = zeros(Float32, n_samples)
+    # Branchless, for the reason documented on `ising_correlation_reward_per_sample`.
+    @inbounds for j in 1:n_samples
+        accumulated_penalty::Float32 = 0.0f0
+        active_pair_count::Float32 = 0.0f0
+        for e in 1:n_edges
+            i = connectivity[e, 1]
+            k = connectivity[e, 2]
+            decided::Float32 = Float32(
+                (abs(posterior_llrs[i, j]) > certainty_threshold) &
+                (abs(posterior_llrs[k, j]) > certainty_threshold)
+            )
+            active_pair_count += decided
+            coupling::Float32 = correlation_strengths[e]
+            magnetisation_product::Float32 =
+                tanh(0.5f0 * posterior_llrs[i, j]) * tanh(0.5f0 * posterior_llrs[k, j])
+            concordance::Float32 =
+                0.5f0 * (1.0f0 + sign(coupling) * magnetisation_product)
+            accumulated_penalty += decided * abs(coupling) *
+                                   (-log(max(concordance, agreement_floor)))
+        end
+        penalties[j] = accumulated_penalty / max(1.0f0, active_pair_count)
+    end
+    return penalties
+end
+
+function correlation_term_per_sample(
+    posterior_llrs::Matrix{Float32},
+    connectivity::Matrix{Int},
+    correlation_strengths::Vector{Float32},
+    certainty_threshold::Float32,
+    correlation_form::Int,
+    agreement_floor::Float32
+)::Vector{Float32}
+    """
+    Dispatch to the selected correlation term. BILINEAR is the historical
+    co-activation reward (≤ 0); LOG_AGREEMENT is the concordance penalty (≥ 0).
+    They differ in sign as well as shape, so λ is NOT comparable between them.
+    """
+    if correlation_form == CORRELATION_FORM_BILINEAR
+        bilinear_rewards::Vector{Float32} = ising_correlation_reward_per_sample(
+            posterior_llrs, connectivity, correlation_strengths, certainty_threshold
+        )
+        return bilinear_rewards
+    elseif correlation_form == CORRELATION_FORM_LOG_AGREEMENT
+        agreement_penalties::Vector{Float32} = ising_log_agreement_penalty_per_sample(
+            posterior_llrs, connectivity, correlation_strengths,
+            certainty_threshold, agreement_floor
+        )
+        return agreement_penalties
+    else
+        throw(ArgumentError("Unknown correlation_form: $(correlation_form)."))
+    end
+end
+
 function correlation_gate_open_fraction(
     posterior_llrs::Matrix{Float32},
     connectivity::Matrix{Int},
@@ -304,6 +430,8 @@ function compute_loss_including_correlations(
     correlation_certainty_threshold::Float32,   # c, in LLR units
     certainty_penalty_kind::Int,                # which f in `certainty_per_sample`
     certainty_hinge_width::Float32,             # w, only used by the hinge penalty
+    correlation_form::Int,                      # which L3 in `correlation_term_per_sample`
+    correlation_agreement_floor::Float32,       # ε, only used by the log-agreement form
     warmup_loss_layers::Int
 )::Float32
     """
@@ -338,8 +466,9 @@ function compute_loss_including_correlations(
         cert_j   = certainty_per_sample(post, certainty_penalty_kind, certainty_hinge_width)
         sparse_j = sparsity_per_sample(post)
         if is_correlated
-            corr_j = ising_correlation_reward_per_sample(
-                post, connectivity, correlation_strengths, correlation_certainty_threshold
+            corr_j = correlation_term_per_sample(
+                post, connectivity, correlation_strengths, correlation_certainty_threshold,
+                correlation_form, correlation_agreement_floor
             )
             aux_j = @. llr_certainty_importance * cert_j +
                        correlation_weight * corr_j +

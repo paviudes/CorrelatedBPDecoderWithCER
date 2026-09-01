@@ -10,6 +10,8 @@ function get_loss_value(
     correlation_certainty_threshold, # c for the per-pair detached certainty gate on the correlation term.
     certainty_penalty_kind, # which certainty penalty f to use (see `certainty_per_sample`).
     certainty_hinge_width, # w for the hinge certainty penalty; ignored by the others.
+    correlation_form, # which L3 to use (see `correlation_term_per_sample`).
+    correlation_agreement_floor, # ε for the log-agreement L3; ignored by the bilinear form.
     warmup_loss_layers, # First number of layers to leave unconstrained in the Loss function.
     base, # constant parameters of the model, including the parity-check matrix, connectivity, correlation strengths, etc.
     llrs_batch, # batch of initial LLRs for the bits, to be used as input to the network
@@ -51,6 +53,8 @@ function get_loss_value(
         correlation_certainty_threshold, # c for the per-pair detached certainty gate.
         certainty_penalty_kind, # which certainty penalty f to use.
         certainty_hinge_width, # w for the hinge certainty penalty.
+        correlation_form, # which L3 to use.
+        correlation_agreement_floor, # ε for the log-agreement L3.
         warmup_loss_layers # first number of layers that should be unconstrained since the optimizer doesn't know what the right beliefs are.
     )
     return total_loss
@@ -68,6 +72,8 @@ function get_individual_loss_values(
     correlation_certainty_threshold::Float32, # c for the per-pair detached certainty gate.
     certainty_penalty_kind::Int, # which certainty penalty f to use (see `certainty_per_sample`).
     certainty_hinge_width::Float32, # w for the hinge certainty penalty; ignored by the others.
+    correlation_form::Int, # which L3 to use (see `correlation_term_per_sample`).
+    correlation_agreement_floor::Float32, # ε for the log-agreement L3; ignored by the bilinear form.
     warmup_loss_layers::Int, # first number of layers that should be excluded from the loss function.
     base::NeuralBPBase, # constant parameters of the model, including the parity-check matrix, connectivity, correlation strengths, etc.
     llrs_batch::Matrix{Float32}, # batch of initial LLRs for the bits, to be used as input to the network
@@ -121,8 +127,9 @@ function get_individual_loss_values(
         corr_j   = zeros(Float32, n_samples)
         corr_open::Float32 = 0.0f0
         if is_correlated
-            corr_j = ising_correlation_reward_per_sample(
-                post, connectivity, correlation_strengths, correlation_certainty_threshold
+            corr_j = correlation_term_per_sample(
+                post, connectivity, correlation_strengths, correlation_certainty_threshold,
+                correlation_form, correlation_agreement_floor
             )
             corr_open = correlation_gate_open_fraction(
                 post, connectivity, correlation_certainty_threshold
@@ -347,6 +354,13 @@ function train_neuralbp_enzyme!(
     certainty_penalty_kind::Int = certainty_penalty_code(
         String(get(hyperparameters, "certainty_penalty", "entropy")))
     certainty_hinge_width::Float32 = Float32(get(hyperparameters, "certainty_hinge_width", 2.2))
+    correlation_form::Int = correlation_form_code(
+        String(get(hyperparameters, "correlation_form", "bilinear")))
+    correlation_agreement_floor::Float32 =
+        Float32(get(hyperparameters, "correlation_agreement_floor", 1.0e-4))
+    if correlation_agreement_floor <= 0.0f0
+        throw(ArgumentError("correlation_agreement_floor must be > 0; log(0) gives a NaN gradient."))
+    end
     if certainty_hinge_width <= 0.0f0
         throw(ArgumentError("certainty_hinge_width must be > 0, got $(certainty_hinge_width)."))
     end
@@ -426,6 +440,7 @@ function train_neuralbp_enzyme!(
         hp[:syndrome_gate_threshold] = syndrome_gate_threshold
         hp[:correlation_certainty_threshold] = correlation_certainty_threshold
         hp[:certainty_hinge_width] = certainty_hinge_width
+        hp[:correlation_agreement_floor] = correlation_agreement_floor
 
         # -------------------------
         # Per-epoch checkpoint — restored at end-of-epoch if too many batches
@@ -483,6 +498,8 @@ function train_neuralbp_enzyme!(
                 Enzyme.Const(hp[:correlation_certainty_threshold]),
                 Enzyme.Const(certainty_penalty_kind),
                 Enzyme.Const(hp[:certainty_hinge_width]),
+                Enzyme.Const(correlation_form),
+                Enzyme.Const(hp[:correlation_agreement_floor]),
                 Enzyme.Const(warmup_loss_layers),
                 Enzyme.Const(base),
                 Enzyme.Const(llrs_batch),
@@ -558,6 +575,8 @@ function train_neuralbp_enzyme!(
                     hp[:correlation_certainty_threshold],
                     certainty_penalty_kind,
                     hp[:certainty_hinge_width],
+                    correlation_form,
+                    hp[:correlation_agreement_floor],
                     warmup_loss_layers,
                     base,
                     llrs_batch,

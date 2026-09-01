@@ -188,7 +188,10 @@ export save_trained_weights, extract_weights_for_BP, save_extracted_weights_for_
 include("loss.jl")
 export compute_loss_including_correlations, compute_smooth_loss_from_llrs, softmin_loss,
        soft_syndrome_weight_per_sample, syndrome_gate_per_sample, certainty_per_sample,
-       sparsity_per_sample, ising_correlation_reward_per_sample, correlation_gate_open_fraction
+       sparsity_per_sample, ising_correlation_reward_per_sample, correlation_gate_open_fraction,
+       ising_log_agreement_penalty_per_sample, correlation_term_per_sample, correlation_form_code,
+       CORRELATION_FORM_BILINEAR, CORRELATION_FORM_LOG_AGREEMENT,
+       CERTAINTY_PENALTY_ENTROPY, CERTAINTY_PENALTY_EXPONENTIAL, CERTAINTY_PENALTY_HINGE
 
 # Training routines
 include("train.jl")

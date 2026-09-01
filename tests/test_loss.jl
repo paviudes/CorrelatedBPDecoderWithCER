@@ -7,16 +7,23 @@ normalisation, on a hand-built 4-qubit example where every value is checkable by
 hand.
 """
 function test_correlation_gates()::Nothing
+    # SIGN CONVENTION. `sigmoid(μ) = 1/(1 + exp(μ))` is the ERROR probability, so
+    # μ = -4 is a qubit that almost certainly FLIPPED (σ ≈ 0.982) and μ = +4 is
+    # one that almost certainly did not (σ ≈ 0.018). An earlier version of this
+    # test used 1/(1 + exp(-μ)) and so asserted the mirror image of every case.
     n_bits = 4
-    n_samples = 3
+    n_samples = 4
 
-    # Columns: a decided co-flipped pair, an undecided pair, a decided pair that
-    # is not co-flipped.
+    # Pair under test is (qubit 1, qubit 2). Columns, in order:
+    #   1  both FLIPPED and decided  -> gate open, co-activation ≈ 1
+    #   2  undecided                 -> gate closed
+    #   3  both CLEAN and decided    -> gate open, co-activation ≈ 0
+    #   4  one flipped one clean     -> gate open, co-activation small
     posterior_llrs = Float32[
-        4.0   0.2   4.0
-        4.0   0.2  -4.0
-       -4.0  -4.0  -4.0
-       -4.0  -4.0  -4.0
+       -4.0   0.2   4.0  -4.0
+       -4.0   0.2   4.0   4.0
+       -4.0  -4.0  -4.0  -4.0
+       -4.0  -4.0  -4.0  -4.0
     ]
     connectivity = [1 2]
     correlation_strengths = Float32[3.0]
@@ -26,26 +33,33 @@ function test_correlation_gates()::Nothing
         posterior_llrs, connectivity, correlation_strengths, certainty_threshold
     )
 
-    sigmoid_of_four::Float32 = 1.0f0 / (1.0f0 + exp(-4.0f0))
+    # Probability that a qubit at μ = ∓4 is flipped, in the CODE's convention.
+    flipped_probability::Float32 = sigmoid(-4.0f0)   # ≈ 0.98201
+    clean_probability::Float32   = sigmoid(4.0f0)    # ≈ 0.01799
 
     @testset "certainty gate" begin
-        # Sample 1: both endpoints decided (|μ| = 4 > 2.2), both flagged.
-        # One active pair, so the normaliser is 1 and r = -J σ σ.
-        @test rewards[1] ≈ -3.0f0 * sigmoid_of_four^2 atol=1e-5
-        # Sample 2: |μ| = 0.2 < 2.2, gate closed, no active pairs, r = 0.
-        # Ungated this pair would have contributed -3 * 0.55^2 = -0.91.
+        # Sample 1: both decided (|μ| = 4 > 2.2) and both flipped. One active
+        # pair, so the normaliser is 1 and r = -J σ σ ≈ -3 × 0.982² = -2.893.
+        @test rewards[1] ≈ -3.0f0 * flipped_probability^2 atol=1e-5
+        # Sample 2: |μ| = 0.2 < 2.2, gate closed, no active pairs, r = 0 exactly.
+        # Ungated this pair would have contributed ≈ -3 × 0.45² = -0.61.
         @test rewards[2] == 0.0f0
-        # Sample 3: decided, so the gate is open, but qubit 2 is σ ≈ 0 and the
-        # co-activation product is ~0. The gate admits it; the reward is ~0.
-        @test rewards[3] ≈ 0.0f0 atol=1e-3
+        # Sample 3: gate open, but neither qubit flipped, so the co-activation
+        # product is ≈ 0.018² and the reward is ≈ -0.001.
+        @test rewards[3] ≈ -3.0f0 * clean_probability^2 atol=1e-5
+        @test abs(rewards[3]) < 1e-2
+        # Sample 4: gate open, exactly one qubit flipped. The couplings reward
+        # CO-activation, so a mixed pair earns far less than a co-flipped one.
+        @test rewards[4] ≈ -3.0f0 * flipped_probability * clean_probability atol=1e-5
+        @test abs(rewards[4]) < abs(rewards[1]) / 10
     end
 
     @testset "gate-open fraction" begin
         open_fraction = correlation_gate_open_fraction(
             posterior_llrs, connectivity, certainty_threshold
         )
-        # Two of three samples clear the threshold on both endpoints.
-        @test open_fraction ≈ 2.0f0 / 3.0f0 atol=1e-6
+        # Three of four samples clear the threshold on both endpoints.
+        @test open_fraction ≈ 3.0f0 / 4.0f0 atol=1e-6
     end
 
     @testset "active-pair normalisation" begin
@@ -144,4 +158,102 @@ test_syndrome_gate()
         # sample 1 is far less decided than sample 2, for every penalty
         @test certainties[1] > certainties[2]
     end
+end
+
+# =============================================================================
+#  log-agreement L3: force at the DISCORDANT corners, none at the concordant ones
+# =============================================================================
+
+# Single-pair, single-sample wrappers so the corner cases below read as scalars.
+# Named top-level functions rather than closures because an anonymous
+# `function (args...)::T` is a syntax error in Julia — the return-type annotation
+# is only allowed on a named definition — and the house style requires one.
+function log_agreement_penalty_for_pair(
+    mu_i::Float32,
+    mu_k::Float32,
+    coupling::Float32,
+    certainty_threshold::Float32,
+    agreement_floor::Float32
+)::Float32
+    posterior_llrs::Matrix{Float32} = reshape(Float32[mu_i, mu_k], 2, 1)
+    pair_connectivity::Matrix{Int} = [1 2]
+    penalties::Vector{Float32} = ising_log_agreement_penalty_per_sample(
+        posterior_llrs, pair_connectivity, Float32[coupling],
+        certainty_threshold, agreement_floor
+    )
+    return penalties[1]
+end
+
+function bilinear_reward_for_pair(
+    mu_i::Float32,
+    mu_k::Float32,
+    coupling::Float32,
+    certainty_threshold::Float32
+)::Float32
+    posterior_llrs::Matrix{Float32} = reshape(Float32[mu_i, mu_k], 2, 1)
+    pair_connectivity::Matrix{Int} = [1 2]
+    rewards::Vector{Float32} = ising_correlation_reward_per_sample(
+        posterior_llrs, pair_connectivity, Float32[coupling], certainty_threshold
+    )
+    return rewards[1]
+end
+
+@testset "log agreement correlation term" begin
+    # Certainty gate wide open: the gate is |μ| > threshold, so 0 admits every
+    # decided qubit. (μ = 0 exactly still fails it, which the ≥ 0 grid below uses.)
+    open_gate_threshold::Float32 = 0.0f0
+    floor_value::Float32 = 1.0f-4
+    saturated::Float32 = 12.0f0
+    step::Float32 = 1.0f-3
+
+    # (1 + t_i t_k)/2 IS P(agree): check against the explicit probability.
+    for (mu_i, mu_k) in ((2.0f0, 3.0f0), (-1.0f0, 4.0f0), (0.0f0, 0.0f0))
+        error_probability_i::Float32 = sigmoid(mu_i)
+        error_probability_k::Float32 = sigmoid(mu_k)
+        agreement::Float32 = 0.5f0 * (1.0f0 + tanh(mu_i / 2) * tanh(mu_k / 2))
+        expected_agreement::Float32 =
+            error_probability_i * error_probability_k +
+            (1.0f0 - error_probability_i) * (1.0f0 - error_probability_k)
+        @test agreement ≈ expected_agreement atol=1f-5
+    end
+
+    # POSITIVE coupling: concordant corners cost nothing, discordant ones cost.
+    @test log_agreement_penalty_for_pair( saturated,  saturated, 1.5f0, open_gate_threshold, floor_value) ≈ 0.0f0 atol=1f-4
+    @test log_agreement_penalty_for_pair(-saturated, -saturated, 1.5f0, open_gate_threshold, floor_value) ≈ 0.0f0 atol=1f-4
+    @test log_agreement_penalty_for_pair( saturated, -saturated, 1.5f0, open_gate_threshold, floor_value) > 10.0f0
+    # NEGATIVE coupling: the barrier moves to AGREEMENT, and stays a penalty.
+    @test log_agreement_penalty_for_pair( saturated, -saturated, -0.6f0, open_gate_threshold, floor_value) ≈ 0.0f0 atol=1f-4
+    @test log_agreement_penalty_for_pair( saturated,  saturated, -0.6f0, open_gate_threshold, floor_value) > 1.0f0
+
+    # Never negative, for either sign of J — this is what a raw -J log A lacked:
+    # with J < 0 that form is unbounded BELOW, and 24% of the real couplings are
+    # negative, so the optimizer would have had a free escape to -Inf.
+    for coupling in (2.0f0, -2.0f0), mu_i in (-saturated, 0.0f0, saturated), mu_k in (-saturated, 0.0f0, saturated)
+        @test log_agreement_penalty_for_pair(mu_i, mu_k, coupling, open_gate_threshold, floor_value) >= 0.0f0
+    end
+
+    # Finite even where tanh saturates to exactly 1.0f0 (|μ| ≳ 18): without the
+    # floor this is log(0) = -Inf, a NaN gradient and silently untrained weights.
+    @test isfinite(log_agreement_penalty_for_pair(40.0f0, -40.0f0,  5.36f0, open_gate_threshold, floor_value))
+    @test isfinite(log_agreement_penalty_for_pair(40.0f0,  40.0f0, -5.36f0, open_gate_threshold, floor_value))
+
+    # Gradient: ~0 at the concordant corners, non-vanishing at the discordant ones.
+    concordant_force::Float32 = abs(
+        log_agreement_penalty_for_pair(saturated + step, saturated, 1.5f0, open_gate_threshold, floor_value) -
+        log_agreement_penalty_for_pair(saturated,        saturated, 1.5f0, open_gate_threshold, floor_value)) / step
+    discordant_force::Float32 = abs(
+        log_agreement_penalty_for_pair(2.0f0 + step, -2.0f0, 1.5f0, open_gate_threshold, floor_value) -
+        log_agreement_penalty_for_pair(2.0f0,        -2.0f0, 1.5f0, open_gate_threshold, floor_value)) / step
+    @test concordant_force < 1f-3
+    @test discordant_force > 0.1f0
+
+    # The bilinear form vanishes at the discordant corner too — the defect.
+    bilinear_discordant_force::Float32 = abs(
+        bilinear_reward_for_pair(saturated + step, -saturated, 1.5f0, open_gate_threshold) -
+        bilinear_reward_for_pair(saturated,        -saturated, 1.5f0, open_gate_threshold)) / step
+    @test bilinear_discordant_force < 1f-3
+
+    @test correlation_form_code("bilinear") == CORRELATION_FORM_BILINEAR
+    @test correlation_form_code(" Log_Agreement ") == CORRELATION_FORM_LOG_AGREEMENT
+    @test_throws ArgumentError correlation_form_code("ising")
 end
