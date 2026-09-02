@@ -53,6 +53,9 @@ base_hyperparams = "hyperparams_epochs_5_corrs.toml"
 n_hidden_layers  = 90
 # Seed variance dominated every recent sweep (sd up to 1000 at fixed config),
 # so the coflip test runs ALL cells at 5 seeds rather than replicating a subset.
+# 5 seeds on EVERY cell. Seed variance has been the binding error bar throughout,
+# and it is what exposed the L2 interaction: a single-seed read of the same
+# comparison said "L2 does nothing, 7/12, p = 0.77".
 seeds            = [1, 2, 3, 4, 5]
 
 # Replication grid: extra network seeds on a REDUCED set of cells, to get the
@@ -83,8 +86,9 @@ replication_certainty_penalty = "entropy"
 # NOTE lambda is NOT comparable across correlation_forms: bilinear is a reward
 # (<= 0, bounded by |J| ~ 5.4) and log_agreement is a penalty (>= 0, reaching
 # ~|J|*log(1/eps) ~ 49 at eps = 1e-4). Roughly 10x the scale, so sweep low.
-# coflip's scale matches log_agreement (per-pair up to |J|*log(1/eps) ~ 49),
-# so the same lambda range applies. lam = 0 is the priors-only control.
+# Both forms are penalties of the same scale (per-pair up to |J|*log(1/eps) ~ 49),
+# so one lambda range serves both. lam = 0 kills L3 and is emitted ONCE as the
+# priors-only control; the no-CER arm is the other control.
 lambdas          = ["0.0", "0.1", "0.3", "1.0"]
 lambda_anneal_decay = 0.3            # per-epoch factor for the annealed forms
 
@@ -99,7 +103,11 @@ lambda_anneal_decay = 0.3            # per-epoch factor for the annealed forms
 #                  -> |J| at the two DISCORDANT corners and 0 at the concordant
 #                  ones. sgn(J) sits inside the argument because a raw -J log A
 #                  is unbounded BELOW wherever J < 0 (24% of the couplings).
-correlation_forms = ["coflip"]       # the directed co-flip penalty, J > 0 only
+# BOTH new L3 forms, head to head. coflip is the term under test; log_agreement
+# is the control that says whether any gain is coflip-SPECIFIC or just "an L3
+# that finally has a stable L2 underneath it". Its previous 5-seed test did have
+# L2 on, so it is the one directly comparable prior.
+correlation_forms = ["coflip", "log_agreement"]
 correlation_agreement_floor = 1e-4   # eps; mandatory, see command_line.jl
 include_nocer    = true              # flat p = 0.1 baseline arm
 
@@ -115,7 +123,14 @@ sparsities       = [0.0]             # OFF for this test, per request
 # L2 weight, held at the annealed schedule's ceiling. The previous sweep ran this
 # at 0 to isolate L1 + L3; that cost the priors their p = 5e-4 advantage
 # (+0.8% vs -11.8% with L2 on), so L2 is back on for anything headline-bearing.
-certainty_importance = 0.0           # L2 OFF for this test, per request
+# L2 BACK ON, at the constant 0.01 that produced the validated priors result
+# (22/30, -9.2%, p = 0.016 on the 246-run). Switching it off is what destabilised
+# every CER arm last time: priors-only went from mean 535 / sd 157 / max 999 with
+# L2 on, to mean 875 / sd 821 / max 4386 with it off, and 5 of 30 seeds trained
+# smoothly into a bad decoder. no-CER was unaffected either way. So L2 is not
+# decoration -- it is what makes CER training reliable across seeds, and every
+# L3 form has to be judged with it present.
+certainty_importance = 0.01
 
 # tau, in softly broken checks. This gates L2 AND L3, so it moves BOTH arms.
 #   0.5   current: aux only where the syndrome is essentially already cleared
@@ -177,8 +192,8 @@ heap_size_hint   = "4G"
 # K tasks cut the wall time by ~K without any task needing a bigger node. Slurm
 # schedules small allocations sooner, so more/smaller tasks generally start
 # earlier than one large one.
-#   150 points / 3 tasks = 50 per task = one 54-core wave = ~45 min.
-train_array_tasks = 3
+#   240 points / 5 tasks = 48 per task = one 54-core wave = ~45 min.
+train_array_tasks = 5
 train_cpus       = 54   # points per task per wave; a CPU node has 64
 train_mem_per_cpu = "6G"
 train_wall_time  = "4:00:00"
