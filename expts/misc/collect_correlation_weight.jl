@@ -472,6 +472,10 @@ function collect_per_run(results_dir::String, logs_dir::String)::DataFrame
             :arm => run_key.arm,
             :gate => run_key.gate,
             :sparsity_tag => run_key.sparsity_tag,
+            :tau_tag => run_key.tau_tag,
+            :certainty_gate_tag => run_key.certainty_gate_tag,
+            :certainty_penalty => run_key.certainty_penalty,
+            :correlation_form => run_key.correlation_form,
             :lambda_tag => run_key.lambda_tag,
             :lambda_pinned => run_key.lambda_pinned,
             :lambda => run_key.lambda,
@@ -724,6 +728,39 @@ function collect_per_arm(per_run::DataFrame)::DataFrame
         end
         push!(collected_rows, row)
     end
+    # THE EYEBALL COLUMNS. Everything else here is a raw quantity; these two say
+    # what the sweep is for. `percent_vs_nocer` compares each arm with the flat-
+    # prior baseline for the SAME dataset and matching configuration -- negative
+    # means CER helped. `percent_vs_priors` compares an L3 arm with the couplings
+    # switched off, so it isolates what the couplings add over the priors alone.
+    # Both are paired within a dataset, which is the only fair comparison: the
+    # dataset-to-dataset spread is larger than every effect measured so far.
+    failures_by_label::Dict{Tuple{String, String}, Float64} = Dict{Tuple{String, String}, Float64}()
+    for row in collected_rows
+        if haskey(row, :num_failures_mean)
+            failures_by_label[(String(row[:dataset]), String(row[:label]))] = row[:num_failures_mean]
+        end
+    end
+    for row in collected_rows
+        row[:percent_vs_nocer] = missing
+        row[:percent_vs_priors] = missing
+        if !haskey(row, :num_failures_mean)
+            continue
+        end
+        dataset_name::String = String(row[:dataset])
+        label_name::String = String(row[:label])
+        own_failures::Float64 = row[:num_failures_mean]
+        (priors_control, nocer_baseline) = control_labels(
+            startswith(label_name, "nocer") ? replace(label_name, r"^nocer" => "lam0p0") : label_name)
+        baseline_failures = get(failures_by_label, (dataset_name, nocer_baseline), missing)
+        if baseline_failures !== missing && baseline_failures > 0
+            row[:percent_vs_nocer] = 100.0 * (own_failures - baseline_failures) / baseline_failures
+        end
+        control_failures = get(failures_by_label, (dataset_name, priors_control), missing)
+        if control_failures !== missing && control_failures > 0 && label_name != priors_control
+            row[:percent_vs_priors] = 100.0 * (own_failures - control_failures) / control_failures
+        end
+    end
     per_arm::DataFrame = rows_to_dataframe(collected_rows)
     if nrow(per_arm) > 0
         sort!(per_arm, [:dataset, :arm_order])
@@ -810,33 +847,66 @@ Where there is no `lam0` (the 2026-08-20 p-sweep, which ran the annealed
 schedule) the fallback is the old cer-vs-nocer contrast, so that vintage still
 collects.
 """
+"""
+    control_labels(label) -> (priors_control, nocer_baseline)
+
+Given an arm label, name the two labels it should be compared against.
+
+Labels are built by `emit_point` as
+    cer  : lam<λ>_tau<τ>[_ct..][_sp..][_cp..][_cf..]
+    nocer: nocer_tau<τ>[_ct..][_sp..][_cp..]
+so the priors control is the same label with λ → 0 and the L3 form dropped (λ = 0
+kills L3, so it is emitted once, untagged), and the no-CER baseline additionally
+replaces the `lam` segment with `nocer`.
+
+Matching by STRUCTURE, not by literal name. The previous version tested
+`"lam0" in labels` and `"nocer" in labels`, which stopped matching the moment
+the tau tag was introduced and silently produced an empty contrasts table from
+then on — every branch skipped, no error, no warning.
+"""
+function control_labels(label::String)::Tuple{String, String}
+    without_form::String = replace(label, r"_cf[a-z_]+$" => "")
+    priors_control::String = replace(without_form, r"^lam[0-9pdu]+" => "lam0p0")
+    nocer_baseline::String = replace(priors_control, r"^lam0p0" => "nocer")
+    return (priors_control, nocer_baseline)
+end
+
 function collect_contrasts(per_run::DataFrame)::DataFrame
     p_values::Vector{String} = sort(unique(per_run.dataset))
     collected_rows::Vector{Dict{Symbol, Any}} = Dict{Symbol, Any}[]
     for p_value in p_values
         labels_here::Vector{String} = unique(per_run[per_run.dataset .== p_value, :label])
-        pinned::Vector{String} = sort(filter(l -> startswith(l, "lam") && l != "lam0", labels_here);
-                                      by = arm_order)
-        if "lam0" in labels_here
-            # Couplings: each lambda against the lambda = 0 control.
-            for label in pinned
-                push!(collected_rows, contrast(per_run, p_value, label, "lam0"))
+        cer_labels::Vector{String} = sort(filter(l -> startswith(l, "lam"), labels_here);
+                                          by = arm_order)
+        emitted::Set{Tuple{String, String}} = Set{Tuple{String, String}}()
+        for label in cer_labels
+            (priors_control, nocer_baseline) = control_labels(label)
+            # Every CER arm against the flat-prior baseline: "does CER help?"
+            if nocer_baseline in labels_here && !((label, nocer_baseline) in emitted)
+                push!(collected_rows, contrast(per_run, p_value, label, nocer_baseline))
+                push!(emitted, (label, nocer_baseline))
             end
-            # Priors: the control against the flat-prior baseline.
-            if "nocer" in labels_here
-                push!(collected_rows, contrast(per_run, p_value, "lam0", "nocer"))
-            end
-        end
-        # Older vintage, or a lambda sweep run with --no_nocer: keep the direct
-        # comparison so nothing silently drops out of the report.
-        if "cer_annealed" in labels_here && "nocer" in labels_here
-            push!(collected_rows, contrast(per_run, p_value, "cer_annealed", "nocer"))
-        end
-        if !("lam0" in labels_here) && "nocer" in labels_here
-            for label in pinned
-                push!(collected_rows, contrast(per_run, p_value, label, "nocer"))
+            # Every L3 arm against the priors-only control: "do the COUPLINGS add
+            # anything?" -- the comparison that actually decides an L3 form, and
+            # the one a nocer-only contrast cannot answer.
+            if label != priors_control && priors_control in labels_here &&
+               !((label, priors_control) in emitted)
+                push!(collected_rows, contrast(per_run, p_value, label, priors_control))
+                push!(emitted, (label, priors_control))
             end
         end
+        # Older vintage: an annealed-lambda arm carries no `lam` prefix.
+        for label in filter(l -> startswith(l, "cer_annealed"), labels_here)
+            (_, nocer_baseline) = control_labels(replace(label, "cer_annealed" => "lam0p0"))
+            if nocer_baseline in labels_here
+                push!(collected_rows, contrast(per_run, p_value, label, nocer_baseline))
+            end
+        end
+    end
+    if isempty(collected_rows) && nrow(per_run) > 0
+        @warn "no contrasts could be formed from $(length(p_values)) dataset(s). " *
+              "Labels present: $(unique(per_run.label)). Every CER arm needs a " *
+              "matching baseline label for control_labels() to pair it with."
     end
     contrasts::DataFrame = rows_to_dataframe(collected_rows)
     return contrasts
