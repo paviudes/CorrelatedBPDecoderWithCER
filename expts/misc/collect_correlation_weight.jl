@@ -194,9 +194,9 @@ function parse_run(filename::String)::Union{NamedTuple, Nothing}
         certainty_gate_tag = filename_match.captures[8] === nothing ? "" :
                              String(filename_match.captures[8]),
         certainty_penalty = filename_match.captures[9] === nothing ? "entropy" :
-                            String(filename_match.captures[10]),
+                            String(filename_match.captures[9]),
         correlation_form = filename_match.captures[10] === nothing ? "bilinear" :
-                           String(filename_match.captures[9]),
+                           String(filename_match.captures[10]),
         seed = parse(Int, filename_match.captures[11]),
     )
     return run_key

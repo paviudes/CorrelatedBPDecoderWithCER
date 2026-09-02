@@ -349,3 +349,89 @@ end
                   parity_check_matrix, 0.5f0, 0.5f0, kind, 2.2f0)
     end
 end
+
+# =============================================================================
+#  coflip L3: silent at concordant corners, kicks the CLEAN qubit of a
+#  discordant pair toward errored, positive couplings only.
+# =============================================================================
+
+function coflip_penalty_for_pair(
+    mu_i::Float32,
+    mu_k::Float32,
+    coupling::Float32,
+    certainty_threshold::Float32,
+    agreement_floor::Float32
+)::Float32
+    posterior_llrs::Matrix{Float32} = reshape(Float32[mu_i, mu_k], 2, 1)
+    pair_connectivity::Matrix{Int} = [1 2]
+    penalties::Vector{Float32} = ising_coflip_penalty_per_sample(
+        posterior_llrs, pair_connectivity, Float32[coupling],
+        certainty_threshold, agreement_floor
+    )
+    return penalties[1]
+end
+
+@testset "coflip correlation term" begin
+    open_gate::Float32 = 0.0f0
+    floor_value::Float32 = 1.0f-4
+    # |mu| = 6 is DECIDED (sigma = 2.5e-3) but not hyper-saturated: the kick is
+    # near full strength there. At |mu| = 14 (sigma = 8e-7 < eps) the eps floor
+    # caps the 1/sigma divergence and the kick decays -- by design, since a
+    # bounded loss cannot move a qubit that saturated anyway.
+    decided::Float32 = 6.0f0
+    step::Float32 = 1.0f-3
+
+    # --- values: small at both concordant corners, large at discordance ------
+    # At (clean, clean) the VALUE is ~0.044, not 0: each term is sigma*|log sigma|
+    # ~ mu*exp(-mu), which only reaches 0 asymptotically. What the request was
+    # about -- and what the gradient assertions below check -- is that the FORCE
+    # is silent there. 0.044 against 8.9 at discordance is a 200x separation.
+    @test coflip_penalty_for_pair( decided,  decided, 1.5f0, open_gate, floor_value) < 0.1f0
+    @test coflip_penalty_for_pair(-decided, -decided, 1.5f0, open_gate, floor_value) ≈ 0.0f0 atol=1f-2
+    @test coflip_penalty_for_pair( decided, -decided, 1.5f0, open_gate, floor_value) > 5.0f0
+    @test coflip_penalty_for_pair(-decided,  decided, 1.5f0, open_gate, floor_value) > 5.0f0
+
+    # --- the requested gradient profile --------------------------------------
+    kick_on_clean::Float32 = abs(
+        coflip_penalty_for_pair(decided + step, -decided, 1.5f0, open_gate, floor_value) -
+        coflip_penalty_for_pair(decided,        -decided, 1.5f0, open_gate, floor_value)) / step
+    kick_on_errored::Float32 = abs(
+        coflip_penalty_for_pair(decided, -decided - step, 1.5f0, open_gate, floor_value) -
+        coflip_penalty_for_pair(decided, -decided,        1.5f0, open_gate, floor_value)) / step
+    silent_both_clean::Float32 = abs(
+        coflip_penalty_for_pair(decided + step, decided, 1.5f0, open_gate, floor_value) -
+        coflip_penalty_for_pair(decided,        decided, 1.5f0, open_gate, floor_value)) / step
+    silent_both_errored::Float32 = abs(
+        coflip_penalty_for_pair(-decided + step, -decided, 1.5f0, open_gate, floor_value) -
+        coflip_penalty_for_pair(-decided,        -decided, 1.5f0, open_gate, floor_value)) / step
+    @test kick_on_clean > 1.0f0            # ~ J * 0.956 = 1.43: the strong kick
+    @test kick_on_errored < 0.1f0          # the errored partner is left alone
+    @test silent_both_clean < 0.05f0       # concordant: silent
+    @test silent_both_errored < 0.05f0     # concordant: silent
+
+    # --- negative couplings are excluded entirely ----------------------------
+    @test coflip_penalty_for_pair( decided, -decided, -0.6f0, open_gate, floor_value) == 0.0f0
+    @test coflip_penalty_for_pair(-decided, -decided, -0.6f0, open_gate, floor_value) == 0.0f0
+    # ...including from the active-pair normaliser: a mixed edge list must give
+    # the same value as the positive edge alone.
+    mixed_llrs::Matrix{Float32} = reshape(Float32[decided, -decided, decided, -decided], 4, 1)
+    positive_only::Vector{Float32} = ising_coflip_penalty_per_sample(
+        mixed_llrs, [1 2], Float32[1.5], open_gate, floor_value)
+    with_negative::Vector{Float32} = ising_coflip_penalty_per_sample(
+        mixed_llrs, [1 2; 3 4], Float32[1.5, -0.6], open_gate, floor_value)
+    @test positive_only[1] ≈ with_negative[1] atol=1f-6
+
+    # --- finite at Float32 sigmoid underflow (mu >= 104 gives sigma == 0.0f0) --
+    @test isfinite(coflip_penalty_for_pair(120.0f0, -120.0f0, 5.36f0, open_gate, floor_value))
+    @test coflip_penalty_for_pair(120.0f0, -120.0f0, 5.36f0, open_gate, floor_value) >= 0.0f0
+
+    # --- certainty gate still applies ----------------------------------------
+    @test coflip_penalty_for_pair(0.2f0, -0.2f0, 1.5f0, 2.2f0, floor_value) == 0.0f0
+
+    # --- never negative over a grid, for either coupling sign ----------------
+    for coupling in (2.0f0, -2.0f0), a in (-decided, 0.0f0, decided), b in (-decided, 0.0f0, decided)
+        @test coflip_penalty_for_pair(a, b, coupling, open_gate, floor_value) >= 0.0f0
+    end
+
+    @test correlation_form_code("coflip") == CORRELATION_FORM_COFLIP
+end

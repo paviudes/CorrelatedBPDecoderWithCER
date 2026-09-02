@@ -190,7 +190,8 @@ export compute_loss_including_correlations, compute_smooth_loss_from_llrs, softm
        soft_syndrome_weight_per_sample, syndrome_gate_per_sample, certainty_per_sample,
        sparsity_per_sample, ising_correlation_reward_per_sample, correlation_gate_open_fraction,
        ising_log_agreement_penalty_per_sample, correlation_term_per_sample, correlation_form_code,
-       CORRELATION_FORM_BILINEAR, CORRELATION_FORM_LOG_AGREEMENT,
+       CORRELATION_FORM_BILINEAR, CORRELATION_FORM_LOG_AGREEMENT, CORRELATION_FORM_COFLIP,
+       ising_coflip_penalty_per_sample,
        CERTAINTY_PENALTY_ENTROPY, CERTAINTY_PENALTY_EXPONENTIAL, CERTAINTY_PENALTY_HINGE
 
 # Training routines

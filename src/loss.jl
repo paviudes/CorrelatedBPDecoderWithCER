@@ -263,6 +263,7 @@ end
 # work, each branch straight-line Float32.
 const CORRELATION_FORM_BILINEAR::Int      = 1
 const CORRELATION_FORM_LOG_AGREEMENT::Int = 2
+const CORRELATION_FORM_COFLIP::Int        = 3
 
 function correlation_form_code(name::String)::Int
     """
@@ -273,7 +274,8 @@ function correlation_form_code(name::String)::Int
     normalised_name::String = lowercase(strip(name))
     codes_by_name::Dict{String, Int} = Dict(
         "bilinear"      => CORRELATION_FORM_BILINEAR,
-        "log_agreement" => CORRELATION_FORM_LOG_AGREEMENT
+        "log_agreement" => CORRELATION_FORM_LOG_AGREEMENT,
+        "coflip"        => CORRELATION_FORM_COFLIP
     )
     if !haskey(codes_by_name, normalised_name)
         throw(ArgumentError(
@@ -355,6 +357,82 @@ function ising_log_agreement_penalty_per_sample(
     return penalties
 end
 
+function ising_coflip_penalty_per_sample(
+    posterior_llrs::Matrix{Float32},
+    connectivity::Matrix{Int},
+    correlation_strengths::Vector{Float32},
+    certainty_threshold::Float32,
+    agreement_floor::Float32
+)::Vector{Float32}
+    """
+    Directed co-flip penalty over the POSITIVE couplings only:
+
+        r_j = ( ∑ d · 1[J > 0] · J · ( -σ_k·log((σ_i+ε)/(1+ε)) - σ_i·log((σ_k+ε)/(1+ε)) ) )
+              / max(1, ∑ d · 1[J > 0])
+
+    each qubit should be errored to the extent its partner is — the cross
+    log-likelihood of CO-FLIP, which is the configuration a positive Ising J
+    rewards. Requested profile (2026-09-02): gradient silent at the concordant
+    corners (0,0) and (1,1), a strong kick at the discordant (0,1) and (1,0).
+    The prescribed field J·((σ_i-1)²+(σ_j-1)²)(σ_i²+σ_j²) for BOTH partials has
+    curl (unequal cross-derivatives wherever σ_i ≠ σ_j), so no loss has exactly
+    that gradient; this is the integrable form with the same corner profile.
+
+        ∂r/∂μ_i = J·[ σ_k·σ_i(1-σ_i)/(σ_i+ε) + σ_i(1-σ_i)·log((σ_k+ε)/(1+ε)) ]
+
+    At (0,1) the first term → J: the log's 1/σ divergence cancels the sigmoid
+    saturation, exactly the log_agreement mechanism. Unlike the symmetric
+    prescription this kicks ONLY the clean qubit toward errored and leaves the
+    already-errored partner alone, so discordance resolves toward (1,1)
+    specifically rather than toward whichever agreement is nearer.
+
+    ε (`agreement_floor`) is mandatory: σ(μ) underflows to exactly 0.0f0 in
+    Float32 for μ ≳ 88, and log(0) = -Inf is the NaN-skip → rollback →
+    silently-untrained-weights failure. ε also sets the kick's REACH — full
+    strength while σ ≫ ε (|μ| ≲ 9 at ε = 1e-4), decaying on hyper-saturated
+    qubits, which a bounded loss could not move anyway. The (1+ε) normaliser
+    pins the penalty to exactly 0 at (1,1).
+
+    NEGATIVE J are excluded (1[J > 0], and from the active-pair count): with a
+    co-flip likelihood an anti-correlation would reward discordance without
+    bound. The user accepts dropping them for this form.
+
+    NOT ordering-safe, like the log-agreement form: this is a penalty ≥ 0, so
+    λ must stay small enough not to overturn L1's solved/unsolved separation.
+    """
+    n_samples = size(posterior_llrs, 2)
+    n_edges = size(connectivity, 1)
+    penalties = zeros(Float32, n_samples)
+    # Branchless, for the Enzyme reasons documented on the bilinear form.
+    @inbounds for j in 1:n_samples
+        accumulated_penalty::Float32 = 0.0f0
+        active_pair_count::Float32 = 0.0f0
+        for e in 1:n_edges
+            i = connectivity[e, 1]
+            k = connectivity[e, 2]
+            coupling::Float32 = correlation_strengths[e]
+            eligible::Float32 = Float32(coupling > 0.0f0)
+            decided::Float32 = Float32(
+                (abs(posterior_llrs[i, j]) > certainty_threshold) &
+                (abs(posterior_llrs[k, j]) > certainty_threshold)
+            )
+            pair_weight::Float32 = decided * eligible
+            active_pair_count += pair_weight
+            error_probability_i::Float32 = sigmoid(posterior_llrs[i, j])
+            error_probability_k::Float32 = sigmoid(posterior_llrs[k, j])
+            log_errored_i::Float32 =
+                log((error_probability_i + agreement_floor) / (1.0f0 + agreement_floor))
+            log_errored_k::Float32 =
+                log((error_probability_k + agreement_floor) / (1.0f0 + agreement_floor))
+            accumulated_penalty += pair_weight * coupling *
+                (-(error_probability_k * log_errored_i +
+                   error_probability_i * log_errored_k))
+        end
+        penalties[j] = accumulated_penalty / max(1.0f0, active_pair_count)
+    end
+    return penalties
+end
+
 function correlation_term_per_sample(
     posterior_llrs::Matrix{Float32},
     connectivity::Matrix{Int},
@@ -379,6 +457,12 @@ function correlation_term_per_sample(
             certainty_threshold, agreement_floor
         )
         return agreement_penalties
+    elseif correlation_form == CORRELATION_FORM_COFLIP
+        coflip_penalties::Vector{Float32} = ising_coflip_penalty_per_sample(
+            posterior_llrs, connectivity, correlation_strengths,
+            certainty_threshold, agreement_floor
+        )
+        return coflip_penalties
     else
         throw(ArgumentError("Unknown correlation_form: $(correlation_form)."))
     end

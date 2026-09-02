@@ -51,7 +51,9 @@ ref_datasets     = []
 
 base_hyperparams = "hyperparams_epochs_5_corrs.toml"
 n_hidden_layers  = 90
-seeds            = [1]                 # network seeds for the MAIN grid
+# Seed variance dominated every recent sweep (sd up to 1000 at fixed config),
+# so the coflip test runs ALL cells at 5 seeds rather than replicating a subset.
+seeds            = [1, 2, 3, 4, 5]
 
 # Replication grid: extra network seeds on a REDUCED set of cells, to get the
 # seed error bar on the result we would actually quote. Dataset-to-dataset spread
@@ -61,7 +63,7 @@ seeds            = [1]                 # network seeds for the MAIN grid
 # lam = 0.3 optimum found on 2026-09-01 is bracketed by two blow-up regions, so
 # the peak needs locating, and the variance result that made it interesting
 # rested on a single seed.
-replication_seeds   = [1, 2, 3, 4, 5]
+replication_seeds   = []             # main grid carries the seeds this time
 replication_lambdas = ["0.0", "0.1", "0.3", "1.0"]   # plus the no-CER baseline
 replication_taus    = [0.5]
 replication_correlation_form = "log_agreement"
@@ -81,7 +83,9 @@ replication_certainty_penalty = "entropy"
 # NOTE lambda is NOT comparable across correlation_forms: bilinear is a reward
 # (<= 0, bounded by |J| ~ 5.4) and log_agreement is a penalty (>= 0, reaching
 # ~|J|*log(1/eps) ~ 49 at eps = 1e-4). Roughly 10x the scale, so sweep low.
-lambdas          = ["0.0"]
+# coflip's scale matches log_agreement (per-pair up to |J|*log(1/eps) ~ 49),
+# so the same lambda range applies. lam = 0 is the priors-only control.
+lambdas          = ["0.0", "0.1", "0.3", "1.0"]
 lambda_anneal_decay = 0.3            # per-epoch factor for the annealed forms
 
 # L3 functional form.
@@ -95,7 +99,7 @@ lambda_anneal_decay = 0.3            # per-epoch factor for the annealed forms
 #                  -> |J| at the two DISCORDANT corners and 0 at the concordant
 #                  ones. sgn(J) sits inside the argument because a raw -J log A
 #                  is unbounded BELOW wherever J < 0 (24% of the couplings).
-correlation_forms = ["bilinear"]      # irrelevant here: the main grid is lambda = 0
+correlation_forms = ["coflip"]       # the directed co-flip penalty, J > 0 only
 correlation_agreement_floor = 1e-4   # eps; mandatory, see command_line.jl
 include_nocer    = true              # flat p = 0.1 baseline arm
 
@@ -106,12 +110,12 @@ include_nocer    = true              # flat p = 0.1 baseline arm
 # Ordering constraint from loss.jl: alpha3 x typical error weight must stay <~ 1,
 # or a gated solved sample scores worse than a failing one.
 # This has been pinned to 0 in every sweep to date; this is its first test.
-sparsities       = [0.0, 0.003, 0.01]
+sparsities       = [0.0]             # OFF for this test, per request
 
 # L2 weight, held at the annealed schedule's ceiling. The previous sweep ran this
 # at 0 to isolate L1 + L3; that cost the priors their p = 5e-4 advantage
 # (+0.8% vs -11.8% with L2 on), so L2 is back on for anything headline-bearing.
-certainty_importance = 0.01
+certainty_importance = 0.0           # L2 OFF for this test, per request
 
 # tau, in softly broken checks. This gates L2 AND L3, so it moves BOTH arms.
 #   0.5   current: aux only where the syndrome is essentially already cleared
@@ -130,7 +134,7 @@ syndrome_gates   = [0.5]             # tau, gating L3 + sparsity; 0.5 is the inc
 #            hinge widths produced bit-identical weights.
 #   1e6      L2 acts on every sample while L3 stays confined to solved ones.
 #            The only setting under which a narrow hinge is testable at all.
-certainty_gates  = ["inherit", "1e6"]
+certainty_gates  = ["inherit"]       # irrelevant with L2 off
 certainty_gate   = 2.2               # c, LLR units (2.2 <=> sigma > 0.9 or < 0.1)
 
 # Certainty penalty f in the L2 term. All are symmetric and peak at mu = 0; they
@@ -156,7 +160,7 @@ certainty_gate   = 2.2               # c, LLR units (2.2 <=> sigma > 0.9 or < 0.
 # anything tried (3.3) on the SMALLEST footprint -- inert on 99.99% of qubits --
 # so it can repair a qubit parked at mu ~ 0 on L1's flat manifold without
 # fighting L1 for the qubits it is still legitimately deciding.
-certainty_penalties = ["entropy", "hinge:0.3", "hinge:0.5"]
+certainty_penalties = ["entropy"]    # inert with L2 off; untagged
 certainty_hinge_width = 2.2          # w, only used by the hinge penalty
 single_qubit_rescale = 0.1
 
@@ -173,8 +177,8 @@ heap_size_hint   = "4G"
 # K tasks cut the wall time by ~K without any task needing a bigger node. Slurm
 # schedules small allocations sooner, so more/smaller tasks generally start
 # earlier than one large one.
-#   246 points / 5 tasks = 50 per task = one 54-core wave = ~45 min.
-train_array_tasks = 5
+#   150 points / 3 tasks = 50 per task = one 54-core wave = ~45 min.
+train_array_tasks = 3
 train_cpus       = 54   # points per task per wave; a CPU node has 64
 train_mem_per_cpu = "6G"
 train_wall_time  = "4:00:00"
