@@ -8,6 +8,8 @@ function get_loss_value(
     sparsity_regularizer, # term for encouraging sparsity in the LLRs, to be annealed during training.
     syndrome_gate_threshold, # τ for the per-sample detached syndrome gate on the aux terms.
     certainty_syndrome_gate_threshold, # τ₂ for L2's own syndrome gate; < 0 inherits τ.
+    syndrome_gate_mode, # indicator or smooth gate on L3 (see `smooth_syndrome_gate_per_sample`).
+    syndrome_gate_rate, # rate for the smooth gate; ignored by the indicator.
     correlation_certainty_threshold, # c for the per-pair detached certainty gate on the correlation term.
     certainty_penalty_kind, # which certainty penalty f to use (see `certainty_per_sample`).
     certainty_hinge_width, # w for the hinge certainty penalty; ignored by the others.
@@ -52,6 +54,8 @@ function get_loss_value(
         sparsity_regularizer, # term for encouraging sparsity in the LLRs, to be annealed during training.
         syndrome_gate_threshold, # τ for the per-sample detached syndrome gate.
         certainty_syndrome_gate_threshold, # τ₂ for L2's own syndrome gate.
+        syndrome_gate_mode, # indicator or smooth gate on L3.
+        syndrome_gate_rate, # rate for the smooth gate.
         correlation_certainty_threshold, # c for the per-pair detached certainty gate.
         certainty_penalty_kind, # which certainty penalty f to use.
         certainty_hinge_width, # w for the hinge certainty penalty.
@@ -72,6 +76,8 @@ function get_individual_loss_values(
     sparsity_importance::Float32, # term for encouraging sparsity in the LLRs, to be annealed during training.
     syndrome_gate_threshold::Float32, # τ for the per-sample detached syndrome gate.
     certainty_syndrome_gate_threshold::Float32, # τ₂ for L2's own syndrome gate; < 0 inherits τ.
+    syndrome_gate_mode::Int, # indicator or smooth gate on L3.
+    syndrome_gate_rate::Float32, # rate for the smooth gate; ignored by the indicator.
     correlation_certainty_threshold::Float32, # c for the per-pair detached certainty gate.
     certainty_penalty_kind::Int, # which certainty penalty f to use (see `certainty_per_sample`).
     certainty_hinge_width::Float32, # w for the hinge certainty penalty; ignored by the others.
@@ -131,7 +137,10 @@ function get_individual_loss_values(
         if certainty_syndrome_gate_threshold < 0.0f0
             effective_certainty_threshold = syndrome_gate_threshold
         end
-        gate           = Float32.(syndrome_weights .< syndrome_gate_threshold)
+        gate = Float32.(syndrome_weights .< syndrome_gate_threshold)
+        if syndrome_gate_mode == SYNDROME_GATE_SMOOTH
+            gate = smooth_syndrome_gate_per_sample(syndrome_weights, syndrome_gate_rate)
+        end
         certainty_gate = Float32.(syndrome_weights .< effective_certainty_threshold)
         cert_j   = certainty_per_sample(post, certainty_penalty_kind, certainty_hinge_width)
         sparse_j = sparsity_per_sample(post)
@@ -223,6 +232,7 @@ function init_training_debug_logs(n_samples_to_log::Int)
         syndrome_gate_threshold = zeros(Float32, n_samples_to_log),
         correlation_certainty_threshold = zeros(Float32, n_samples_to_log),
         certainty_syndrome_gate_threshold = zeros(Float32, n_samples_to_log),
+        syndrome_gate_rate = zeros(Float32, n_samples_to_log),
         loss = zeros(Float32, n_samples_to_log),
         nan_skip_count = zeros(Int, n_samples_to_log),
         min_weight_c2v_v2c = zeros(Float32, n_samples_to_log),
@@ -277,6 +287,7 @@ function log_batch_debug!(
     hp_log[index, :syndrome_gate_threshold] = hp[:syndrome_gate_threshold]
     hp_log[index, :correlation_certainty_threshold] = hp[:correlation_certainty_threshold]
     hp_log[index, :certainty_syndrome_gate_threshold] = hp[:certainty_syndrome_gate_threshold]
+    hp_log[index, :syndrome_gate_rate] = hp[:syndrome_gate_rate]
     hp_log[index, :loss] = aggregate_loss
     hp_log[index, :nan_skip_count] = nan_skip_count
     hp_log[index, :min_weight_c2v_v2c] = minimum(bpnn.weights_c2v_v2c)
@@ -371,6 +382,12 @@ function train_neuralbp_enzyme!(
     # pre-split run bit for bit.
     certainty_syndrome_gate_threshold::Float32 =
         Float32(get(hyperparameters, "certainty_syndrome_gate_threshold", -1.0))
+    syndrome_gate_mode::Int = syndrome_gate_code(
+        String(get(hyperparameters, "syndrome_gate_mode", "indicator")))
+    syndrome_gate_rate::Float32 = Float32(get(hyperparameters, "syndrome_gate_rate", 0.5))
+    if syndrome_gate_rate <= 0.0f0
+        throw(ArgumentError("syndrome_gate_rate must be > 0, got $(syndrome_gate_rate)."))
+    end
     # Which certainty penalty f to use in the aux loss, and the hinge width.
     # Resolved from the string ONCE here so an unknown name throws before the
     # first epoch rather than inside the Enzyme call.
@@ -463,6 +480,7 @@ function train_neuralbp_enzyme!(
         hp[:syndrome_gate_threshold] = syndrome_gate_threshold
         hp[:correlation_certainty_threshold] = correlation_certainty_threshold
         hp[:certainty_syndrome_gate_threshold] = certainty_syndrome_gate_threshold
+        hp[:syndrome_gate_rate] = syndrome_gate_rate
         hp[:certainty_hinge_width] = certainty_hinge_width
         hp[:correlation_agreement_floor] = correlation_agreement_floor
 
@@ -520,6 +538,8 @@ function train_neuralbp_enzyme!(
                 Enzyme.Const(hp[:sparsity_importance]),
                 Enzyme.Const(hp[:syndrome_gate_threshold]),
                 Enzyme.Const(hp[:certainty_syndrome_gate_threshold]),
+                Enzyme.Const(syndrome_gate_mode),
+                Enzyme.Const(hp[:syndrome_gate_rate]),
                 Enzyme.Const(hp[:correlation_certainty_threshold]),
                 Enzyme.Const(certainty_penalty_kind),
                 Enzyme.Const(hp[:certainty_hinge_width]),
@@ -598,6 +618,8 @@ function train_neuralbp_enzyme!(
                     hp[:sparsity_importance],
                     hp[:syndrome_gate_threshold],
                     hp[:certainty_syndrome_gate_threshold],
+                    syndrome_gate_mode,
+                    hp[:syndrome_gate_rate],
                     hp[:correlation_certainty_threshold],
                     certainty_penalty_kind,
                     hp[:certainty_hinge_width],

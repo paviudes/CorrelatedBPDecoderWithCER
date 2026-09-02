@@ -119,6 +119,68 @@ function syndrome_gate_per_sample(
     return gate
 end
 
+# Integer codes for the syndrome gate on L3 (and sparsity). L2 keeps the
+# indicator on its own threshold tau_2 regardless.
+const SYNDROME_GATE_INDICATOR::Int = 1
+const SYNDROME_GATE_SMOOTH::Int    = 2
+
+function syndrome_gate_code(name::String)::Int
+    """
+    Map the `syndrome_gate_mode` hyperparameter string onto its integer code.
+    Throws on an unknown name so a typo fails at startup.
+    """
+    normalised_name::String = lowercase(strip(name))
+    codes_by_name::Dict{String, Int} = Dict(
+        "indicator" => SYNDROME_GATE_INDICATOR,
+        "smooth"    => SYNDROME_GATE_SMOOTH
+    )
+    if !haskey(codes_by_name, normalised_name)
+        throw(ArgumentError(
+            "Unknown syndrome_gate_mode \"$(name)\". Must be one of: " *
+            join(sort(collect(keys(codes_by_name))), ", ") * "."
+        ))
+    end
+    code::Int = codes_by_name[normalised_name]
+    return code
+end
+
+function detach_from_gradient(values::Vector{Float32})::Vector{Float32}
+    """
+    Identity in the forward pass, ZERO in the reverse pass. Enzyme is told below
+    that this function is inactive, so anything computed from its output is a
+    constant as far as the gradient is concerned. `copy` because an inactive
+    function must not hand back memory aliased with an active input.
+    """
+    detached::Vector{Float32} = copy(values)
+    return detached
+end
+Enzyme.EnzymeRules.inactive(::typeof(detach_from_gradient), args...) = nothing
+
+function smooth_syndrome_gate_per_sample(
+    syndrome_weights::Vector{Float32},
+    syndrome_gate_rate::Float32
+)::Vector{Float32}
+    """
+    w_j = exp( -rate · |s|_j ), DETACHED.
+
+    A graded replacement for the indicator 1[|s| < τ]: a sample one softly
+    broken check away from solved keeps weight exp(-rate) instead of 0, so the
+    auxiliary terms can act on the near-miss shell with reduced authority rather
+    than not at all. At rate = 0.5: |s| = 0.5 → 0.78, 1 → 0.61, 2 → 0.37, 4 → 0.14.
+
+    WHY DETACHED. Left differentiable, the gate gives the optimizer a second way
+    to lower  w · L3  for a penalty L3 ≥ 0: raise |s| — break the syndrome — so w
+    shrinks. That term is rate · w · L3 · ∂|s|/∂μ, which on an undecided qubit
+    (∂|s|/∂μ ≈ 1.2 across its three checks) exceeds the honest w · ∂L3/∂μ by an
+    order of magnitude. An earlier smooth decidedness weight measured 4–12x
+    dominance of exactly this kind. The indicator was detached for the same
+    reason; this keeps that property while adding the grading.
+    """
+    raw_gate::Vector{Float32} = exp.(-syndrome_gate_rate .* syndrome_weights)
+    detached_gate::Vector{Float32} = detach_from_gradient(raw_gate)
+    return detached_gate
+end
+
 # Integer codes for the certainty penalty. An Int rather than a Symbol or a
 # function value because this is passed to Enzyme as a `Const`, and the branch on
 # it is lifted OUT of the per-element work below: the three broadcasts are each
@@ -512,6 +574,8 @@ function compute_loss_including_correlations(
     sparsity_importance::Float32,
     syndrome_gate_threshold::Float32,           # τ, in softly broken checks
     certainty_syndrome_gate_threshold::Float32, # τ₂ for L2 alone; < 0 inherits τ
+    syndrome_gate_mode::Int,                    # indicator 1[|s| < τ] or smooth exp(-rate·|s|), for L3
+    syndrome_gate_rate::Float32,                # rate, only used by the smooth gate
     correlation_certainty_threshold::Float32,   # c, in LLR units
     certainty_penalty_kind::Int,                # which f in `certainty_per_sample`
     certainty_hinge_width::Float32,             # w, only used by the hinge penalty
@@ -572,7 +636,12 @@ function compute_loss_including_correlations(
         end
         # Detached, exactly as before: comparisons have zero derivative, so the
         # optimizer cannot lower gate x aux by breaking the syndrome.
-        gate           = Float32.(syndrome_weights .< syndrome_gate_threshold)
+        # L3's gate: indicator (historical) or the detached smooth exp(-rate·|s|).
+        # L2's gate stays the indicator on tau_2, whatever L3 uses.
+        gate = Float32.(syndrome_weights .< syndrome_gate_threshold)
+        if syndrome_gate_mode == SYNDROME_GATE_SMOOTH
+            gate = smooth_syndrome_gate_per_sample(syndrome_weights, syndrome_gate_rate)
+        end
         certainty_gate = Float32.(syndrome_weights .< effective_certainty_threshold)
 
         cert_j   = certainty_per_sample(post, certainty_penalty_kind, certainty_hinge_width)

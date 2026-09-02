@@ -107,7 +107,7 @@ lambda_anneal_decay = 0.3            # per-epoch factor for the annealed forms
 # is the control that says whether any gain is coflip-SPECIFIC or just "an L3
 # that finally has a stable L2 underneath it". Its previous 5-seed test did have
 # L2 on, so it is the one directly comparable prior.
-correlation_forms = ["coflip", "log_agreement"]
+correlation_forms = ["coflip"]
 correlation_agreement_floor = 1e-4   # eps; mandatory, see command_line.jl
 include_nocer    = true              # flat p = 0.1 baseline arm
 
@@ -138,7 +138,14 @@ certainty_importance = 0.01
 #         min_syndrome_weight = 3, one flip short, and are invisible at 0.5
 #   1e6   always open: aux applies to every sample. Layer SELECTION still sees
 #         base alone, so this is not the historical ungated path.
-syndrome_gates   = [0.5]             # tau, gating L3 + sparsity; 0.5 is the incumbent
+syndrome_gates   = [0.5]             # tau, the indicator gate on L3 + sparsity; 0.5 is the incumbent
+
+# L3's gate SHAPE. "indicator" is 1[|s| < tau]. "smooth:<rate>" is exp(-rate*|s|),
+# detached from the gradient, so a sample one softly-broken check from solved
+# keeps weight exp(-rate) instead of 0 -- L3 acts on the near-miss shell with
+# reduced authority rather than not at all. L2 keeps the indicator on tau_2.
+#   rate 0.5: |s|=0.5 -> 0.78, 1 -> 0.61, 2 -> 0.37, 4 -> 0.14
+syndrome_gate_modes = ["indicator", "smooth:0.5"]
 
 # tau_2: L2's OWN syndrome gate, decoupled from tau. "inherit" reproduces the
 # historical shared-gate behaviour exactly.
@@ -261,6 +268,7 @@ REP_FORM=$(get replication_correlation_form); REP_CP=$(get replication_certainty
 INCLUDE_NOCER=$(get include_nocer);  SPARSITIES=$(list sparsities)
 GATE_TAUS=$(list syndrome_gates);    CERTAINTY=$(get certainty_gate)
 CERT_GATES=$(list certainty_gates)
+GATE_MODES=$(list syndrome_gate_modes)
 RESCALE=$(get single_qubit_rescale)
 CORR_FORMS=$(list correlation_forms); AGREE_FLOOR=$(get correlation_agreement_floor)
 CERT_IMPORTANCE=$(get certainty_importance)
@@ -320,7 +328,7 @@ SLURM_TEST="$CLUSTER_DIR/hp_sweep_test_${TS}.sh"
 tag_of() { echo "$1" | tr '.' 'p' | tr -d '-'; }
 
 # ------------------------------------------------------------ emit points ---
-emit_point() {   # <key> <seed> <use_cer> <lambda|""> <tau> <cert_penalty[:w]> <corr_form> <sparsity> <tau2>
+emit_point() {   # <key> <seed> <use_cer> <lambda|""> <tau> <cert_penalty[:w]> <corr_form> <sparsity> <tau2> <gate_mode[:rate]>
     local key="$1" seed="$2" use_cer="$3" lambda="$4" tau="$5"
     local lam_tag="" arm="cer" require="true"
     # A lambda spec is <value>[d|u]: bare = constant, d = anneal down from
@@ -353,6 +361,19 @@ emit_point() {   # <key> <seed> <use_cer> <lambda|""> <tau> <cert_penalty[:w]> <
     local sparsity_value="${8:-0.0}"
     # tau_2. "inherit" writes -1.0, which the loss reads as "use tau", and leaves
     # the filename untagged so every historical name stays valid.
+    # L3 gate shape. "smooth:0.5" -> mode smooth, rate 0.5, tag "_sg0p5". Only
+    # CER arms with lambda > 0 carry L3, so the tag is dropped elsewhere and the
+    # controls stay shared and untagged.
+    local gate_mode_spec="${10:-indicator}"
+    local gate_mode="${gate_mode_spec%%:*}"
+    local gate_rate="0.5"
+    local gate_mode_tag=""
+    if [ "$gate_mode_spec" != "$gate_mode" ]; then
+        gate_rate="${gate_mode_spec#*:}"
+    fi
+    if [ "$gate_mode" != "indicator" ] && [ "$use_cer" != "false" ] && [ -n "$lambda" ] && [ "$lambda" != "0.0" ]; then
+        gate_mode_tag="_sg$(tag_of "$gate_rate")"
+    fi
     local certainty_gate_spec="${9:-inherit}"
     local certainty_gate_value="-1.0"
     local certainty_gate_tag=""
@@ -373,10 +394,10 @@ emit_point() {   # <key> <seed> <use_cer> <lambda|""> <tau> <cert_penalty[:w]> <
         cert_tag="_cp${cert_penalty}$(tag_of "$cert_width")"
     fi
 
-    local run_tag="_hp${arm}_sp$(tag_of "$sparsity_value")${lam_tag}${tau_tag}${certainty_gate_tag}${cert_tag}${corr_tag}"
-    local hp="hyperparams_hp_${arm}_sp$(tag_of "$sparsity_value")${lam_tag}${tau_tag}${certainty_gate_tag}${cert_tag}${corr_tag}_$(tag_of "$key")_seed${seed}.toml"
+    local run_tag="_hp${arm}_sp$(tag_of "$sparsity_value")${lam_tag}${tau_tag}${gate_mode_tag}${certainty_gate_tag}${cert_tag}${corr_tag}"
+    local hp="hyperparams_hp_${arm}_sp$(tag_of "$sparsity_value")${lam_tag}${tau_tag}${gate_mode_tag}${certainty_gate_tag}${cert_tag}${corr_tag}_$(tag_of "$key")_seed${seed}.toml"
 
-    grep -vE '^[[:space:]]*(sparsity_importance|retrain|run_tag|use_CER|seed|single_qubit_rescale|syndrome_gate_threshold|correlation_certainty_threshold|require_correlations|correlation_weight|certainty_penalty|certainty_hinge_width|certainty_syndrome_gate_threshold|correlation_form|correlation_agreement_floor|llr_certainty_importance)[[:space:]]*=' \
+    grep -vE '^[[:space:]]*(sparsity_importance|retrain|run_tag|use_CER|seed|single_qubit_rescale|syndrome_gate_threshold|correlation_certainty_threshold|require_correlations|correlation_weight|certainty_penalty|certainty_hinge_width|certainty_syndrome_gate_threshold|syndrome_gate_mode|syndrome_gate_rate|correlation_form|correlation_agreement_floor|llr_certainty_importance)[[:space:]]*=' \
         "$MODELS_DIR/$BASE_HP" > "$MODELS_DIR/$hp"
     {
         echo ""
@@ -388,6 +409,8 @@ emit_point() {   # <key> <seed> <use_cer> <lambda|""> <tau> <cert_penalty[:w]> <
         echo "sparsity_importance = \"${sparsity_value},${sparsity_value},0.8,up\""
         echo "syndrome_gate_threshold = ${tau}"
         echo "certainty_syndrome_gate_threshold = ${certainty_gate_value}"
+        echo "syndrome_gate_mode = \"${gate_mode}\""
+        echo "syndrome_gate_rate = ${gate_rate}"
         echo "correlation_certainty_threshold = ${CERTAINTY}"
         echo "certainty_penalty = \"${cert_penalty}\""
         echo "certainty_hinge_width = ${cert_width}"
@@ -416,10 +439,12 @@ for key in $DATASETS; do
                     for cp in $CERT_PENALTIES; do
                         for lam in $LAMBDAS; do
                             if [ "$lam" = "0.0" ]; then
-                                emit_point "$key" "$seed" true "$lam" "$tau" "$cp" "bilinear" "$sp" "$ct"
+                                emit_point "$key" "$seed" true "$lam" "$tau" "$cp" "bilinear" "$sp" "$ct" "indicator"
                             else
                                 for cf in $CORR_FORMS; do
-                                    emit_point "$key" "$seed" true "$lam" "$tau" "$cp" "$cf" "$sp" "$ct"
+                                    for gm in $GATE_MODES; do
+                                        emit_point "$key" "$seed" true "$lam" "$tau" "$cp" "$cf" "$sp" "$ct" "$gm"
+                                    done
                                 done
                             fi
                         done
@@ -692,7 +717,7 @@ if [ "$LOCAL" -eq 1 ]; then
           "$DATA/correlated_weights/correlated_weights_${SMOKE_KEY}.txt"
 
     SMOKE_HP="hyperparams_hp_smoke.toml"
-    grep -vE '^[[:space:]]*(sparsity_importance|retrain|run_tag|use_CER|seed|single_qubit_rescale|syndrome_gate_threshold|correlation_certainty_threshold|require_correlations|correlation_weight|certainty_penalty|certainty_hinge_width|certainty_syndrome_gate_threshold|correlation_form|correlation_agreement_floor|llr_certainty_importance|n_epochs|n_gradient_updates_per_epoch)[[:space:]]*=' \
+    grep -vE '^[[:space:]]*(sparsity_importance|retrain|run_tag|use_CER|seed|single_qubit_rescale|syndrome_gate_threshold|correlation_certainty_threshold|require_correlations|correlation_weight|certainty_penalty|certainty_hinge_width|certainty_syndrome_gate_threshold|syndrome_gate_mode|syndrome_gate_rate|correlation_form|correlation_agreement_floor|llr_certainty_importance|n_epochs|n_gradient_updates_per_epoch)[[:space:]]*=' \
         "$MODELS_DIR/$BASE_HP" > "$MODELS_DIR/$SMOKE_HP"
     {
         echo ""

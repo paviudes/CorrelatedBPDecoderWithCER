@@ -1,5 +1,6 @@
 using CorrelatedBPDecoderWithCER
 using Test
+using Enzyme
 
 """
 Exercise the two detached gates on the correlation term and the active-pair
@@ -434,4 +435,50 @@ end
     end
 
     @test correlation_form_code("coflip") == CORRELATION_FORM_COFLIP
+end
+
+# =============================================================================
+#  Smooth syndrome gate: graded in value, and DETACHED — no gradient through it.
+#  The second property is the one that matters and the one nothing else checks.
+# =============================================================================
+
+function toy_smooth_gated_loss(posterior_llrs::Vector{Float32})::Float32
+    """
+    sum( w(mu) * mu^2 ) with w the smooth gate of |mu|. If the gate is detached
+    the gradient is exactly w * 2mu; if it leaks, an extra -rate*w*mu^2*sign(mu)
+    term appears, which is of comparable size and easy to tell apart.
+    """
+    stand_in_syndrome_weights::Vector{Float32} = abs.(posterior_llrs)
+    gate::Vector{Float32} = smooth_syndrome_gate_per_sample(stand_in_syndrome_weights, 1.0f0)
+    total::Float32 = sum(gate .* posterior_llrs .^ 2)
+    return total
+end
+
+@testset "smooth syndrome gate" begin
+    weights::Vector{Float32} = Float32[0.0, 0.5, 1.0, 2.0, 4.0]
+    gate::Vector{Float32} = smooth_syndrome_gate_per_sample(weights, 0.5f0)
+    # --- values: graded, monotone, 1 at a solved sample --------------------
+    @test gate[1] == 1.0f0
+    @test gate[2] ≈ exp(-0.25f0) atol=1f-6
+    @test gate[5] ≈ exp(-2.0f0)  atol=1f-6
+    @test all(diff(gate) .< 0.0f0)
+    @test all(0.0f0 .< gate .<= 1.0f0)
+    # a stricter rate closes faster
+    @test smooth_syndrome_gate_per_sample(weights, 2.0f0)[3] < gate[3]
+    # --- code lookup is strict --------------------------------------------
+    @test syndrome_gate_code("indicator") == SYNDROME_GATE_INDICATOR
+    @test syndrome_gate_code(" Smooth ")  == SYNDROME_GATE_SMOOTH
+    @test_throws ArgumentError syndrome_gate_code("sigmoid")
+
+    # --- THE DETACHMENT CHECK, through Enzyme itself ------------------------
+    # Mirrors the exact autodiff call form train.jl uses.
+    llrs::Vector{Float32} = Float32[0.3, -0.8, 1.5, -2.0]
+    gradient::Vector{Float32} = zeros(Float32, length(llrs))
+    Enzyme.autodiff(Enzyme.ReverseWithPrimal, toy_smooth_gated_loss,
+                    Enzyme.Duplicated(llrs, gradient))
+    detached_expected::Vector{Float32} = exp.(-abs.(llrs)) .* (2.0f0 .* llrs)
+    leaked_extra::Vector{Float32} = -exp.(-abs.(llrs)) .* llrs .^ 2 .* sign.(llrs)
+    @test isapprox(gradient, detached_expected; atol = 1f-5)
+    # and it is NOT the leaked answer, which differs by a term of comparable size
+    @test !isapprox(gradient, detached_expected .+ leaked_extra; atol = 1f-3)
 end

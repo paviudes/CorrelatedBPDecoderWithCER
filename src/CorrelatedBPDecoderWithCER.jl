@@ -192,6 +192,8 @@ export compute_loss_including_correlations, compute_smooth_loss_from_llrs, softm
        ising_log_agreement_penalty_per_sample, correlation_term_per_sample, correlation_form_code,
        CORRELATION_FORM_BILINEAR, CORRELATION_FORM_LOG_AGREEMENT, CORRELATION_FORM_COFLIP,
        ising_coflip_penalty_per_sample,
+       SYNDROME_GATE_INDICATOR, SYNDROME_GATE_SMOOTH, syndrome_gate_code,
+       detach_from_gradient, smooth_syndrome_gate_per_sample,
        CERTAINTY_PENALTY_ENTROPY, CERTAINTY_PENALTY_EXPONENTIAL, CERTAINTY_PENALTY_HINGE
 
 # Training routines

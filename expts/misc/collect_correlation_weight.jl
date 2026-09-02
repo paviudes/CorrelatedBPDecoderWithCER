@@ -93,7 +93,7 @@ const USAGE = """
 #   _hp<arm>_sp<tag>[_lam<tag>]_seed_<n>          sweep_hyperparams.sh
 # The gate token is optional because the second generator dropped it once the
 # ungated path was deleted from loss.jl: every run is gated now.
-const RUN_PATTERN = r"_trained_using_train_(p_[0-9.eE+-]+(?:_sig_[0-9.eE+-]+)?_s_\d+)(_no_cer)?_(?:cw|hp)(cer|nocer)(?:_(ungated|gated))?_sp([0-9p]+)(?:_lam([0-9p]+[du]?))?(?:_tau([0-9pe]+))?(?:_ct([0-9pe]+))?(?:_cp([a-z]+[0-9p]*))?(?:_cf([a-z_]+))?_seed_(\d+)\.csv$"
+const RUN_PATTERN = r"_trained_using_train_(p_[0-9.eE+-]+(?:_sig_[0-9.eE+-]+)?_s_\d+)(_no_cer)?_(?:cw|hp)(cer|nocer)(?:_(ungated|gated))?_sp([0-9p]+)(?:_lam([0-9p]+[du]?))?(?:_tau([0-9pe]+))?(?:_sg([0-9p]+))?(?:_ct([0-9pe]+))?(?:_cp([a-z]+[0-9p]*))?(?:_cf([a-z_]+))?_seed_(\d+)\.csv$"
 
 """
     tag_to_number(tag) -> Float64
@@ -191,13 +191,15 @@ function parse_run(filename::String)::Union{NamedTuple, Nothing}
         tau_tag = filename_match.captures[7] === nothing ? "" : String(filename_match.captures[7]),
         tau = filename_match.captures[7] === nothing ? NaN :
               tag_to_number(String(filename_match.captures[7])),
-        certainty_gate_tag = filename_match.captures[8] === nothing ? "" :
-                             String(filename_match.captures[8]),
-        certainty_penalty = filename_match.captures[9] === nothing ? "entropy" :
-                            String(filename_match.captures[9]),
-        correlation_form = filename_match.captures[10] === nothing ? "bilinear" :
-                           String(filename_match.captures[10]),
-        seed = parse(Int, filename_match.captures[11]),
+        certainty_gate_tag = filename_match.captures[9] === nothing ? "" :
+                             String(filename_match.captures[9]),
+        gate_mode_tag = filename_match.captures[8] === nothing ? "" :
+                        String(filename_match.captures[8]),
+        certainty_penalty = filename_match.captures[10] === nothing ? "entropy" :
+                            String(filename_match.captures[10]),
+        correlation_form = filename_match.captures[11] === nothing ? "bilinear" :
+                           String(filename_match.captures[11]),
+        seed = parse(Int, filename_match.captures[12]),
     )
     return run_key
 end
@@ -227,6 +229,10 @@ function label_for(run_key::NamedTuple)::String
     # sparsity arms pooled into one group and their COUNT was reported as the
     # seed count: nocer_tau0p5 showed "7 seeds" (5 real seeds of sp0p0, plus one
     # each of sp0p003 and sp0p01) and every hinge arm showed a spurious 3.
+    gate_mode_label::String = ""
+    if !isempty(run_key.gate_mode_tag)
+        gate_mode_label = "_sg$(run_key.gate_mode_tag)"
+    end
     certainty_gate_label::String = ""
     if !isempty(run_key.certainty_gate_tag)
         certainty_gate_label = "_ct$(run_key.certainty_gate_tag)"
@@ -249,7 +255,7 @@ function label_for(run_key::NamedTuple)::String
     if !isempty(run_key.tau_tag)
         label = label * "_tau$(run_key.tau_tag)"
     end
-    label = label * certainty_gate_label * sparsity_tag_segment * certainty_tag * correlation_form_tag
+    label = label * gate_mode_label * certainty_gate_label * sparsity_tag_segment * certainty_tag * correlation_form_tag
     return label
 end
 
@@ -561,6 +567,10 @@ function collect_per_run(results_dir::String, logs_dir::String)::DataFrame
         # run's log: the same warning fired three times, the hinge arms inherited
         # entropy's diagnostics, and the 90 runs carrying those tags found no log
         # at all (156/246).
+        gate_mode_segment::String = ""
+        if !isempty(run_key.gate_mode_tag)
+            gate_mode_segment = "_sg$(run_key.gate_mode_tag)"
+        end
         certainty_gate_segment::String = ""
         if !isempty(run_key.certainty_gate_tag)
             certainty_gate_segment = "_ct$(run_key.certainty_gate_tag)"
@@ -577,7 +587,7 @@ function collect_per_run(results_dir::String, logs_dir::String)::DataFrame
                            "_$(run_key.prefix)$(run_key.arm)$(run_key.gate_segment)" *
                            "_sp$(run_key.sparsity_tag)$(lambda_segment)" *
                            (isempty(run_key.tau_tag) ? "" : "_tau$(run_key.tau_tag)") *
-                           certainty_gate_segment * certainty_segment * correlation_segment *
+                           gate_mode_segment * certainty_gate_segment * certainty_segment * correlation_segment *
                            "_seed_$(run_key.seed)"
         debug_summary::Dict{Symbol, Any} = debug_log_summary(logs_dir, run_tail)
         for (key, value) in debug_summary
@@ -865,7 +875,7 @@ the tau tag was introduced and silently produced an empty contrasts table from
 then on — every branch skipped, no error, no warning.
 """
 function control_labels(label::String)::Tuple{String, String}
-    without_form::String = replace(label, r"_cf[a-z_]+$" => "")
+    without_form::String = replace(replace(label, r"_cf[a-z_]+$" => ""), r"_sg[0-9p]+" => "")
     priors_control::String = replace(without_form, r"^lam[0-9pdu]+" => "lam0p0")
     nocer_baseline::String = replace(priors_control, r"^lam0p0" => "nocer")
     return (priors_control, nocer_baseline)
