@@ -187,9 +187,21 @@ certainty_hinge_width = 2.2          # w, only used by the hinge penalty
 single_qubit_rescale = 0.1
 
 # --- cluster ----------------------------------------------------------------
+# --- cluster ----------------------------------------------------------------
+# NIBI (SHARCNET, since 2025-07-31). Node geometry from the Alliance wiki:
+#   CPU  700 nodes x 192 cores, 748G (766000M) usable, 3T node-local
+#   GPU   36 nodes x 112 cores, 2000G, 11T node-local, 8x H100 SXM 80GB NVLink
+#   MIG  h100_1g.10gb / h100_2g.20gb / h100_3g.40gb, requested with --gpus=
+#   compute nodes HAVE internet (unlike Narval), /scratch soft quota 1TB / 60d
+# To go back to Narval: gpu_type a100, train_cpus 54, test_cpus 12, and set
+# gpu_request_style = "gpus-per-node".
+cluster_name     = "nibi"
 account_cpu      = "def-jemerson"
 account_gpu      = "def-jemerson_gpu"
 email            = "pavithran.sridhar@gmail.com"
+# VERIFY THESE ON NIBI BEFORE THE FIRST SUBMIT: `module spider julia` and
+# `module spider cuda`. The software stack is not identical to Narval's and a
+# missing module fails every array task at once, after the queue wait.
 julia_module     = "julia/1.12.5"
 cuda_module      = "cuda"
 heap_size_hint   = "4G"
@@ -199,10 +211,15 @@ heap_size_hint   = "4G"
 # K tasks cut the wall time by ~K without any task needing a bigger node. Slurm
 # schedules small allocations sooner, so more/smaller tasks generally start
 # earlier than one large one.
-#   240 points / 5 tasks = 48 per task = one 54-core wave = ~45 min.
-train_array_tasks = 5
-train_cpus       = 54   # points per task per wave; a CPU node has 64
+#   240 points / 2 tasks = 120 per task = one 120-core wave = ~45 min.
+train_array_tasks = 2
+# 192-core nodes, but --mem-per-cpu is POOLED (mem_per_cpu x cpus_per_task) and
+# the node has 748G, so 192 x 6G = 1152G would be rejected outright. 124 cores is
+# the ceiling at 6G; 120 leaves headroom and divides 240 into two clean waves.
+# The generator hard-fails below if this product exceeds the node.
+train_cpus       = 120  # points per task per wave; a Nibi CPU node has 192
 train_mem_per_cpu = "6G"
+cpu_node_memory_mb = 766000   # 748G, for the overcommit check
 train_wall_time  = "4:00:00"
 
 # Measured: 3.7 min per test per process. ONE CARD PER ARRAY TASK, one process
@@ -216,12 +233,18 @@ train_wall_time  = "4:00:00"
 # at OOM — that killed 21/54 tests on 2026-08-28. MIG only worked because MIG is
 # a HARD partition. Sharing is safe only when the hardware partitions it.
 test_array_tasks = 8
-gpu_type         = "a100"
+# h100_3g.40gb is 40GB, the same budget as the Narval a100 that completed
+# 27/27 and 54/54 with one process per card -- a drop-in, and a MIG slice
+# schedules far sooner than a full 80GB H100. Use "h100" for the full card.
+gpu_type         = "h100_3g.40gb"
+# Nibi requests MIG instances with --gpus=<name>:1, full cards with
+# --gpus-per-node=<name>:<n>. "auto" picks by whether the type names a MIG slice.
+gpu_request_style = "auto"
 n_gpus_per_node  = 1                 # one card per array task
 test_jobs        = 1                 # one process on it; do not raise
 mem_per_gpu      = "32G"             # SLURM HOST ram per GPU (not VRAM)
 vram_per_gpu     = ""                # VRAM in GB for the batch sizer; "" => infer from gpu_type
-test_cpus        = 12
+test_cpus        = 14   # 112 cores / 8 GPUs on a Nibi GPU node
 test_wall_time   = "4:00:00"
 EOF
 
@@ -283,12 +306,18 @@ GPU_TYPE=$(get gpu_type);            N_GPUS=$(get n_gpus_per_node)
 TEST_JOBS=$(get test_jobs);          MEM_PER_GPU=$(get mem_per_gpu)
 VRAM_PER_GPU=$(get vram_per_gpu)
 TEST_CPUS=$(get test_cpus);          TEST_WALL=$(get test_wall_time)
+CLUSTER_NAME=$(get cluster_name);    CPU_NODE_MEM_MB=$(get cpu_node_memory_mb)
+GPU_REQUEST_STYLE=$(get gpu_request_style)
 
 # VRAM per card, for the prediction batch sizer. This is NOT --mem-per-gpu, which
 # is host RAM: GPU_MEMORY has to fit the CARD or the batch is sized too large and
 # the run dies at cuDevicePrimaryCtxRetain.
 if [ -z "$VRAM_PER_GPU" ]; then
     case "$GPU_TYPE" in
+        h100_1g.10gb) VRAM_PER_GPU=10 ;;
+        h100_2g.20gb) VRAM_PER_GPU=20 ;;
+        h100_3g.40gb) VRAM_PER_GPU=40 ;;
+        h100_80gb)    VRAM_PER_GPU=80 ;;
         a100_1g.5gb)  VRAM_PER_GPU=5  ;;
         a100_2g.10gb) VRAM_PER_GPU=10 ;;
         a100_3g.20gb) VRAM_PER_GPU=20 ;;
@@ -298,6 +327,33 @@ if [ -z "$VRAM_PER_GPU" ]; then
         *) echo "unknown gpu_type '$GPU_TYPE': set vram_per_gpu explicitly." >&2; exit 1 ;;
     esac
 fi
+# PREFLIGHT: --mem-per-cpu is POOLED, so cpus_per_task x mem_per_cpu must fit the
+# node. Getting this wrong is not a slow job, it is a rejected submission after
+# the queue wait, so fail here instead.
+TRAIN_MEM_MB=$(echo "$TRAIN_MEM" | awk '{u=toupper($0); v=u; gsub(/[^0-9.]/,"",v);
+    if (u ~ /G/) printf "%d", v*1024; else printf "%d", v}')
+TRAIN_TOTAL_MB=$(( TRAIN_CPUS * TRAIN_MEM_MB ))
+if [ "$TRAIN_TOTAL_MB" -gt "$CPU_NODE_MEM_MB" ]; then
+    echo "train_cpus x train_mem_per_cpu = ${TRAIN_CPUS} x ${TRAIN_MEM} = ${TRAIN_TOTAL_MB}M" >&2
+    echo "  exceeds the ${CLUSTER_NAME} CPU node's ${CPU_NODE_MEM_MB}M. --mem-per-cpu is POOLED." >&2
+    echo "  Lower train_cpus to $(( CPU_NODE_MEM_MB / TRAIN_MEM_MB )) or reduce train_mem_per_cpu." >&2
+    exit 1
+fi
+
+# Nibi requests MIG instances with "--gpus=<name>:1" and full cards with
+# "--gpus-per-node=<name>:<n>". A MIG type is one naming a <k>g.<m>gb slice.
+GPU_SBATCH_LINE=""
+case "$GPU_REQUEST_STYLE" in
+    gpus-per-node) GPU_SBATCH_LINE="#SBATCH --gpus-per-node=${GPU_TYPE}:${N_GPUS}" ;;
+    gpus)          GPU_SBATCH_LINE="#SBATCH --gpus=${GPU_TYPE}:${N_GPUS}" ;;
+    auto)
+        case "$GPU_TYPE" in
+            *g.*gb) GPU_SBATCH_LINE="#SBATCH --gpus=${GPU_TYPE}:${N_GPUS}" ;;
+            *)      GPU_SBATCH_LINE="#SBATCH --gpus-per-node=${GPU_TYPE}:${N_GPUS}" ;;
+        esac ;;
+    *) echo "unknown gpu_request_style '$GPU_REQUEST_STYLE': use auto, gpus or gpus-per-node." >&2; exit 1 ;;
+esac
+
 # 85% of one card, shared by the processes assigned to it.
 JOBS_PER_GPU=$(( TEST_JOBS / N_GPUS )); [ "$JOBS_PER_GPU" -lt 1 ] && JOBS_PER_GPU=1
 GPU_MEMORY_MB=$(( VRAM_PER_GPU * 1024 * 85 / (100 * JOBS_PER_GPU) ))
@@ -578,7 +634,7 @@ cat > "$SLURM_TEST" <<EOF
 #SBATCH --output=$CLUSTER_DIR/hp_sweep_test_${TS}_task%a.out
 #SBATCH --error=$CLUSTER_DIR/hp_sweep_test_${TS}_task%a.err
 #SBATCH --array=0-$((TEST_ARRAY - 1))
-#SBATCH --gpus-per-node=${GPU_TYPE}:${N_GPUS}
+${GPU_SBATCH_LINE}
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=$TEST_CPUS
@@ -671,7 +727,8 @@ echo "  datasets  -> $DATASETS"
 echo "  ref       -> $REF_DATASETS   (lambda = 0 and no-CER only)"
 echo "  lambdas   -> $LAMBDAS   seeds -> $SEEDS"
 echo "  gates     -> tau = $GATE_TAUS;  certainty c = $CERTAINTY;  sparsity = $SPARSITIES"
-echo "  train     -> $ACCOUNT_CPU: array 0-$((TRAIN_ARRAY-1)) ($TRAIN_ARRAY tasks x $TRAIN_CPUS cpu x $TRAIN_MEM), $TRAIN_WALL"
+echo "  cluster   -> $CLUSTER_NAME"
+echo "  train     -> $ACCOUNT_CPU: array 0-$((TRAIN_ARRAY-1)) ($TRAIN_ARRAY x $TRAIN_CPUS cpu x $TRAIN_MEM = $(( TRAIN_TOTAL_MB / 1024 ))G/node), $TRAIN_WALL"
 echo "  test      -> $ACCOUNT_GPU: array 0-$((TEST_ARRAY-1)) ($TEST_ARRAY tasks x ${N_GPUS}x $GPU_TYPE (${VRAM_PER_GPU}G vram), $TEST_CPUS cpu),"
 echo "               --mem-per-gpu=$MEM_PER_GPU host ram, GPU_MEMORY=${GPU_MEMORY_MB}M, $TEST_JOBS at a time"
 echo "  commands  -> $TRAIN_CMDS"
