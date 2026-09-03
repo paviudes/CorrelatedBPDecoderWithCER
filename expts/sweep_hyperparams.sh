@@ -584,7 +584,27 @@ cat > "$SLURM_TRAIN" <<EOF
 #SBATCH --mail-user=$EMAIL
 set -uo pipefail
 module load $JULIA_MODULE
-[ -z "\${JULIA_DEPOT_PATH:-}" ] && export JULIA_DEPOT_PATH="\${SCRATCH:-\$HOME}/.julia"
+# CUDA module even though training is CPU-only. LocalPreferences.toml pins
+# CUDA_Runtime_jll local_toolkit = true, so CUDA.jl discovers a SYSTEM toolkit
+# rather than downloading an artifact; with no toolkit on PATH its precompile
+# fails, and the Pkg.precompile() below ends in `|| exit 1`. Loading the module
+# costs nothing here and removes that failure mode. USE_GPU=0 still keeps
+# training on the CPU, which is what Enzyme requires.
+module load $CUDA_MODULE
+# DEPOT. Falling back to \$HOME here is how a depot gets silently corrupted: on
+# Nibi /home is a ~50GB quota and a CUDA+Enzyme depot will exhaust it mid-extract,
+# leaving packages with some source files and not others (that is what produced
+# "Adapt/src/wrappers.jl: No such file or directory"). Fail loudly instead.
+if [ -z "\${JULIA_DEPOT_PATH:-}" ]; then
+    if [ -z "\${SCRATCH:-}" ]; then
+        echo "ERROR: neither JULIA_DEPOT_PATH nor SCRATCH is set." >&2
+        echo "  Refusing to default the Julia depot to \$HOME: on this cluster /home" >&2
+        echo "  is small and a partial extraction there corrupts packages silently." >&2
+        exit 1
+    fi
+    export JULIA_DEPOT_PATH="\${SCRATCH}/.julia"
+fi
+echo "[\${SLURM_JOB_NAME:-job}] depot: \$JULIA_DEPOT_PATH"
 export JULIA_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 JULIA_PKG_OFFLINE=true
 export USE_GPU=0
 cd \$SLURM_SUBMIT_DIR
@@ -646,7 +666,20 @@ ${GPU_SBATCH_LINE}
 set -uo pipefail
 module load $JULIA_MODULE
 module load $CUDA_MODULE
-[ -z "\${JULIA_DEPOT_PATH:-}" ] && export JULIA_DEPOT_PATH="\${SCRATCH:-\$HOME}/.julia"
+# DEPOT. Falling back to \$HOME here is how a depot gets silently corrupted: on
+# Nibi /home is a ~50GB quota and a CUDA+Enzyme depot will exhaust it mid-extract,
+# leaving packages with some source files and not others (that is what produced
+# "Adapt/src/wrappers.jl: No such file or directory"). Fail loudly instead.
+if [ -z "\${JULIA_DEPOT_PATH:-}" ]; then
+    if [ -z "\${SCRATCH:-}" ]; then
+        echo "ERROR: neither JULIA_DEPOT_PATH nor SCRATCH is set." >&2
+        echo "  Refusing to default the Julia depot to \$HOME: on this cluster /home" >&2
+        echo "  is small and a partial extraction there corrupts packages silently." >&2
+        exit 1
+    fi
+    export JULIA_DEPOT_PATH="\${SCRATCH}/.julia"
+fi
+echo "[\${SLURM_JOB_NAME:-job}] depot: \$JULIA_DEPOT_PATH"
 export JULIA_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 JULIA_PKG_OFFLINE=true
 export GPU_BACKEND=cuda USE_GPU=1
 cd \$SLURM_SUBMIT_DIR
