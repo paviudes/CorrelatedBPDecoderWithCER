@@ -132,7 +132,9 @@ human_readable_size() {   # <directory> <name-pattern>
         total_bytes=$(find "$directory" -mindepth 1 -name "$pattern" -type f -printf '%s\n' 2>/dev/null \
                       | awk '{sum += $1} END {print sum + 0}')
     fi
-    numfmt --to=iec --suffix=B "$total_bytes" 2>/dev/null || echo "${total_bytes}B"
+    if ! numfmt --to=iec --suffix=B "$total_bytes" 2>/dev/null; then
+        echo "${total_bytes}B"
+    fi
 }
 
 echo
@@ -151,7 +153,10 @@ for index in "${!CATEGORY_LABELS[@]}"; do
         # -mindepth 1 so the directory itself is never a candidate; only its
         # contents are. Subdirectories (cluster/logs/, results/summary/) are
         # swept up because the recursive walk reaches the files inside them.
-        find "$directory" -mindepth 1 -name "$pattern" -type f -print0 >> "$MANIFEST_FILE" 2>/dev/null || true
+        # No error suppression: find exits 0 when there are simply no matches,
+        # so a non-zero status here is a REAL error (an unreadable path) and
+        # `set -e` should stop a destructive script rather than continue blind.
+        find "$directory" -mindepth 1 -name "$pattern" -type f -print0 >> "$MANIFEST_FILE"
         file_count=$(find "$directory" -mindepth 1 -name "$pattern" -type f 2>/dev/null | wc -l | tr -d ' ')
     fi
     TOTAL_FILE_COUNT=$(( TOTAL_FILE_COUNT + file_count ))
@@ -170,8 +175,8 @@ if [ -d "$DATA_DIR/models" ]; then
     base_config_count=$(find "$DATA_DIR/models" -maxdepth 1 -name '*.toml' \
                         ! -name 'hyperparams_hp_*.toml' -type f 2>/dev/null | wc -l | tr -d ' ')
     printf "    %-22s %s base config(s)\n" "models/*.toml" "$base_config_count"
-    find "$DATA_DIR/models" -maxdepth 1 -name '*.toml' ! -name 'hyperparams_hp_*.toml' -type f \
-        -printf '      %f\n' 2>/dev/null || true
+    find "$DATA_DIR/models" -maxdepth 1 -name '*.toml' ! -name 'hyperparams_hp_*.toml' \
+         -type f -printf '      %f\n' 
 fi
 echo
 
@@ -263,7 +268,7 @@ fi
 # the next sweep does not have to recreate them.
 for directory in "$DATA_DIR/logs" "$DATA_DIR/cluster" "$DATA_DIR/results"; do
     if [ -d "$directory" ]; then
-        find "$directory" -mindepth 1 -type d -empty -delete 2>/dev/null || true
+        find "$directory" -mindepth 1 -type d -empty -delete
     fi
 done
 

@@ -51,7 +51,10 @@ if [ -z "${JULIA_DEPOT_PATH:-}" ]; then
     fi
 fi
 
-command -v julia >/dev/null || { echo "no julia on PATH — 'module load julia/1.12.5' first" >&2; exit 1; }
+if ! command -v julia >/dev/null; then
+    echo "no julia on PATH — 'module load julia/1.12.5' first" >&2
+    exit 1
+fi
 
 echo "project : $PROJECT"
 echo "depot   : $JULIA_DEPOT_PATH"

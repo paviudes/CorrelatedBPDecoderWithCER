@@ -187,21 +187,27 @@ certainty_hinge_width = 2.2          # w, only used by the hinge penalty
 single_qubit_rescale = 0.1
 
 # --- cluster ----------------------------------------------------------------
-# --- cluster ----------------------------------------------------------------
-# NIBI (SHARCNET, since 2025-07-31). Node geometry from the Alliance wiki:
-#   CPU  700 nodes x 192 cores, 748G (766000M) usable, 3T node-local
-#   GPU   36 nodes x 112 cores, 2000G, 11T node-local, 8x H100 SXM 80GB NVLink
-#   MIG  h100_1g.10gb / h100_2g.20gb / h100_3g.40gb, requested with --gpus=
-#   compute nodes HAVE internet (unlike Narval), /scratch soft quota 1TB / 60d
-# To go back to Narval: gpu_type a100, train_cpus 54, test_cpus 12, and set
-# gpu_request_style = "gpus-per-node".
-cluster_name     = "nibi"
+# ACTIVE: NARVAL. Two profiles are kept here; switching is the six values marked
+# [PROFILE]. Nothing else in this file is cluster-specific.
+#
+#   NARVAL (Calcul Quebec)           NIBI (SHARCNET)
+#   CPU  64 cores, 249G / 498G       CPU  192 cores, 748G (766000M)
+#   GPU  4x A100 40GB                GPU  8x H100 SXM 80GB NVLink
+#   MIG  a100_Ng.Mgb                 MIG  h100_1g.10gb / 2g.20gb / 3g.40gb
+#   requests --gpus-per-node=        MIG requests --gpus=   (auto handles both)
+#   compute nodes: NO internet       compute nodes: internet
+#
+#   [PROFILE]             narval           nibi
+#   train_cpus            54               120
+#   cpu_node_memory_mb    510000 (498G)    766000 (748G)
+#   train_array_tasks     5                2
+#   gpu_type              a100             h100_3g.40gb
+#   test_cpus             12               14
+#   test_array_tasks      8                8
+cluster_name     = "narval"
 account_cpu      = "def-jemerson"
 account_gpu      = "def-jemerson_gpu"
 email            = "pavithran.sridhar@gmail.com"
-# VERIFY THESE ON NIBI BEFORE THE FIRST SUBMIT: `module spider julia` and
-# `module spider cuda`. The software stack is not identical to Narval's and a
-# missing module fails every array task at once, after the queue wait.
 julia_module     = "julia/1.12.5"
 cuda_module      = "cuda"
 heap_size_hint   = "4G"
@@ -211,40 +217,40 @@ heap_size_hint   = "4G"
 # K tasks cut the wall time by ~K without any task needing a bigger node. Slurm
 # schedules small allocations sooner, so more/smaller tasks generally start
 # earlier than one large one.
-#   240 points / 2 tasks = 120 per task = one 120-core wave = ~45 min.
-train_array_tasks = 2
-# 192-core nodes, but --mem-per-cpu is POOLED (mem_per_cpu x cpus_per_task) and
-# the node has 748G, so 192 x 6G = 1152G would be rejected outright. 124 cores is
-# the ceiling at 6G; 120 leaves headroom and divides 240 into two clean waves.
-# The generator hard-fails below if this product exceeds the node.
-train_cpus       = 120  # points per task per wave; a Nibi CPU node has 192
+#   240 points / 5 tasks = 48 per task = one 54-core wave = ~45 min.
+train_array_tasks = 5
+# --mem-per-cpu is POOLED (mem_per_cpu x cpus_per_task). 54 x 6G = 324G, so this
+# lands on Narval's 498G nodes rather than the 249G ones -- which is what the
+# 246-point sweep ran on. The generator hard-fails below if the product exceeds
+# cpu_node_memory_mb.
+train_cpus       = 54   # points per task per wave; a Narval CPU node has 64
 train_mem_per_cpu = "6G"
-cpu_node_memory_mb = 766000   # 748G, for the overcommit check
+cpu_node_memory_mb = 510000   # 498G, for the overcommit check
 train_wall_time  = "4:00:00"
 
 # Measured: 3.7 min per test per process. ONE CARD PER ARRAY TASK, one process
 # on it: a 1-GPU request schedules far sooner than a whole 4-GPU node, and the
 # no-sharing rule (see below) is satisfied trivially rather than by arithmetic.
 # Scale throughput with test_array_tasks, NOT with processes per card.
-#   246 points / 8 tasks = 31 per task x 3.7 min = ~115 min.
+#   240 points / 8 tasks = 30 per task x 3.7 min = ~110 min.
 #
 # NEVER put two processes on one unpartitioned card: the real footprint is ~1.5x
 # the nominal GPU_MEMORY, so two on a 40 GB a100 overcommit and die stochastically
 # at OOM — that killed 21/54 tests on 2026-08-28. MIG only worked because MIG is
 # a HARD partition. Sharing is safe only when the hardware partitions it.
 test_array_tasks = 8
-# h100_3g.40gb is 40GB, the same budget as the Narval a100 that completed
-# 27/27 and 54/54 with one process per card -- a drop-in, and a MIG slice
-# schedules far sooner than a full 80GB H100. Use "h100" for the full card.
-gpu_type         = "h100_3g.40gb"
-# Nibi requests MIG instances with --gpus=<name>:1, full cards with
-# --gpus-per-node=<name>:<n>. "auto" picks by whether the type names a MIG slice.
+# Full a100 (40GB), one process per card -- the configuration that completed
+# 27/27 and 54/54 clean. a100_3g.20gb schedules sooner when the queue is long but
+# halves GPU_MEMORY, so re-derive the batch budget before switching to it.
+gpu_type         = "a100"
+# "auto" emits --gpus-per-node= for a full card and --gpus= for a MIG slice
+# (which is what Nibi requires). Correct for Narval either way.
 gpu_request_style = "auto"
 n_gpus_per_node  = 1                 # one card per array task
 test_jobs        = 1                 # one process on it; do not raise
 mem_per_gpu      = "32G"             # SLURM HOST ram per GPU (not VRAM)
 vram_per_gpu     = ""                # VRAM in GB for the batch sizer; "" => infer from gpu_type
-test_cpus        = 14   # 112 cores / 8 GPUs on a Nibi GPU node
+test_cpus        = 12   # 48 cores / 4 GPUs on a Narval GPU node
 test_wall_time   = "4:00:00"
 EOF
 
@@ -271,7 +277,9 @@ open_editor() {
 }
 
 if [ "$NO_EDIT" -eq 0 ] && [ "$COLLECT" -eq 0 ]; then
-    open_editor || echo "[hp_sweep] edit $SETTINGS_FILE by hand, then re-run with --no-edit."
+    if ! open_editor; then
+        echo "[hp_sweep] edit $SETTINGS_FILE by hand, then re-run with --no-edit."
+    fi
 fi
 
 # ---------------------------------------------------------------- settings ---
@@ -355,12 +363,18 @@ case "$GPU_REQUEST_STYLE" in
 esac
 
 # 85% of one card, shared by the processes assigned to it.
-JOBS_PER_GPU=$(( TEST_JOBS / N_GPUS )); [ "$JOBS_PER_GPU" -lt 1 ] && JOBS_PER_GPU=1
+JOBS_PER_GPU=$(( TEST_JOBS / N_GPUS ))
+if [ "$JOBS_PER_GPU" -lt 1 ]; then
+    JOBS_PER_GPU=1
+fi
 GPU_MEMORY_MB=$(( VRAM_PER_GPU * 1024 * 85 / (100 * JOBS_PER_GPU) ))
 
 MODELS_DIR="$WORKDIR/$CODENAME/models"
 CLUSTER_DIR="$WORKDIR/$CODENAME/cluster"
-[ -f "$MODELS_DIR/$BASE_HP" ] || { echo "no base hyperparameters: $MODELS_DIR/$BASE_HP" >&2; exit 1; }
+if [ ! -f "$MODELS_DIR/$BASE_HP" ]; then
+    echo "no base hyperparameters: $MODELS_DIR/$BASE_HP" >&2
+    exit 1
+fi
 # The stage-in tars the codename as it stands, so these have to exist here or
 # the job has nowhere to write and the stage-out finds nothing to bring back.
 mkdir -p "$CLUSTER_DIR" "$MODELS_DIR" "$WORKDIR/$CODENAME/results" "$WORKDIR/$CODENAME/logs"
@@ -368,7 +382,10 @@ mkdir -p "$CLUSTER_DIR" "$MODELS_DIR" "$WORKDIR/$CODENAME/results" "$WORKDIR/$CO
 # --------------------------------------------------------------- collect ---
 if [ "$COLLECT" -eq 1 ]; then
     RESULTS_DIR="$WORKDIR/$CODENAME/results"
-    [ -d "$RESULTS_DIR" ] || { echo "no results dir: $RESULTS_DIR" >&2; exit 1; }
+    if [ ! -d "$RESULTS_DIR" ]; then
+        echo "no results dir: $RESULTS_DIR" >&2
+        exit 1
+    fi
     n_found=$(ls "$RESULTS_DIR"/simulation_results_*_hp*_seed_*.csv 2>/dev/null | wc -l)
     echo "[hp_sweep] collecting $n_found result file(s) from $RESULTS_DIR"
     rm -f "$SETTINGS_FILE"
@@ -557,7 +574,8 @@ N_RAW_POINTS=$(wc -l < "$TRAIN_CMDS")
 # tasks. Deduplicate, preserving first-appearance order so the interleaved array
 # split stays balanced across datasets.
 for cmd_file in "$TRAIN_CMDS" "$TEST_CMDS"; do
-    awk '!seen[$0]++' "$cmd_file" > "$cmd_file.tmp" && mv "$cmd_file.tmp" "$cmd_file"
+    awk '!seen[$0]++' "$cmd_file" > "$cmd_file.tmp"
+    mv "$cmd_file.tmp" "$cmd_file"
 done
 N_DUPLICATES=$(( N_RAW_POINTS - $(wc -l < "$TRAIN_CMDS") ))
 if [ "$N_DUPLICATES" -gt 0 ]; then
@@ -587,7 +605,9 @@ module load $JULIA_MODULE
 # CUDA module even though training is CPU-only. LocalPreferences.toml pins
 # CUDA_Runtime_jll local_toolkit = true, so CUDA.jl discovers a SYSTEM toolkit
 # rather than downloading an artifact; with no toolkit on PATH its precompile
-# fails, and the Pkg.precompile() below ends in `|| exit 1`. Loading the module
+# fails, and the Pkg.precompile() below exits non-zero. Loading the module
+# NOTE: no backticks in this heredoc -- it is unquoted (<<EOF), so backticks are
+# command substitution and bash would try to RUN whatever they enclose.
 # costs nothing here and removes that failure mode. USE_GPU=0 still keeps
 # training on the CPU, which is what Enzyme requires.
 module load $CUDA_MODULE
@@ -608,7 +628,9 @@ echo "[\${SLURM_JOB_NAME:-job}] depot: \$JULIA_DEPOT_PATH"
 export JULIA_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 JULIA_PKG_OFFLINE=true
 export USE_GPU=0
 cd \$SLURM_SUBMIT_DIR
-julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()' || exit 1
+if ! julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'; then
+    exit 1
+fi
 export JULIA_PKG_PRECOMPILE_AUTO=0
 
 TASK=\${SLURM_ARRAY_TASK_ID:-0}
@@ -640,7 +662,9 @@ echo "[train task \$TASK/$TRAIN_ARRAY] \$N_TASK of $N_POINTS point(s), \$SLURM_C
 JOBLOG="\$LOCAL/cluster/logs/hp_${TS}_train_task\${TASK}.joblog"
 parallel --jobs \$SLURM_CPUS_PER_TASK --joblog "\$JOBLOG" \\
     --results "\$LOCAL/cluster/logs/hp_${TS}_train_task\${TASK}" < "\$SLURM_TMPDIR/train.txt"
-awk 'NR>1 && \$7 != 0 {print "  FAILED (exit " \$7 "): " \$9}' "\$JOBLOG" || true
+if [ -f "\$JOBLOG" ]; then
+    awk 'NR>1 && \$7 != 0 {print "  FAILED (exit " \$7 "): " \$9}' "\$JOBLOG"
+fi
 echo "[train task \$TASK] \$(awk 'NR>1 && \$7 == 0' "\$JOBLOG" | wc -l)/\$N_TASK point(s) exited 0"
 echo "[train task \$TASK] done: \$(date)"
 EOF
@@ -688,16 +712,26 @@ cd \$SLURM_SUBMIT_DIR
 # with "no CUDA runtime found"; this job's precompile then finds everything up to
 # date and leaves the bad cache in place. Force a rebuild of that one JLL here,
 # where the driver IS present, in its own process so the next one loads it fresh.
-julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using Pkg; Pkg.instantiate()' || exit 1
-julia --project=\$SLURM_SUBMIT_DIR/.. -e '
+if ! julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using Pkg; Pkg.instantiate()'; then
+    exit 1
+fi
+if ! julia --project=\$SLURM_SUBMIT_DIR/.. -e '
     pkg = Base.PkgId(Base.UUID("76a88914-d11a-5bdc-97e0-2f5a05c973a2"), "CUDA_Runtime_jll")
-    Base.compilecache(pkg)' || exit 1
-julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using Pkg; Pkg.precompile()' || exit 1
+    Base.compilecache(pkg)'; then
+    exit 1
+fi
+if ! julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using Pkg; Pkg.precompile()'; then
+    exit 1
+fi
 export JULIA_PKG_PRECOMPILE_AUTO=0
 
 # Hard gate. Without it the job proceeds and all $N_POINTS tests die one by one at
 # _to_dense_gpu, each burning its own startup, and the stage-out returns nothing.
-if ! julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using CUDA; CUDA.functional() || exit(1)'; then
+if ! julia --project=\$SLURM_SUBMIT_DIR/.. -e '
+    using CUDA
+    if !CUDA.functional()
+        exit(1)
+    end'; then
     echo "ERROR: CUDA is not functional on this node after forcing a JLL rebuild." >&2
     echo "  Check that 'module load $CUDA_MODULE' succeeded and that" >&2
     echo "  LocalPreferences.toml still has [CUDA_Runtime_jll] local_toolkit = true." >&2
@@ -729,7 +763,8 @@ rm -f "\$LOCAL"/results/simulation_results_*_hp*_seed_*.csv
 # The generator wrote retrain = true; flip it so this job loads the trained
 # weights rather than retraining on a GPU it cannot use for AD.
 for f in "\$LOCAL"/models/hyperparams_hp_*.toml; do
-    sed -E 's|^([[:space:]]*retrain[[:space:]]*=[[:space:]]*)true|\1false|' "\$f" > "\$f.tmp" && mv "\$f.tmp" "\$f"
+    sed -E 's|^([[:space:]]*retrain[[:space:]]*=[[:space:]]*)true|\1false|' "\$f" > "\$f.tmp"
+    mv "\$f.tmp" "\$f"
 done
 echo "[test task \$TASK/$TEST_ARRAY] \$(ls "\$LOCAL"/models/*.json 2>/dev/null | wc -l) trained model(s) staged in; expecting $N_POINTS"
 
@@ -747,7 +782,9 @@ JOBLOG="\$LOCAL/cluster/logs/hp_${TS}_test_task\${TASK}.joblog"
 parallel --jobs $TEST_JOBS --joblog "\$JOBLOG" --results "\$LOCAL/cluster/logs/hp_${TS}_test_task\${TASK}" \\
     'card=\$(( ({%} - 1) % \${SLURM_GPUS_ON_NODE:-1} + 1 )); export CUDA_VISIBLE_DEVICES=\$(echo \$SLURM_CUDA_VISIBLE_DEVICES | cut -d, -f\$card); bash -c {}' \\
     < "\$SLURM_TMPDIR/test.txt"
-awk 'NR>1 && \$7 != 0 {print "  FAILED (exit " \$7 "): " \$9}' "\$JOBLOG" || true
+if [ -f "\$JOBLOG" ]; then
+    awk 'NR>1 && \$7 != 0 {print "  FAILED (exit " \$7 "): " \$9}' "\$JOBLOG"
+fi
 echo "[test task \$TASK] \$(awk 'NR>1 && \$7 == 0' "\$JOBLOG" | wc -l)/\$N_TASK point(s) exited 0"
 echo "[test task \$TASK] done: \$(date)"
 EOF
