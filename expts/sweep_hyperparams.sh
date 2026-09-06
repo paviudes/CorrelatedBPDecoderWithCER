@@ -379,6 +379,29 @@ fi
 # the job has nowhere to write and the stage-out finds nothing to bring back.
 mkdir -p "$CLUSTER_DIR" "$MODELS_DIR" "$WORKDIR/$CODENAME/results" "$WORKDIR/$CODENAME/logs"
 
+# PREFLIGHT: every dataset must have its three input files HERE, before the job
+# tars this directory. Without this check a missing input is discovered only
+# after the queue wait, as N identical "exit 1" lines with no message -- which is
+# exactly how one 240-point sweep failed on 2026-09-04.
+MISSING_INPUTS=""
+for key in $DATASETS $REF_DATASETS; do
+    for required in "training_data/train_${key}.txt" \
+                    "testing_data/test_${key}.txt" \
+                    "correlated_weights/correlated_weights_${key}.txt"; do
+        if [ ! -f "$WORKDIR/$CODENAME/$required" ]; then
+            MISSING_INPUTS="${MISSING_INPUTS}\n    $required"
+        fi
+    done
+done
+if [ -n "$MISSING_INPUTS" ]; then
+    echo "missing dataset input(s) under $WORKDIR/$CODENAME:" >&2
+    printf "%b\n" "$MISSING_INPUTS" >&2
+    echo "  The sweep stages this directory as it stands, so these must exist" >&2
+    echo "  before submitting. Check the datasets list in the settings file, and" >&2
+    echo "  that a clean-up or rsync has not removed the inputs." >&2
+    exit 1
+fi
+
 # --------------------------------------------------------------- collect ---
 if [ "$COLLECT" -eq 1 ]; then
     RESULTS_DIR="$WORKDIR/$CODENAME/results"
@@ -584,6 +607,27 @@ fi
 
 N_POINTS=$(wc -l < "$TRAIN_CMDS")
 
+# SELF-CHECK OF THIS FILE. The two SLURM scripts below are built from UNQUOTED
+# heredocs, so bash expands their contents at generation time -- inside comments
+# too. A bare dollar-digit is a positional parameter (unbound under `set -u`) and
+# a backtick is command substitution. Both have silently broken generation here
+# before: once a backtick in a comment, once a dollar-nine in a comment. Anything
+# meant literally in those heredocs must be backslash-escaped.
+HEREDOC_HAZARDS=$(awk '
+    /<<[[:space:]]*EOF[[:space:]]*$/ { inside_heredoc = 1; next }
+    /^EOF$/                          { inside_heredoc = 0; next }
+    inside_heredoc && ($0 ~ /(^|[^\\])\$[0-9]/ || $0 ~ /(^|[^\\])`/) {
+        print "    line " NR ": " $0
+    }
+' "$0")
+if [ -n "$HEREDOC_HAZARDS" ]; then
+    echo "unescaped dollar-digit or backtick inside a generated-script heredoc:" >&2
+    echo "$HEREDOC_HAZARDS" >&2
+    echo "  Escape it (\\\$9, \\\`) or reword. Left as-is, bash expands it while" >&2
+    echo "  writing the job script and generation fails or silently mangles it." >&2
+    exit 1
+fi
+
 # ------------------------------------------------------------ SLURM: train ---
 cat > "$SLURM_TRAIN" <<EOF
 #!/bin/bash
@@ -660,12 +704,27 @@ echo "[train task \$TASK/$TRAIN_ARRAY] \$N_TASK of $N_POINTS point(s), \$SLURM_C
 # The --results directories are named after the full command with / = " escaped
 # to +z +e +22, so they cannot be cat'd without quoting; the joblog is the index.
 JOBLOG="\$LOCAL/cluster/logs/hp_${TS}_train_task\${TASK}.joblog"
+RESULTS_ROOT="\$LOCAL/cluster/logs/hp_${TS}_train_task\${TASK}"
 parallel --jobs \$SLURM_CPUS_PER_TASK --joblog "\$JOBLOG" \\
-    --results "\$LOCAL/cluster/logs/hp_${TS}_train_task\${TASK}" < "\$SLURM_TMPDIR/train.txt"
+    --results "\$RESULTS_ROOT" < "\$SLURM_TMPDIR/train.txt"
 if [ -f "\$JOBLOG" ]; then
-    awk 'NR>1 && \$7 != 0 {print "  FAILED (exit " \$7 "): " \$9}' "\$JOBLOG"
+    # Print the Command column in full. It contains spaces, so awk field nine on
+    # its own yields only the first token -- which is how a whole failed sweep
+    # once reported itself as "FAILED (exit 1): julia" and nothing else.
+    # No bare dollar-digit in this comment: see the self-check above.
+    awk 'NR>1 && \$7 != 0 {print "  FAILED (exit " \$7 "): " substr(\$0, index(\$0, \$9))}' "\$JOBLOG"
 fi
 echo "[train task \$TASK] \$(awk 'NR>1 && \$7 == 0' "\$JOBLOG" | wc -l)/\$N_TASK point(s) exited 0"
+# When points fail, put a REAL error message in this file. The per-job stderr
+# lives under --results in directories named after the whole command (with / = "
+# escaped to +z +e +22), which cannot be read without quoting -- so print the
+# first non-empty one here rather than making the reader go and find it.
+FIRST_STDERR=\$(find "\$RESULTS_ROOT" -name stderr -size +0c 2>/dev/null | head -1)
+if [ -n "\$FIRST_STDERR" ]; then
+    echo "[train task \$TASK] ---- first failing point's stderr ----"
+    tail -25 "\$FIRST_STDERR" | sed 's/^/    /'
+    echo "[train task \$TASK] ---- end ----"
+fi
 echo "[train task \$TASK] done: \$(date)"
 EOF
 chmod +x "$SLURM_TRAIN"
@@ -779,13 +838,28 @@ export GPU_MEMORY=${GPU_MEMORY_MB}M
 echo "[test task \$TASK] \$N_TASK of $N_POINTS point(s), $TEST_JOBS at a time on \${SLURM_GPUS_ON_NODE:-1} GPU(s): \$(date)"
 export SLURM_CUDA_VISIBLE_DEVICES=\${CUDA_VISIBLE_DEVICES:-0}
 JOBLOG="\$LOCAL/cluster/logs/hp_${TS}_test_task\${TASK}.joblog"
-parallel --jobs $TEST_JOBS --joblog "\$JOBLOG" --results "\$LOCAL/cluster/logs/hp_${TS}_test_task\${TASK}" \\
+RESULTS_ROOT="\$LOCAL/cluster/logs/hp_${TS}_test_task\${TASK}"
+parallel --jobs $TEST_JOBS --joblog "\$JOBLOG" --results "\$RESULTS_ROOT" \\
     'card=\$(( ({%} - 1) % \${SLURM_GPUS_ON_NODE:-1} + 1 )); export CUDA_VISIBLE_DEVICES=\$(echo \$SLURM_CUDA_VISIBLE_DEVICES | cut -d, -f\$card); bash -c {}' \\
     < "\$SLURM_TMPDIR/test.txt"
 if [ -f "\$JOBLOG" ]; then
-    awk 'NR>1 && \$7 != 0 {print "  FAILED (exit " \$7 "): " \$9}' "\$JOBLOG"
+    # Print the Command column in full. It contains spaces, so awk field nine on
+    # its own yields only the first token -- which is how a whole failed sweep
+    # once reported itself as "FAILED (exit 1): julia" and nothing else.
+    # No bare dollar-digit in this comment: see the self-check above.
+    awk 'NR>1 && \$7 != 0 {print "  FAILED (exit " \$7 "): " substr(\$0, index(\$0, \$9))}' "\$JOBLOG"
 fi
 echo "[test task \$TASK] \$(awk 'NR>1 && \$7 == 0' "\$JOBLOG" | wc -l)/\$N_TASK point(s) exited 0"
+# When points fail, put a REAL error message in this file. The per-job stderr
+# lives under --results in directories named after the whole command (with / = "
+# escaped to +z +e +22), which cannot be read without quoting -- so print the
+# first non-empty one here rather than making the reader go and find it.
+FIRST_STDERR=\$(find "\$RESULTS_ROOT" -name stderr -size +0c 2>/dev/null | head -1)
+if [ -n "\$FIRST_STDERR" ]; then
+    echo "[test task \$TASK] ---- first failing point's stderr ----"
+    tail -25 "\$FIRST_STDERR" | sed 's/^/    /'
+    echo "[test task \$TASK] ---- end ----"
+fi
 echo "[test task \$TASK] done: \$(date)"
 EOF
 chmod +x "$SLURM_TEST"

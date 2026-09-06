@@ -137,10 +137,18 @@ function get_individual_loss_values(
         if certainty_syndrome_gate_threshold < 0.0f0
             effective_certainty_threshold = syndrome_gate_threshold
         end
-        gate = Float32.(syndrome_weights .< syndrome_gate_threshold)
-        if syndrome_gate_mode == SYNDROME_GATE_SMOOTH
-            gate = smooth_syndrome_gate_per_sample(syndrome_weights, syndrome_gate_rate)
-        end
+        # Branchless, mirroring compute_loss_including_correlations exactly: a
+        # conditional assignment here makes `gate` a phi that merges an
+        # Enzyme-inactive value with an active-derived one, which is what raised
+        # EnzymeRuntimeActivityError on every point of the 2026-09-04 sweep.
+        indicator_gate::Vector{Float32} =
+            Float32.(syndrome_weights .< syndrome_gate_threshold)
+        smooth_gate::Vector{Float32} = smooth_syndrome_gate_per_sample(
+            syndrome_weights, syndrome_gate_rate, SYNDROME_GATE_LEVELS
+        )
+        use_smooth_gate::Float32 = Float32(syndrome_gate_mode == SYNDROME_GATE_SMOOTH)
+        gate = @. (1.0f0 - use_smooth_gate) * indicator_gate +
+                  use_smooth_gate * smooth_gate
         certainty_gate = Float32.(syndrome_weights .< effective_certainty_threshold)
         cert_j   = certainty_per_sample(post, certainty_penalty_kind, certainty_hinge_width)
         sparse_j = sparsity_per_sample(post)

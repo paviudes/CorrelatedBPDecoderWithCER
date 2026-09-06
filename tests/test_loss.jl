@@ -444,41 +444,132 @@ end
 
 function toy_smooth_gated_loss(posterior_llrs::Vector{Float32})::Float32
     """
-    sum( w(mu) * mu^2 ) with w the smooth gate of |mu|. If the gate is detached
-    the gradient is exactly w * 2mu; if it leaks, an extra -rate*w*mu^2*sign(mu)
-    term appears, which is of comparable size and easy to tell apart.
+    sum( w(mu) * mu^2 ) with w the staircase gate of |mu|. If the gate is
+    detached the gradient is exactly w * 2mu; if it leaked, an extra
+    -rate*w*mu^2*sign(mu) term would appear, of comparable size.
     """
     stand_in_syndrome_weights::Vector{Float32} = abs.(posterior_llrs)
-    gate::Vector{Float32} = smooth_syndrome_gate_per_sample(stand_in_syndrome_weights, 1.0f0)
+    gate::Vector{Float32} = smooth_syndrome_gate_per_sample(
+        stand_in_syndrome_weights, 1.0f0, SYNDROME_GATE_LEVELS)
     total::Float32 = sum(gate .* posterior_llrs .^ 2)
     return total
 end
 
 @testset "smooth syndrome gate" begin
+    # The staircase approximates exp(-rate*|s|) to ~1/K, so compare with the
+    # tolerance the approximation actually has rather than to 1e-6.
+    staircase_tolerance::Float32 = 1.0f0 / Float32(SYNDROME_GATE_LEVELS)
     weights::Vector{Float32} = Float32[0.0, 0.5, 1.0, 2.0, 4.0]
-    gate::Vector{Float32} = smooth_syndrome_gate_per_sample(weights, 0.5f0)
-    # --- values: graded, monotone, 1 at a solved sample --------------------
+    gate::Vector{Float32} = smooth_syndrome_gate_per_sample(
+        weights, 0.5f0, SYNDROME_GATE_LEVELS)
+    # --- values: graded, monotone, exactly 1 at a solved sample --------------
     @test gate[1] == 1.0f0
-    @test gate[2] ≈ exp(-0.25f0) atol=1f-6
-    @test gate[5] ≈ exp(-2.0f0)  atol=1f-6
-    @test all(diff(gate) .< 0.0f0)
-    @test all(0.0f0 .< gate .<= 1.0f0)
+    @test gate[2] ≈ exp(-0.25f0) atol = staircase_tolerance
+    @test gate[5] ≈ exp(-2.0f0)  atol = staircase_tolerance
+    @test all(diff(gate) .<= 0.0f0)
+    @test all(0.0f0 .<= gate .<= 1.0f0)
     # a stricter rate closes faster
-    @test smooth_syndrome_gate_per_sample(weights, 2.0f0)[3] < gate[3]
-    # --- code lookup is strict --------------------------------------------
+    @test smooth_syndrome_gate_per_sample(weights, 2.0f0, SYNDROME_GATE_LEVELS)[3] <
+          gate[3]
+    # more levels track the exponential more closely
+    coarse_error::Float32 = abs(
+        smooth_syndrome_gate_per_sample(weights, 0.5f0, 4)[3] - exp(-0.5f0))
+    fine_error::Float32 = abs(
+        smooth_syndrome_gate_per_sample(weights, 0.5f0, 64)[3] - exp(-0.5f0))
+    @test fine_error <= coarse_error
+    # --- code lookup is strict ----------------------------------------------
     @test syndrome_gate_code("indicator") == SYNDROME_GATE_INDICATOR
     @test syndrome_gate_code(" Smooth ")  == SYNDROME_GATE_SMOOTH
     @test_throws ArgumentError syndrome_gate_code("sigmoid")
 
     # --- THE DETACHMENT CHECK, through Enzyme itself ------------------------
-    # Mirrors the exact autodiff call form train.jl uses.
+    # The gate is built from comparisons, so no gradient may flow through it.
     llrs::Vector{Float32} = Float32[0.3, -0.8, 1.5, -2.0]
     gradient::Vector{Float32} = zeros(Float32, length(llrs))
-    Enzyme.autodiff(Enzyme.ReverseWithPrimal, toy_smooth_gated_loss,
+    Enzyme.autodiff(Enzyme.Reverse, toy_smooth_gated_loss,
                     Enzyme.Duplicated(llrs, gradient))
-    detached_expected::Vector{Float32} = exp.(-abs.(llrs)) .* (2.0f0 .* llrs)
-    leaked_extra::Vector{Float32} = -exp.(-abs.(llrs)) .* llrs .^ 2 .* sign.(llrs)
-    @test isapprox(gradient, detached_expected; atol = 1f-5)
-    # and it is NOT the leaked answer, which differs by a term of comparable size
+    gate_at_llrs::Vector{Float32} = smooth_syndrome_gate_per_sample(
+        abs.(llrs), 1.0f0, SYNDROME_GATE_LEVELS)
+    detached_expected::Vector{Float32} = gate_at_llrs .* (2.0f0 .* llrs)
+    leaked_extra::Vector{Float32} = -gate_at_llrs .* llrs .^ 2 .* sign.(llrs)
+    @test isapprox(gradient, detached_expected; atol = 1f-4)
     @test !isapprox(gradient, detached_expected .+ leaked_extra; atol = 1f-3)
+end
+
+# =============================================================================
+#  THE TEST THAT MATTERS: Enzyme must differentiate the REAL loss, in BOTH gate
+#  modes. A toy function is not enough -- the 2026-09-04 sweep failed on every
+#  one of 240 points with EnzymeRuntimeActivityError raised inside
+#  compute_loss_including_correlations, from a `gate` assigned in a branch. The
+#  toy smooth-gate test above passed throughout, because the toy had no branch.
+# =============================================================================
+
+function differentiate_total_loss(
+    posterior_llrs::Array{Float32, 3},
+    expected_recoveries::BitMatrix,
+    parity_check_matrix::BitMatrix,
+    parity_check_matrix_dual::BitMatrix,
+    connectivity::Matrix{Int},
+    correlation_strengths::Vector{Float32},
+    syndrome_gate_mode::Int,
+    correlation_form::Int
+)::Array{Float32, 3}
+    """
+    Reverse-mode gradient of the total loss w.r.t. the posterior LLRs, taken
+    through the same entry point train.jl differentiates.
+    """
+    gradient::Array{Float32, 3} = zeros(Float32, size(posterior_llrs))
+    Enzyme.autodiff(
+        Enzyme.Reverse, compute_loss_including_correlations,
+        Enzyme.Duplicated(posterior_llrs, gradient),
+        Enzyme.Const(expected_recoveries),
+        Enzyme.Const(parity_check_matrix),
+        Enzyme.Const(parity_check_matrix_dual),
+        Enzyme.Const(connectivity),
+        Enzyme.Const(correlation_strengths),
+        Enzyme.Const(true),          # is_correlated
+        Enzyme.Const(0.3f0),         # correlation_weight
+        Enzyme.Const(0.5f0),         # loss_layer_temperature
+        Enzyme.Const(0.01f0),        # llr_certainty_importance
+        Enzyme.Const(0.0f0),         # sparsity_importance
+        Enzyme.Const(0.5f0),         # syndrome_gate_threshold
+        Enzyme.Const(-1.0f0),        # certainty_syndrome_gate_threshold
+        Enzyme.Const(syndrome_gate_mode),
+        Enzyme.Const(0.5f0),         # syndrome_gate_rate
+        Enzyme.Const(2.2f0),         # correlation_certainty_threshold
+        Enzyme.Const(CERTAINTY_PENALTY_ENTROPY),
+        Enzyme.Const(2.2f0),         # certainty_hinge_width
+        Enzyme.Const(correlation_form),
+        Enzyme.Const(1.0f-4),        # correlation_agreement_floor
+        Enzyme.Const(0)              # warmup_loss_layers
+    )
+    return gradient
+end
+
+@testset "Enzyme differentiates the real loss in both gate modes" begin
+    # 4 qubits, 2 samples, 3 layers; two weight-2 checks plus one logical row.
+    parity_check_matrix = BitMatrix([1 1 0 0; 0 0 1 1])
+    parity_check_matrix_dual = BitMatrix([1 1 0 0; 0 0 1 1; 1 0 1 0])
+    expected_recoveries = BitMatrix([0 0; 0 0; 0 0; 0 0])
+    connectivity::Matrix{Int} = [1 2; 3 4]
+    correlation_strengths::Vector{Float32} = Float32[1.5, -0.6]
+    posterior_llrs::Array{Float32, 3} = reshape(
+        Float32[ 3.0, -2.0, 1.0, -4.0,   0.4, 5.0, -3.0, 2.0,
+                -1.0,  2.5, 0.2, -0.3,   6.0, -1.5, 0.8, 3.0,
+                 2.0, -2.0, 4.0, -1.0,  -0.5, 1.2, -2.5, 0.9], 4, 2, 3)
+
+    for gate_mode in (SYNDROME_GATE_INDICATOR, SYNDROME_GATE_SMOOTH)
+        for form in (CORRELATION_FORM_BILINEAR, CORRELATION_FORM_LOG_AGREEMENT,
+                     CORRELATION_FORM_COFLIP)
+            gradient::Array{Float32, 3} = differentiate_total_loss(
+                copy(posterior_llrs), expected_recoveries, parity_check_matrix,
+                parity_check_matrix_dual, connectivity, correlation_strengths,
+                gate_mode, form)
+            @test size(gradient) == size(posterior_llrs)
+            @test all(isfinite, gradient)
+            # A gradient of exactly zero everywhere would mean the loss was
+            # detached from the LLRs entirely -- silently untrainable.
+            @test any(!iszero, gradient)
+        end
+    end
 end

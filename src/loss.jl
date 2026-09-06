@@ -121,6 +121,10 @@ end
 
 # Integer codes for the syndrome gate on L3 (and sparsity). L2 keeps the
 # indicator on its own threshold tau_2 regardless.
+# Levels in the staircase approximation to exp(-rate*|s|). 16 tracks the
+# exponential to within 0.031, which is finer than the gate's own arbitrariness.
+const SYNDROME_GATE_LEVELS::Int = 16
+
 const SYNDROME_GATE_INDICATOR::Int = 1
 const SYNDROME_GATE_SMOOTH::Int    = 2
 
@@ -144,41 +148,47 @@ function syndrome_gate_code(name::String)::Int
     return code
 end
 
-function detach_from_gradient(values::Vector{Float32})::Vector{Float32}
-    """
-    Identity in the forward pass, ZERO in the reverse pass. Enzyme is told below
-    that this function is inactive, so anything computed from its output is a
-    constant as far as the gradient is concerned. `copy` because an inactive
-    function must not hand back memory aliased with an active input.
-    """
-    detached::Vector{Float32} = copy(values)
-    return detached
-end
-Enzyme.EnzymeRules.inactive(::typeof(detach_from_gradient), args...) = nothing
-
 function smooth_syndrome_gate_per_sample(
     syndrome_weights::Vector{Float32},
-    syndrome_gate_rate::Float32
+    syndrome_gate_rate::Float32,
+    n_gate_levels::Int
 )::Vector{Float32}
     """
-    w_j = exp( -rate · |s|_j ), DETACHED.
+    A GRADED gate approximating w_j = exp(-rate · |s|_j), built as a staircase of
+    indicator comparisons:
 
-    A graded replacement for the indicator 1[|s| < τ]: a sample one softly
-    broken check away from solved keeps weight exp(-rate) instead of 0, so the
-    auxiliary terms can act on the near-miss shell with reduced authority rather
-    than not at all. At rate = 0.5: |s| = 0.5 → 0.78, 1 → 0.61, 2 → 0.37, 4 → 0.14.
+        w_j = (1/K) · #{ k in 1..K : |s|_j < -log((k - 0.5)/K) / rate }
 
-    WHY DETACHED. Left differentiable, the gate gives the optimizer a second way
-    to lower  w · L3  for a penalty L3 ≥ 0: raise |s| — break the syndrome — so w
-    shrinks. That term is rate · w · L3 · ∂|s|/∂μ, which on an undecided qubit
-    (∂|s|/∂μ ≈ 1.2 across its three checks) exceeds the honest w · ∂L3/∂μ by an
-    order of magnitude. An earlier smooth decidedness weight measured 4–12x
-    dominance of exactly this kind. The indicator was detached for the same
-    reason; this keeps that property while adding the grading.
+    Each term is `Float32(|s| < threshold)` — a Bool promoted to Float32, whose
+    derivative is zero exactly as the plain indicator gate's is. So the gate is
+    DETACHED BY CONSTRUCTION, using only the construct that has been
+    differentiated in this loss for months.
+
+    The obvious implementation, `exp.(-rate .* syndrome_weights)` wrapped in a
+    stop-gradient marked `EnzymeRules.inactive`, does not work: the wrapper's
+    return is constant memory but its caller multiplies it into an active term,
+    and Enzyme rejects that with "Constant memory is stored (or returned) to a
+    differentiable variable". `inactive` suits a function whose VALUE is not
+    needed downstream; here it is. That mistake failed all 240 points of the
+    2026-09-04 sweep before a single gradient step.
+
+    Detachment is not optional. Differentiating through the gate would give the
+    optimizer a second route to shrink w·L3 for a penalty L3 >= 0: raise |s|,
+    i.e. break the syndrome, so w shrinks. That term is rate·w·L3·d|s|/dmu, which
+    on an undecided qubit exceeds the honest w·dL3/dmu by an order of magnitude.
+
+    K = 16 tracks exp to within 0.031 over |s| in [0, 20] — far finer than the
+    gate's own arbitrariness — at the cost of K comparisons per sample.
     """
-    raw_gate::Vector{Float32} = exp.(-syndrome_gate_rate .* syndrome_weights)
-    detached_gate::Vector{Float32} = detach_from_gradient(raw_gate)
-    return detached_gate
+    n_samples::Int = length(syndrome_weights)
+    gate::Vector{Float32} = zeros(Float32, n_samples)
+    for level in 1:n_gate_levels
+        level_threshold::Float32 =
+            -log(Float32(level - 0.5f0) / Float32(n_gate_levels)) / syndrome_gate_rate
+        gate .+= Float32.(syndrome_weights .< level_threshold)
+    end
+    gate ./= Float32(n_gate_levels)
+    return gate
 end
 
 # Integer codes for the certainty penalty. An Int rather than a Symbol or a
@@ -638,10 +648,28 @@ function compute_loss_including_correlations(
         # optimizer cannot lower gate x aux by breaking the syndrome.
         # L3's gate: indicator (historical) or the detached smooth exp(-rate·|s|).
         # L2's gate stays the indicator on tau_2, whatever L3 uses.
-        gate = Float32.(syndrome_weights .< syndrome_gate_threshold)
-        if syndrome_gate_mode == SYNDROME_GATE_SMOOTH
-            gate = smooth_syndrome_gate_per_sample(syndrome_weights, syndrome_gate_rate)
-        end
+        #
+        # BRANCHLESS ON PURPOSE. Assigning `gate` in a branch makes it an LLVM phi
+        # merging a value from an Enzyme-INACTIVE call (the smooth gate) with one
+        # Enzyme derives from `syndrome_weights` (the indicator). Its static
+        # activity analysis cannot reconcile the two and every point died with
+        # "EnzymeRuntimeActivityError: Constant memory is stored to a
+        # differentiable variable", naming a Vector{Float32} phi. Computing both
+        # and blending with a Const 0/1 weight leaves ONE assignment and ONE
+        # detach, so `gate` is uniformly constant. Same idiom, same reason, as
+        # `ising_correlation_reward_per_sample`.
+        #
+        # Both gates are detached either way, so the semantics are unchanged: the
+        # indicator's comparison already had zero derivative, and detaching it
+        # explicitly is what it always meant.
+        indicator_gate::Vector{Float32} =
+            Float32.(syndrome_weights .< syndrome_gate_threshold)
+        smooth_gate::Vector{Float32} = smooth_syndrome_gate_per_sample(
+            syndrome_weights, syndrome_gate_rate, SYNDROME_GATE_LEVELS
+        )
+        use_smooth_gate::Float32 = Float32(syndrome_gate_mode == SYNDROME_GATE_SMOOTH)
+        gate = @. (1.0f0 - use_smooth_gate) * indicator_gate +
+                  use_smooth_gate * smooth_gate
         certainty_gate = Float32.(syndrome_weights .< effective_certainty_threshold)
 
         cert_j   = certainty_per_sample(post, certainty_penalty_kind, certainty_hinge_width)
