@@ -843,21 +843,6 @@ function contrast(per_run::DataFrame, dataset_key::String,
 end
 
 """
-    collect_contrasts(per_run) -> DataFrame
-
-THE DECOMPOSITION. Every CER-vs-no-CER number in this project so far has
-confounded two changes, because `use_CER = false` swaps the single-qubit priors
-AND removes the couplings at the same time. With a lambda axis they separate:
-
-    nocer -> lam0     the PRIORS      (CER single-qubit rates vs flat p = 0.1)
-    lam0  -> lam>0    the COUPLINGS   (same priors, coupling weight turned up)
-
-So each pinned lambda is contrasted against `lam0`, and `lam0` against `nocer`.
-Where there is no `lam0` (the 2026-08-20 p-sweep, which ran the annealed
-schedule) the fallback is the old cer-vs-nocer contrast, so that vintage still
-collects.
-"""
-"""
     control_labels(label) -> (priors_control, nocer_baseline)
 
 Given an arm label, name the two labels it should be compared against.
@@ -881,6 +866,21 @@ function control_labels(label::String)::Tuple{String, String}
     return (priors_control, nocer_baseline)
 end
 
+"""
+    collect_contrasts(per_run) -> DataFrame
+
+THE DECOMPOSITION. Every CER-vs-no-CER number in this project so far has
+confounded two changes, because `use_CER = false` swaps the single-qubit priors
+AND removes the couplings at the same time. With a lambda axis they separate:
+
+    nocer -> lam0     the PRIORS      (CER single-qubit rates vs flat p = 0.1)
+    lam0  -> lam>0    the COUPLINGS   (same priors, coupling weight turned up)
+
+So each pinned lambda is contrasted against `lam0`, and `lam0` against `nocer`.
+Where there is no `lam0` (the 2026-08-20 p-sweep, which ran the annealed
+schedule) the fallback is the old cer-vs-nocer contrast, so that vintage still
+collects.
+"""
 function collect_contrasts(per_run::DataFrame)::DataFrame
     p_values::Vector{String} = sort(unique(per_run.dataset))
     collected_rows::Vector{Dict{Symbol, Any}} = Dict{Symbol, Any}[]

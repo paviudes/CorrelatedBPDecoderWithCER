@@ -207,6 +207,11 @@ export predict_neuralbp, check_bp_solutions, predict_and_check_neuralbp, neuralb
        count_syndrome_satisfactions, predict_and_diagnose_neuralbp, concatenate_diagnoses,
        mean_committed_layer
 
+# Standard BP as the unit-weight case of the neural forward pass. AFTER predict.jl,
+# which provides the `neuralbp_test_predictions` it wraps.
+include("standard_bp.jl")
+export unit_weight_neuralbp, standard_bp_test_predictions
+
 # Utility functions
 include("utils.jl")
 export safe_atanh_exp_signed, safe_atanh_exp_signed!, safe_log_tanh_split, safe_log_tanh_split!, random_values_around_one, compute_std_assuming_bernoulli,

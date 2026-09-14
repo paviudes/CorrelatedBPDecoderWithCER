@@ -61,8 +61,11 @@ struct NeuralBPDecoderStatistics
             error_model_parameters_description::String, num_samples_per_error_rate::Int,
             n_layers::Int, n_epochs::Int; num_failures::Int=0,
             failures::Vector{Bool}=zeros(Bool, num_samples_per_error_rate), runtime::Float64=0.0)
-        if algo != "NN"
-            throw(ArgumentError("Algorithm for the Neural BP decoder must be 'NN'."))
+        # "NN" is the neural decoder; "BP" is standard BP run through the same
+        # forward pass with unit weights (see src/standard_bp.jl). Both share this
+        # record so the two decoders' results files have one schema and one reader.
+        if !(algo in ("NN", "BP"))
+            throw(ArgumentError("Algorithm must be 'NN' (neural) or 'BP' (standard); got '$(algo)'."))
         end
         if num_samples_per_error_rate < 0
             throw(ArgumentError("Number of samples per error rate must be non-negative."))

@@ -262,18 +262,19 @@ function predict_and_check_neuralbp(
     n_checks = size(parity_check_matrix, 1)
     logicals = convert.(Int, bpnn.base.parity_check_matrix_dual[n_checks + 1:end, :])
 
-    # When the GPU is not engaged, process all samples at once without batching.
-    # `gpu_active()` is false when USE_GPU=0 at runtime OR no GPU backend is
-    # compiled in for this platform — in which case we use
-    # `forward_pass_with_weights` instead of `forward_pass_gpu`.
-    if !gpu_active()
-        posterior_llrs = forward_pass_with_weights(bpnn, repeat(bpnn.base.initial_llrs, 1, n_samples), syndromes)
-        proposed_recoveries = Array(posterior_llrs .< 0) # shape (n_bits, n_samples, n_layers)
-        is_correct = check_bp_solutions(parity_check_matrix, logicals, errors, proposed_recoveries)
-        return is_correct
+    # BOTH paths chunk. The CPU branch used to take `batch_size` and ignore it,
+    # running the whole test set in one call and keeping every layer:
+    #     Float32 n_bits x n_samples x n_layers  +  the Bool array of the same shape
+    # which for 72 qubits x 10^6 samples x 90 layers is 24.1 GB + 6.0 GB = 30 GB
+    # PER PROCESS. Three parallel jobs asked for ~90 GB and took the machine down
+    # (2026-09-14). Chunking is exact here because `check_bp_solutions` is
+    # per-sample, so the split cannot change any answer.
+    use_gpu_forward::Bool = gpu_active()
+    device_name::String = "CPU"
+    if use_gpu_forward
+        device_name = "GPU"
     end
-
-    print_info("Using GPU for predictions with batch size = $(batch_size). Total samples = $(n_samples).")
+    print_info("Using $(device_name) for predictions with batch size = $(batch_size). Total samples = $(n_samples).")
 
     is_correct = falses(n_samples)
     for start in 1:batch_size:n_samples
@@ -285,7 +286,14 @@ function predict_and_check_neuralbp(
         chunk_llrs  = repeat(bpnn.base.initial_llrs, 1, stop - start + 1)
 
         # Predict the recoveries for the chunk of syndromes using the trained NeuralBP model.
-        chunk_posterior_llrs = forward_pass_gpu(bpnn, chunk_llrs, chunk_syndromes)
+        # `gpu_active()` is false when USE_GPU=0 at runtime OR no GPU backend is
+        # compiled in for this platform; the CPU forward pass is then used.
+        chunk_posterior_llrs = nothing
+        if use_gpu_forward
+            chunk_posterior_llrs = forward_pass_gpu(bpnn, chunk_llrs, chunk_syndromes)
+        else
+            chunk_posterior_llrs = forward_pass_with_weights(bpnn, chunk_llrs, chunk_syndromes)
+        end
 
         # Hard threshold the posterior LLRs to get proposed recoveries, and check if they correctly fix the errors.
         chunk_recoveries  = Array(chunk_posterior_llrs .< 0) # shape (n_bits, batch_size, n_layers)
@@ -328,14 +336,14 @@ function predict_and_diagnose_neuralbp(
     n_checks::Int = size(parity_check_matrix, 1)
     logicals::Matrix{Int} = convert.(Int, bpnn.base.parity_check_matrix_dual[n_checks + 1:end, :])
 
-    if !gpu_active()
-        posterior_llrs = forward_pass_with_weights(bpnn, repeat(bpnn.base.initial_llrs, 1, n_samples), syndromes)
-        proposed_recoveries::Array{Bool, 3} = Array(posterior_llrs .< 0)
-        diagnosis::NamedTuple = count_syndrome_satisfactions(parity_check_matrix, logicals, errors, proposed_recoveries)
-        return diagnosis
+    # Chunked on BOTH devices, for the memory reason documented on
+    # `predict_and_check_neuralbp`. `concatenate_diagnoses` makes the split exact.
+    use_gpu_forward::Bool = gpu_active()
+    device_name::String = "CPU"
+    if use_gpu_forward
+        device_name = "GPU"
     end
-
-    print_info("Using GPU for predictions with batch size = $(batch_size). Total samples = $(n_samples). [diagnostic mode]")
+    print_info("Using $(device_name) for predictions with batch size = $(batch_size). Total samples = $(n_samples). [diagnostic mode]")
 
     chunk_diagnoses::Vector{NamedTuple} = NamedTuple[]
     for start in 1:batch_size:n_samples
@@ -345,7 +353,12 @@ function predict_and_diagnose_neuralbp(
         chunk_errors = errors[:, start:stop]
         chunk_llrs = repeat(bpnn.base.initial_llrs, 1, stop - start + 1)
 
-        chunk_posterior_llrs = forward_pass_gpu(bpnn, chunk_llrs, chunk_syndromes)
+        chunk_posterior_llrs = nothing
+        if use_gpu_forward
+            chunk_posterior_llrs = forward_pass_gpu(bpnn, chunk_llrs, chunk_syndromes)
+        else
+            chunk_posterior_llrs = forward_pass_with_weights(bpnn, chunk_llrs, chunk_syndromes)
+        end
         chunk_recoveries::Array{Bool, 3} = Array(chunk_posterior_llrs .< 0)
 
         push!(chunk_diagnoses,

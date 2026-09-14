@@ -1,0 +1,85 @@
+\documentclass{article}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\def\ts{\thinspace}
+\def\P{\text{Pr}}
+\begin{document}
+
+\section{Notations}
+\begin{enumerate}
+    \item $x_v$: The random bit at vertex $v$; $e_v \in \mathbb{Z}_{2}$ a value it may take.
+    \item $s_c \in \mathbb{Z}_{2}$: The syndrome bit associated with check $c$.
+    \item $d_c$: The degree of check $c$, i.e., the number of variable nodes connected to check $c$.
+    \item $J_{ij}$: The correlation between bits $i$ and $j$, with $J_{ij} = 0$ if $i$ and $j$ are not correlated.
+    \item $N(c)$: The set of variable nodes connected to check $c$; $V' = N(c) \backslash \{v\}$ its members other than $v$.
+    \item $\vec{\xi} \in \mathbb{Z}_{2}^{d_{c}-1}$: Binary sequence with length $d_c - 1$, one value per vertex in $V'$.
+    \item $b \oplus \vec{\xi}$: The bitwise XOR of the bit $b$ with all bits in the binary sequence $\vec{\xi}$.
+    \item $\P(x_{v} = e_{v})$: The single-bit prior probability that the variable node $v$ takes the value $e_v$, i.e. the factor that $v$ sends to the check.
+    \item $\Gamma$: The set of all correlated pairs in the CER data.
+\end{enumerate}
+
+\section{Message from Check to Vertex}
+We want to design the messages passed from the check to the variable nodes in way that accounts for the correlations between the bits, whose strength is given by CER. For simplicity, let us assume that every pair of bits $(i, j)$ has a correlation given by CER. We can assume $J_{ij} = 0$ if $i$ and $j$ are not correlated.
+
+The message from check $c$ to vertex $v$, denoted by $m_{c \to v}$, is the change in the LLR of $x_v$ caused by observing $s_c$:
+\begin{gather}
+    m_{c \to v} = \ln\left(\dfrac{\P(x_{v} = 0 \ts|\ts s_{c})}{\P(x_{v} = 1 \ts|\ts s_{c})}\right) - \ln\left(\dfrac{\P(x_{v} = 0)}{\P(x_{v} = 1)}\right) ~. \label{eq:message_check_to_vertex}
+\end{gather}
+The first term is the posterior LLR of $x_v$ given the syndrome; the second is the prior LLR that $v$ already holds and has sent to the check as $m_{v \to c}$. The variable node adds its own prior back when it combines messages, so the check must report only its own contribution. This is the extrinsic principle of belief propagation.
+
+The posterior $\P(x_{v} = e_{v} \ts|\ts s_{c})$ is obtained by Bayes' rule: sum the prior joint of the whole check over the unobserved bits in $V'$, keeping only the configurations consistent with $s_c$. This is expressed as
+\begin{multline}
+    \P(x_{v} = e_{v} \ts|\ts s_{c}) = \dfrac{1}{\P(s_c)} \sum_{\vec{\xi} \ts\in\ts \mathbb{Z}_{2}^{d_{c} - 1}} \P\left(\{x_{v} = e_{v}\}\cup\{x_{V^{\prime}_{i}} = \xi_{i}\ts:\ts 1\leq i\leq d_{c} - 1\}\right) \\
+    \delta\left(s_c \ts\oplus\ts e_v \ts\oplus\ts \bigoplus_{i=1}^{d_c-1} \xi_i\right) ~. \label{eq:prob_var_zero}
+\end{multline}
+The term in the sum on the right is the prior joint probability of the variable nodes incident to check $c$, i.e. $N(c)$, before observing the syndrome $s_c$. We can express it, up to a normalization, as the product of the single-bit prior of $x_v$ and a weight that depends on the configuration of the other variable nodes:
+\begin{align}
+    \P\left(\{x_{v} = e_{v}\}\right.&\cup\left.\{x_{V^{\prime}_{i}} = \xi_{i}\ts:\ts 1\leq i\leq d_{c} - 1\}\right) \nonumber \\
+    &= \dfrac{1}{Z_{c}}\ts\P(x_v = e_v)\ts W_{e_v}(\vec{\xi}) ~, \label{eq:factorize_prior}
+\end{align}
+where $W_{e_v}(\vec{\xi}) \geq 0$ is a weight\footnote{@Debankan: Note that $W_{e_v}(\vec{\xi})$ is \emph{not} a conditional probability. To state the LHS of Eq. \ref{eq:factorize_prior} as a conditonal probability, we would have to say
+\begin{align}
+\P\left(\{x_{v} = e_{v}\}\right.&\cup\left.\{x_{V^{\prime}_{i}} = \xi_{i}\ts:\ts 1\leq i\leq d_{c} - 1\}\right) \nonumber \\
+&= \dfrac{1}{\P_{\text{marg}}(x_v = e_v)} \P\left(x_{V^{\prime}_{i}} = \xi_{i}\ts:\ts 1\leq i\leq d_{c} - 1 \ts|\ts x_v = e_v\right) ~.
+\end{align}
+where the marginal probability $\P_{\text{marg}}(x_v = e_v)$ is
+\begin{gather*}
+\P_{\text{marg}}(x_v = e_v) = \sum_{\vec{\xi} \ts\in\ts \mathbb{Z}_{2}^{d_{c} - 1}} \P\left(\{x_{v} = e_{v}\}\cup\{x_{V^{\prime}_{i}} = \xi_{i}\ts:\ts 1\leq i\leq d_{c} - 1\}\right) ~.
+\end{gather*}
+While this expression is exact, it is not useful for us since we don't know this marginal probability in practice. Furthermore, when we subtitute it into Eq. \ref{eq:message_check_to_vertex} the prior probabilities wouldn't cancel out in the ratio of messages. Therefore, we adopt the factorization approach described above.
+} to be specified below, and $Z_{c}$ is the constant that makes the right-hand side sum to one over all $2^{d_c}$ configurations of $N(c)$:
+\begin{gather}
+    Z_{c} = \sum_{e \ts\in\ts \mathbb{Z}_{2}} \ts \sum_{\vec{\xi} \ts\in\ts \mathbb{Z}_{2}^{d_{c} - 1}} \P(x_{v} = e)\ts W_{e}(\vec{\xi}) ~. \label{eq:def_Z_c}
+\end{gather}
+Being a sum over both $e_v$ and $\vec{\xi}$, $Z_c$ depends on neither $e_v$ nor $\vec{\xi}$.
+
+Substituting Eqs. \ref{eq:prob_var_zero} and \ref{eq:factorize_prior} into the expression of $m_{c \to v}$ in Eq. \ref{eq:message_check_to_vertex}, we find
+\begin{gather}
+    m_{c \to v} = \ln\left(\dfrac{\displaystyle\sum_{\substack{\vec{\xi} \ts\in\ts \mathbb{Z}_{2}^{d_{c}-1} \\ 0 \ts\oplus\ts \vec{\xi} = s_c}} W_{0}(\vec{\xi})}{\displaystyle\sum_{\substack{\vec{\xi} \ts\in\ts \mathbb{Z}_{2}^{d_{c}-1} \\ 1 \ts\oplus\ts \vec{\xi} = s_c}} W_{1}(\vec{\xi})}\right) ~. \label{eq:llr_from_probabilities}
+\end{gather}
+Note that $\P(s_c)$, $Z_{c}$ and the prior probabilities $\P\left(x_{v} = e_{v}\right)$ cancel out in the ratio, and hence we don't need to worry about them while computing the message $m_{c \to v}$. We need to determine the weight $W_{e_v}(\vec{\xi})$ for each configuration of the neighboring bits.
+
+In the simple setting where there are no correlations, the weight factorizes into a product of individual bit probabilities (with $Z_{c} = 1$):
+\begin{gather}
+    W_{e_v}(\vec{\xi}) = \prod_{i=1}^{d_{c}-1} \P\left(x_{V^{\prime}_{i}} = \xi_{i}\right) ~, \label{eq:factorized_joint_prob}
+\end{gather}
+so, $W_{0}(\vec{\xi}) = W_{1}(\vec{\xi})$.
+
+However, in the presence of correlations, a $(1,1)$ configuration on a correlated pair $(u, w) \in \Gamma$ is weighted by $\exp\left(J_{u,w}\right)$. We achieve this by multiplying a factor $\exp\left(J_{u,w}e_{u} e_{w}\right)$ for each correlated pair $(u, w)$ in $\Gamma$. Two kinds of pair occur inside $N(c)$: pairs among the neighbours $V'$, and pairs $(v, V'_i)$ joining $v$ to a neighbour. Splitting $W_{e_v}(\vec{\xi})$ into these contributions gives
+\begin{multline}
+    W_{e_v}(\vec{\xi}) = \prod_{i=1}^{d_{c}-1} \P\left(x_{V^{\prime}_{i}} = \xi_{i}\right) \prod_{\substack{1\leq i<k\leq d_{c}-1 \\ (V^{\prime}_{i}, V^{\prime}_{k}) \ts\in\ts \Gamma}} \exp\left(J_{V^{\prime}_{i},V^{\prime}_{k}} \xi_{i} \xi_{k}\right) \\
+    \times \prod_{\substack{1\leq i\leq d_{c}-1 \\ (v, V^{\prime}_{i}) \ts\in\ts \Gamma}} \exp\left(J_{v,V^{\prime}_{i}} \ts e_{v} \ts \xi_{i}\right) ~. \label{eq:correlated_joint_prob}
+\end{multline}
+The last product equals $1$ when $e_v = 0$; when $e_v = 1$ it amplifies the probability of $(1,1)$ for every neighbour that is correlated with $v$. The vertex $v$ enters $W_{e_v}$ only through its couplings; its own prior was factored out in Eq. \ref{eq:factorize_prior}. It can be seen that setting all $J$s to zero recovers Eq. \ref{eq:factorized_joint_prob}.
+
+The probabilities of the form $\P\left(x_{V^{\prime}_{i}} = \xi_{i}\right)$ of a neighboring bit $x_{V^{\prime}_{i}}$ taking the value $\xi_{i}$ is given by the message passed from the variable $V^{\prime}_{i}$ to the check node $c$, i.e. $m_{V^{\prime}_{i} \to c}$. Recall that these messages are LLRs in the convention $m = \ln\left[\P(x=0)/\P(x=1)\right]$. The conversion to probabilities is therefore
+\begin{gather}
+    \P\left(x_{V^{\prime}_{i}} = \xi_{i}\right) = \dfrac{\exp\left(-\xi_{i} \ts m_{V^{\prime}_{i} \to c}\right)}{1 + \exp\left(-m_{V^{\prime}_{i} \to c}\right)} ~. \label{eq:prob_var_from_v2c_message}
+\end{gather}
+This is consistent with our definition of the sigmoid function: $\sigma(x) = 1/(1+\exp(x))$.
+
+Eqs. \ref{eq:llr_from_probabilities}, \ref{eq:correlated_joint_prob} and \ref{eq:prob_var_from_v2c_message} together define the message. Because $W_0 \neq W_1$, the numerator and denominator of Eq. \ref{eq:llr_from_probabilities} cannot be factorized, the compact form $(-1)^{s_c}\ln(\cdot)$ of the uncorrelated case does not appear here. With every $J = 0$ one has $W_0 = W_1$, the sums factorize, and Eq. \ref{eq:llr_from_probabilities} reduces to the standard rule
+\begin{gather}
+    m_{c \to v} = 2\ts\mathrm{atanh}\left[(-1)^{s_c} \prod_{i=1}^{d_c-1} \tanh\left(\dfrac{m_{V^{\prime}_{i} \to c}}{2}\right)\right] ~.
+\end{gather}
+\end{document}

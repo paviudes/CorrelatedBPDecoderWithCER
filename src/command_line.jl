@@ -189,8 +189,8 @@ function parse_command_line_args_NN()::Dict{String, Any}
 			help = "Name of a directory containing the parity-check matrices and the logical operators."
 			arg_type = String
 			default = ""
-		"--n_hidden_layers"
-			help = "Number of hidden layers in the Neural BP model."
+		"--n_hidden_layers", "--n_iterations_BP"
+			help = "Number of hidden layers in the Neural BP model. For standard BP (standard_bp_experiments.jl) the same quantity is the number of BP ITERATIONS, which is why --n_iterations_BP is accepted as an alias; ArgParse keys both on the first name, so the parsed dictionary entry is \"n_hidden_layers\" either way."
 			arg_type = Int
 			default = 5
 		"--n_samples"
