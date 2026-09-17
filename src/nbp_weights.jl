@@ -29,6 +29,10 @@ function load_trained_weights(weights_filename::String)::Dict{String, Any}
     # missing key means the Bayesian default α = 1 and old files stay readable.
     coupling_scale::Vector{Float32} = Float32.(get(weights_data, "coupling_scale", [1.0]))
     formatted_weights["coupling_scale"] = coupling_scale
+    # The trained parameter itself, when the file is new enough to carry it.
+    if haskey(weights_data, "coupling_logit")
+        formatted_weights["coupling_logit"] = Float32.(weights_data["coupling_logit"])
+    end
     # Which check-node rule the weights were trained under; files older than
     # the enriched rule were necessarily trained with the standard one.
     formatted_weights["check_node"] = String(get(weights_data, "check_node", "tanh"))

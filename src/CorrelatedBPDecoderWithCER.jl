@@ -150,7 +150,8 @@ export CHECK_NODE_TANH, CHECK_NODE_ENRICHED, check_node_code, check_node_name, S
        apply_enriched_checks!, GPUSoftCheckState, build_gpu_soft_check_state,
        apply_enriched_checks_gpu, ENRICHED_MESSAGE_CAP, enriched_kernel_bytes_per_sample,
        cap_batch_size_for_enriched_kernel, release_device_array!, release_gpu_soft_check_state!,
-       ENRICHED_KERNEL_MEMORY_BUDGET_BYTES
+       ENRICHED_KERNEL_MEMORY_BUDGET_BYTES,
+       coupling_scale_from_logit, logit_from_coupling_scale, COUPLING_SCALE_LINK_MARGIN
 
 # Neural belief propagation
 include("neuralbase.jl")
@@ -159,7 +160,7 @@ export NeuralBPBase, NeuralBP, add_soft_constraints_to_neuralbpbase, parse_cer_d
 
 # Nachmani Neural BP model
 include("nachmani.jl")
-export NachmaniNeuralBP
+export NachmaniNeuralBP, effective_coupling_scale
 
 # Explicit-weight forward pass helpers
 include("forward_pass_weights.jl")

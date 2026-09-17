@@ -191,8 +191,9 @@ function compute_layer_with_weights!(
     Same as compute_layer!, but uses explicit weights instead of bpnn.
     This version is for the in-place version of the forward pass, with explicit weight arguments, so that it's friendly for Enzyme.jl.
 
-    `coupling_scale` is the length-1 vector holding α, the learnable scale on
-    the CER couplings inside the enriched check node. It is read only when
+    `coupling_scale` is a length-1 vector holding α ITSELF (already through the
+    logistic link — see `forward_pass_with_weights`), the scale on the CER
+    couplings inside the enriched check node. Read only when
     `base.check_node_kind == CHECK_NODE_ENRICHED`; the standard rule ignores it.
     """
     # ---- Slice the weights relevant for the current layer ----
@@ -254,15 +255,24 @@ function forward_pass_with_weights(
     weights_c2v_v2c,
     weights_llrs,
     weights_c2v_readout,
-    coupling_scale,
+    coupling_logit,
     base,
     initial_llrs_batch,
     syndromes_batch
 )
     """
     Forward pass with explicit weights as arguments, so that it's friendly for Enzyme.jl.
-    `coupling_scale` is the length-1 vector holding α for the enriched check
-    node (ignored by the standard rule); see `compute_layer_with_weights!`.
+
+    `coupling_logit` is the length-1 vector holding θ, the UNCONSTRAINED trained
+    parameter. The logistic link α = 1/(1 + exp(-θ)) is applied exactly HERE,
+    once per forward pass rather than once per layer, and α is what travels down
+    to the check-node kernel. Putting the link at this level is what keeps α
+    inside (0, 1) for free while leaving the kernel able to take any α — which
+    is why `α = 0` is still expressible and still reproduces the tanh rule.
+
+    The conversion is inside the differentiated region, so Enzyme carries the
+    chain θ -> α -> messages -> loss and the reported gradient is with respect
+    to θ, which is the parameter Adam updates.
     """
     n_samples = size(initial_llrs_batch, 2)
     neurons_per_layer = base.nb_neurons_per_layer
@@ -286,6 +296,11 @@ function forward_pass_with_weights(
     # posterior LLRs for all layers, as a 3D tensor: (n_bits × n_samples × n_layers)
     posterior_llrs = zeros(Float32, base.code_n_bits, n_samples, base.n_layers)
 
+    # θ -> α, once. Ignored by the standard check node, but computed
+    # unconditionally so the differentiated code path does not branch on it.
+    linked_coupling_scale::Vector{Float32} =
+        Float32[coupling_scale_from_logit(coupling_logit[1])]
+
     # Forward pass through layers
     for layer in 1:base.n_layers
         compute_layer_with_weights!(
@@ -302,7 +317,7 @@ function forward_pass_with_weights(
             weights_c2v_v2c,
             weights_llrs,
             weights_c2v_readout,
-            coupling_scale,
+            linked_coupling_scale,
             base,
             layer,
             n_samples
@@ -324,7 +339,7 @@ function forward_pass_with_weights(
         bpnn.weights_c2v_v2c,
         bpnn.weights_llrs,
         bpnn.weights_c2v_readout,
-        bpnn.coupling_scale,
+        bpnn.coupling_logit,
         bpnn.base,
         initial_llrs_batch,
         syndromes_batch

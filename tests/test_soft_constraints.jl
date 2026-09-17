@@ -3,6 +3,7 @@ using Test
 using Enzyme
 using JSON
 using Random
+using DelimitedFiles   # readdlm, for the LX file the coset-failure planting needs
 
 # =============================================================================
 # Tests for the enriched (correlation-adapted) check node, src/soft_constraints.jl.
@@ -27,11 +28,12 @@ using Random
 # =============================================================================
 
 function debug_data_directory()::String
-    return "./../data/72q_BB_cycles_1_debug"
+    return "./../data/72q_BB_cycles_1_spread_comparison"
 end
 
 function debug_cer_file()::String
-    return "$(debug_data_directory())/correlated_weights/correlated_weights_p_0.0005_s_1.txt"
+    data_dir = debug_data_directory()
+    return "$(data_dir)/correlated_weights/correlated_weights_p_0.0005_sig_0.0_s_1.txt"
 end
 
 function load_bb_base(check_node::String, n_layers::Int)::NeuralBPBase
@@ -345,7 +347,7 @@ end
         Enzyme.Duplicated(bpnn.weights_c2v_v2c, grad_w_c2v_v2c),
         Enzyme.Duplicated(bpnn.weights_llrs, grad_w_llrs),
         Enzyme.Duplicated(bpnn.weights_c2v_readout, grad_w_readout),
-        Enzyme.Duplicated(bpnn.coupling_scale, grad_alpha),
+        Enzyme.Duplicated(bpnn.coupling_logit, grad_alpha),
         Enzyme.Const(1.0f0),         # loss_layer_temperature
         Enzyme.Const(0),             # warmup_loss_layers
         Enzyme.Const(bb_base),
@@ -397,7 +399,7 @@ end
         weights_llrs = random_values_around_one([base.code_n_bits * base.n_layers]; scale = 0.1f0),
         weights_c2v_readout = random_values_around_one([base.nb_weights_c2v_readout]; scale = 0.1f0),
     )
-    @test bpnn.coupling_scale == Float32[1.0]
+    @test isapprox(effective_coupling_scale(bpnn), 1.0f0; atol = 1e-5)
     n_samples::Int = 5
     syndromes::BitMatrix = BitMatrix(rand(Bool, base.code_n_checks, n_samples))
     llrs_batch::Matrix{Float32} = repeat(base.initial_llrs, 1, n_samples)
@@ -417,7 +419,8 @@ end
     weights_file::String = tempname() * ".json"
     save_trained_neuralbp_model(weights_file, bpnn; seed = 3)
     loaded::NachmaniNeuralBP = load_trained_neuralbp_model(weights_file, bpnn)
-    @test loaded.coupling_scale == Float32[0.7]
+    @test isapprox(effective_coupling_scale(loaded), 0.7f0; atol = 1e-5)
+    @test loaded.coupling_logit == bpnn.coupling_logit        # exact parameter round trip
     @test loaded.weights_llrs == bpnn.weights_llrs
     saved_contents::Dict{String, Any} = JSON.parsefile(weights_file)
     @test saved_contents["check_node"] == "enriched"
@@ -435,7 +438,7 @@ end
     # Loading it into an enriched model works, defaults alpha to 1, and warns
     # that the weights were trained under the other rule.
     loaded_legacy::NachmaniNeuralBP = @test_logs (:warn, r"trained with check_node") load_trained_neuralbp_model(legacy_file, bpnn)
-    @test loaded_legacy.coupling_scale == Float32[1.0]
+    @test isapprox(effective_coupling_scale(loaded_legacy), 1.0f0; atol = 1e-5)
     rm(weights_file)
     rm(legacy_file)
 end
@@ -463,6 +466,19 @@ end
         end
     end
 
+    # A coset failure needs a residual w with HZ·w = 0 (syndrome cleared) AND
+    # `logicals`·w ≠ 0 (wrong coset). The rows of `logicals` are NOT such a w:
+    # `logicals` is the tail of the dual, i.e. LZ, which is the DETECTOR, and
+    # HZ·LZᵀ ≠ 0 -- XORing with an LZ row changes the syndrome, so the sample
+    # scores as a convergence failure and the coset bucket stays empty. The
+    # representatives live in LX, which is the matrix symplectically paired with
+    # LZ (LZ·LXᵀ = I).
+    coset_representatives::Matrix{Int} =
+        readdlm("$(debug_data_directory())/code/LX.txt", Int)
+    coset_shift::Vector{Bool} = coset_representatives[1, :] .== 1
+    @test all(iszero, mod.(parity_check_matrix * Int.(coset_shift), 2))   # clears the syndrome
+    @test any(!iszero, mod.(logicals * Int.(coset_shift), 2))             # but is detected
+
     # A mixture: random recoveries (mostly non-clearing), plus planted exact and
     # logical-carrying recoveries so all three outcome buckets are populated.
     recoveries::Array{Bool, 3} = rand(Bool, n_bits, n_samples, n_layers)
@@ -473,7 +489,7 @@ end
     for sample in 2:3:n_samples
         planted_layer::Int = rand(1:n_layers)
         # errors XOR a logical operator: clears the syndrome, wrong coset.
-        recoveries[:, sample, planted_layer] .= errors[:, sample] .⊻ (logicals[1, :] .== 1)
+        recoveries[:, sample, planted_layer] .= errors[:, sample] .⊻ coset_shift
     end
 
     diagnosis::NamedTuple = count_syndrome_satisfactions(
@@ -517,7 +533,7 @@ end
             weights_c2v_v2c = random_values_around_one([base.nb_weights_c2v_v2c * base.n_layers]; scale = 0.1f0),
             weights_llrs = random_values_around_one([base.code_n_bits * base.n_layers]; scale = 0.1f0),
             weights_c2v_readout = random_values_around_one([base.nb_weights_c2v_readout]; scale = 0.1f0),
-            coupling_scale = Float32[0.8],
+            coupling_scale = 0.8f0,
         )
         n_samples::Int = 5
         first_syndromes::BitMatrix = BitMatrix(rand(Bool, base.code_n_checks, n_samples))
@@ -551,6 +567,63 @@ end
         release_gpu_state!(rebuilt_state)
         release_gpu_state!(short_state)
     end
+end
+
+@testset "alpha is confined to (0,1) by the logistic link" begin
+    # alpha = 1/(1+exp(-theta)). The point of the link is that NO value of the
+    # trained parameter can put alpha outside the physically meaningful range:
+    # below 0 it would invert every coupling (J carries the sign already), above
+    # 1 it would claim more coupling than CER measured.
+    for logit in (-40.0f0, -5.0f0, -0.3228f0, 0.0f0, 1.0f0, 40.0f0)
+        alpha::Float32 = coupling_scale_from_logit(logit)
+        @test 0.0f0 <= alpha <= 1.0f0
+        @test isfinite(alpha)
+    end
+    @test coupling_scale_from_logit(0.0f0) == 0.5f0
+    # Monotone increasing, so a larger parameter always means more coupling.
+    logits::Vector{Float32} = Float32[-6, -2, -0.5, 0, 0.5, 2, 6]
+    alphas::Vector{Float32} = coupling_scale_from_logit.(logits)
+    @test all(alphas[i] < alphas[i + 1] for i in 1:(length(alphas) - 1))
+    # Round trip, to the precision the margin allows.
+    for alpha_target in (0.05f0, 0.2f0, 0.42f0, 0.5f0, 0.8f0, 0.95f0)
+        @test isapprox(coupling_scale_from_logit(logit_from_coupling_scale(alpha_target)),
+                       alpha_target; atol = 1e-5)
+    end
+    # The endpoints of the CLOSED range are nudged inside rather than sent to
+    # +/-Inf: an infinite parameter makes the gradient NaN and would NaN-skip
+    # every batch. They are IN range, so the nudge is silent -- alpha = 1 is the
+    # Bayesian value and the default, and every weights file that predates the
+    # coupling field loads with it.
+    @test isfinite(logit_from_coupling_scale(0.0f0))
+    @test isfinite(logit_from_coupling_scale(1.0f0))
+    @test coupling_scale_from_logit(logit_from_coupling_scale(0.0f0)) < 1e-5
+    @test coupling_scale_from_logit(logit_from_coupling_scale(1.0f0)) > 1 - 1e-5
+    @test_logs logit_from_coupling_scale(0.0f0)      # no log records at all
+    @test_logs logit_from_coupling_scale(1.0f0)
+    # Genuinely OUT of range is a statement about the physics the run cannot
+    # honour, and is reported every time.
+    @test_logs (:warn, r"lies outside") logit_from_coupling_scale(-0.5f0)
+    @test_logs (:warn, r"lies outside") logit_from_coupling_scale(1.5f0)
+
+    # A model built with alpha = 0.42 uses 0.42, and the parameter it trains is
+    # that value's logit.
+    base::NeuralBPBase = load_bb_base("enriched", 2)
+    model::NachmaniNeuralBP = unit_weight_neuralbp(base; coupling_scale = 0.42f0)
+    @test isapprox(effective_coupling_scale(model), 0.42f0; atol = 1e-5)
+    @test isapprox(model.coupling_logit[1], log(0.42f0 / 0.58f0); atol = 1e-5)
+    # Driving the parameter far out never leaves the range. In exact arithmetic
+    # alpha only approaches 1; in Float32 it rounds to exactly 1 above theta
+    # ~= 16.6, which is benign -- alpha = 1 is the Bayesian value, and the link's
+    # derivative alpha*(1-alpha) rounds to 0 there too, so a runaway theta parks
+    # alpha at the top of the range instead of producing anything infinite.
+    model.coupling_logit[1] = 12.0f0
+    @test effective_coupling_scale(model) < 1.0f0
+    @test effective_coupling_scale(model) > 0.99f0
+    model.coupling_logit[1] = 50.0f0
+    @test effective_coupling_scale(model) == 1.0f0     # Float32 saturation, not a bug
+    model.coupling_logit[1] = -50.0f0
+    @test effective_coupling_scale(model) >= 0.0f0
+    @test effective_coupling_scale(model) < 1.0f-6
 end
 
 @testset "Prediction batch size accounts for the enriched kernel" begin

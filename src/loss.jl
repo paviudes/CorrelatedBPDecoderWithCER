@@ -43,6 +43,16 @@ function smooth_loss(real_syndrome_bit::Float32)::Float32
     end
 end
 
+function sine_residue_loss(real_syndrome_bit::Float32)::Float32
+    """
+    Compute h(x) = |sin (π x / 2)|.
+
+    We will call this on each syndrome bit. We want to regard even syndrome bits as correct, so the loss is zero when x is an even integer.
+    """
+    residue = abs(sin(pi * real_syndrome_bit / 2))
+    return residue
+end
+
 function compute_smooth_loss_from_llrs(
     posterior_llrs::Matrix{Float32},
     expected_recoveries::BitMatrix,
@@ -59,19 +69,28 @@ function compute_smooth_loss_from_llrs(
     n_samples = size(expected_recoveries, 2)
     e_total_matrix = @. sigmoid(posterior_llrs) + expected_recoveries
     commutation_relations_matrix = parity_check_matrix_dual * e_total_matrix
-    average_loss = sum(@. smooth_loss(commutation_relations_matrix)) / n_samples
+    # average_loss = sum(@. smooth_loss(commutation_relations_matrix)) / n_samples
+    average_loss = sum(@. sine_residue_loss(commutation_relations_matrix)) / n_samples
     return average_loss
 end
 
 function softmin_loss(losses_per_layer::AbstractVector{Float32}, temp::Float32)::Float32
     """
-    Smooth minimum over layers, T·log(n) above the true minimum at zero spread:
+    Smooth minimum over layers, T·log(n) BELOW the true minimum at zero spread:
 
         softmin(L, T) = min(L) - T · log( ∑_l exp( -(L_l - min(L)) / T ) )
 
     T is annealed down, so early training averages over layers and late training
     commits to the best one. The gradient is the softmax weights, all ≥ 0, so
     lowering the selected layer's loss never pushes up another's.
+
+    The value is monotonically DECREASING in T: at T → 0 it is min(L) exactly,
+    and it falls further below min(L) as T grows. Annealing T down therefore
+    RAISES the reported number over training even when the decoder is getting
+    better, and when many layers have already hit zero loss the number is close
+    to -T·log(n_zero_layers) and says more about the schedule than the decoder.
+    Read a training-loss trajectory against the temperature schedule, never
+    on its own.
     """
     n_layers = length(losses_per_layer)
     if n_layers == 1

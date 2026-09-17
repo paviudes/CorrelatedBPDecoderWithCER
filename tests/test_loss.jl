@@ -54,7 +54,12 @@ end
     losses::Vector{Float32} = Float32[3.0, 1.0, 2.0]
     @test softmin_loss(Float32[1.5], 0.3f0) == 1.5f0                    # one layer: itself
     @test isapprox(softmin_loss(losses, 1.0f-3), 1.0f0; atol = 1e-2)   # cold: the minimum
-    @test softmin_loss(losses, 1.0f-3) <= softmin_loss(losses, 1.0f0)  # colder is lower ...
+    # This softmin sits BELOW min(L), by T·log(n) at zero spread, so it DECREASES
+    # with temperature: cold is the minimum itself, warm is the minimum minus a
+    # spread-dependent margin. Annealing T down therefore raises the reported
+    # loss even when the decoder is improving -- which is why the training-loss
+    # trajectory has to be read against the schedule, not on its own.
+    @test softmin_loss(losses, 1.0f0) <= softmin_loss(losses, 1.0f-3)  # warmer is lower ...
     @test softmin_loss(losses, 1.0f0) <= minimum(losses)                # ... and never above the minimum
     @test softmin_loss(Float32[2.0, 2.0, 2.0], 0.5f0) < 2.0f0           # T·log(n) below at zero spread
     @test isapprox(softmin_loss(Float32[2.0, 2.0, 2.0], 0.5f0), 2.0f0 - 0.5f0 * log(3.0f0); atol = 1e-6)
@@ -90,10 +95,17 @@ end
 end
 
 @testset "Enzyme differentiates the training loss through the forward pass" begin
-    parity_check_matrix::Matrix{Int} = [1 1 0 0; 0 0 1 1]
-    parity_check_matrix_dual::Matrix{Int} = [1 1 0 0; 0 0 1 1; 1 0 1 0]
+    # Bit 3 sits in BOTH checks, and that is load-bearing. `adj_C2V_V2C` connects
+    # two neurons only when they share a VARIABLE and differ in CHECK, so on a
+    # graph whose variables all have degree 1 -- [1 1 0 0; 0 0 1 1], the obvious
+    # toy -- `nb_weights_c2v_v2c` is 0, `weights_c2v_v2c` is an empty vector, and
+    # "some weight has a non-zero gradient" is vacuously false whatever the loss
+    # does. The test would fail while reporting nothing about the loss.
+    parity_check_matrix::Matrix{Int} = [1 1 1 0; 0 0 1 1]
+    parity_check_matrix_dual::Matrix{Int} = [1 1 1 0; 0 0 1 1; 1 0 0 1]
     initial_llrs::Vector{Float32} = fill(Float32(log(9)), 4)
     base::NeuralBPBase = NeuralBPBase(parity_check_matrix, parity_check_matrix_dual, initial_llrs, 3)
+    @test base.nb_weights_c2v_v2c > 0
     bpnn::NachmaniNeuralBP = NachmaniNeuralBP(
         base;
         weights_c2v_v2c = random_values_around_one([base.nb_weights_c2v_v2c * base.n_layers]; scale = 0.1f0),
@@ -108,14 +120,15 @@ end
     grad_w_llrs::Vector{Float32} = zeros(Float32, length(bpnn.weights_llrs))
     grad_w_readout::Vector{Float32} = zeros(Float32, length(bpnn.weights_c2v_readout))
     grad_alpha::Vector{Float32} = zeros(Float32, 1)
+    temperature::Float32 = 1.0f0
     (_, loss_value) = Enzyme.autodiff(
         Enzyme.ReverseWithPrimal,
         CorrelatedBPDecoderWithCER.get_loss_value,
         Enzyme.Duplicated(bpnn.weights_c2v_v2c, grad_w_c2v_v2c),
         Enzyme.Duplicated(bpnn.weights_llrs, grad_w_llrs),
         Enzyme.Duplicated(bpnn.weights_c2v_readout, grad_w_readout),
-        Enzyme.Duplicated(bpnn.coupling_scale, grad_alpha),
-        Enzyme.Const(1.0f0),         # loss_layer_temperature
+        Enzyme.Duplicated(bpnn.coupling_logit, grad_alpha),
+        Enzyme.Const(temperature),   # loss_layer_temperature
         Enzyme.Const(0),             # warmup_loss_layers
         Enzyme.Const(base),
         Enzyme.Const(llrs_batch),
@@ -123,7 +136,11 @@ end
         Enzyme.Const(expected)
     )
     @test isfinite(loss_value)
-    @test loss_value > 0.0f0
+    # The total is a SOFTMIN, which sits below min(L): with per-layer losses
+    # non-negative it lies in [-T·log(n_layers), min(L)], so a negative value is
+    # normal, not a failure. Asserting `> 0` mistakes the softmin's offset for an
+    # error -- the meaningful bound is the floor.
+    @test loss_value >= -temperature * log(Float32(base.n_layers)) - 1.0f-4
     @test all(isfinite, grad_w_c2v_v2c)
     @test all(isfinite, grad_w_llrs)
     @test all(isfinite, grad_w_readout)

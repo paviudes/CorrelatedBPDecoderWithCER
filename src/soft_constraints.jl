@@ -53,6 +53,100 @@ tanh path already has: `safe_atanh_exp_signed!` clips exp(magnitude) at
 1 - eps(Float32), so |2 atanh(·)| never exceeds this value there either."
 const ENRICHED_MESSAGE_CAP::Float32 = 2.0f0 * atanh(1.0f0 - eps(Float32))
 
+# =============================================================================
+#   α and its logit: keeping the coupling scale inside [0, 1] without a wall
+# =============================================================================
+# α is the ratio between the coupling strength the decoder USES and the one CER
+# MEASURED, so both ends of [0, 1] mean something and neither may be crossed:
+#
+#   α < 0  INVERTS every coupling. J already carries the sign (128 of the 540
+#          couplings here are negative), so a negative α turns each
+#          measured-correlated pair into an anti-correlated one and vice versa.
+#          That is not a temperature, it is a claim the measurement had the
+#          wrong sign. Measured: one run learned α = -0.541 and returned 4952
+#          failures against a 330 baseline.
+#   α > 1  asserts the pairs are MORE strongly coupled than the experiment
+#          found. The loopy-BP correction runs the other way — cycles overcount
+#          evidence, so the couplings want DISCOUNTING, exactly as normalised
+#          min-sum scales its messages down.
+#
+# So training learns an UNCONSTRAINED logit θ and the model uses
+#
+#     α = 1 / (1 + exp(-θ))
+#
+# rather than clamping α after each step. A projection would leave the gradient
+# pushing into the wall and park θ exactly on it; the logistic has no wall at
+# all — it just takes ever larger θ to move α further, so the boundary is
+# approached and never reached.
+#
+# Adam absorbs most of the link's Jacobian: dα/dθ = α(1-α) ≈ 0.24 over the
+# useful range, a near-constant rescaling, and Adam normalises by the gradient's
+# running magnitude. What survives is the intended part — the shrinking step in
+# α as either boundary is approached.
+#
+# The link lives HERE, above the kernel: `apply_enriched_checks!` still takes α
+# itself, so `α = 0` remains expressible and the "α = 0 reproduces the tanh
+# rule" test stays exact. Only the learnable parameter is reparameterised.
+
+"How far inside (0, 1) a requested α is placed before taking its logit. α = 0
+and α = 1 are logit ∓Inf, and an infinite parameter makes Enzyme's gradient NaN,
+which would NaN-skip every batch. 1e-6 is far below any decodable difference —
+the classical scan separates α = 0.42 from α = 0.6 — so the nudge is invisible
+except that it keeps the parameter finite, and `logit_from_coupling_scale` makes
+it silently. For an exact α = 0, use `check_node = \"tanh\"`, which is the same
+rule and needs no couplings at all."
+const COUPLING_SCALE_LINK_MARGIN::Float32 = 1.0f-6
+
+function coupling_scale_from_logit(coupling_logit::Real)::Float32
+    """
+    α = 1 / (1 + exp(-θ)), the standard increasing logistic, mapping the whole
+    real line onto (0, 1).
+
+    Written out rather than calling `sigmoid` from utils.jl: that one is
+    `1/(1 + exp(x))`, the DECREASING convention used for σ(μ) = P(error), and
+    reusing it here would silently flip the sign of θ.
+
+    In exact arithmetic α never reaches 1; in Float32 it rounds to exactly 1 at
+    θ ≥ 16.64. That corner is benign, not a failure: α = 1 is the Bayesian value
+    the pairwise prior asks for, and dα/dθ = α(1-α) rounds to 0 there too, so a
+    runaway θ parks α at 1 and stops moving it rather than producing anything
+    infinite. If a run ends with α = 1 exactly, read it as "training pushed α to
+    the top of the range", not as a converged interior optimum.
+    """
+    alpha::Float32 = 1.0f0 / (1.0f0 + exp(-Float32(coupling_logit)))
+    return alpha
+end
+
+function logit_from_coupling_scale(coupling_scale::Real)::Float32
+    """
+    θ = log(α / (1 - α)), the inverse link, for turning a human-specified α
+    (`coupling_scale_init`, or the fixed α of a classical run) into the
+    parameter that is actually stored and trained.
+
+    TWO DIFFERENT THINGS are clamped here, and only one of them is a mistake:
+
+      α ∈ {0, 1}         IN range — α = 1 is the Bayesian value and the default —
+                         but not representable, since the logit is ∓Inf. Nudged
+                         inside by `COUPLING_SCALE_LINK_MARGIN` and left SILENT:
+                         1e-6 is orders of magnitude below any decodable
+                         difference, and warning here would fire on every load of
+                         a weights file that predates the coupling field.
+      α < 0 or α > 1     OUT of range, and a statement about the physics that the
+                         run cannot honour. Warned about every time.
+    """
+    requested::Float32 = Float32(coupling_scale)
+    if requested < 0.0f0 || requested > 1.0f0
+        @warn "logit_from_coupling_scale: α = $(requested) lies outside [0, 1] and was " *
+              "clamped. α is the fraction of the MEASURED coupling strength the decoder " *
+              "uses: below 0 it inverts every coupling, which negates the physics (J " *
+              "already carries the sign of each correlation), and above 1 it claims more " *
+              "coupling than CER found. For an exact α = 0 use check_node = \"tanh\"."
+    end
+    clamped::Float32 = clamp(requested, COUPLING_SCALE_LINK_MARGIN, 1.0f0 - COUPLING_SCALE_LINK_MARGIN)
+    logit::Float32 = log(clamped / (1.0f0 - clamped))
+    return logit
+end
+
 function check_node_code(check_node_name::AbstractString)::Int
     """
     Resolve the `check_node` hyperparameter string to its integer code, so an

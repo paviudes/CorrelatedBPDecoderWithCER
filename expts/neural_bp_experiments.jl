@@ -134,8 +134,9 @@ if abspath(PROGRAM_FILE) == @__FILE__
         "weights_c2v_v2c" => random_values_around_one([base.nb_weights_c2v_v2c * base.n_layers]; scale=hyperparams["initial_conditions_scale"]),
         "weights_llrs" => random_values_around_one([base.code_n_bits * base.n_layers]; scale=hyperparams["initial_conditions_scale"]),
         "weights_c2v_readout" => random_values_around_one([base.nb_weights_c2v_readout]; scale=hyperparams["initial_conditions_scale"]),
-        # α is NOT drawn at random: it starts at the Bayesian value (or whatever
-        # `coupling_scale_init` says) so the run begins AT the hypothesis.
+        # α is NOT drawn at random: it starts at the value `coupling_scale_init`
+        # names, so the run begins AT the hypothesis. Stored as its logit; see
+        # `coupling_scale_from_logit`.
         "coupling_scale" => Float32[coupling_scale_init]
     )
     start = time()
@@ -253,7 +254,8 @@ if abspath(PROGRAM_FILE) == @__FILE__
     # value when α was trainable, the fixed one otherwise). Recorded always, so
     # the collector can separate enriched from tanh arms without parsing names.
     push!(extra_result_columns, "check_node" => check_node)
-    push!(extra_result_columns, "coupling_scale" => bpnn.coupling_scale[1])
+    push!(extra_result_columns, "coupling_scale" => effective_coupling_scale(bpnn))
+    push!(extra_result_columns, "coupling_logit" => bpnn.coupling_logit[1])
 
     # Diagnostic aggregates. `num_failures` (already recorded) is the sum of
     # num_coset_failures and num_convergence_failures; splitting it is the whole

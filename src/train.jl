@@ -2,7 +2,7 @@ function get_loss_value(
     weights_c2v_v2c, # learnable weights for computing m^t_(v→c) from m^(t-1)_(c→v).
     weights_llrs, # learnable weights for m^t_(v→c) from the initial LLRs, and also for computing the posterior LLRs from m^t_(c→v).
     weights_c2v_readout, # learnable weights for computing the readout (posterior LLRs) from m^t_(c→v).
-    coupling_scale, # learnable length-1 vector holding α, the scale on the CER couplings inside the enriched check node (inert for the standard rule).
+    coupling_logit, # learnable length-1 vector holding θ; the forward pass uses α = 1/(1+exp(-θ)) ∈ (0,1) (inert for the standard rule).
     loss_layer_temperature, # temperature of the softmin over layers, annealed during training.
     warmup_loss_layers, # first number of layers to leave unconstrained in the loss.
     base, # constant parameters of the model: the parity-check matrices, the check node tables, etc.
@@ -24,7 +24,7 @@ function get_loss_value(
         weights_c2v_v2c,
         weights_llrs,
         weights_c2v_readout,
-        coupling_scale,
+        coupling_logit,
         base,
         llrs_batch,
         syndromes_batch_matrix
@@ -43,7 +43,7 @@ function get_individual_loss_values(
     weights_c2v_v2c::Vector{Float32},
     weights_llrs::Vector{Float32},
     weights_c2v_readout::Vector{Float32},
-    coupling_scale::Vector{Float32},
+    coupling_logit::Vector{Float32},
     loss_layer_temperature::Float32,
     warmup_loss_layers::Int,
     base::NeuralBPBase,
@@ -61,7 +61,7 @@ function get_individual_loss_values(
         weights_c2v_v2c,
         weights_llrs,
         weights_c2v_readout,
-        coupling_scale,
+        coupling_logit,
         base,
         llrs_batch,
         syndromes_batch
@@ -130,7 +130,8 @@ function init_training_debug_logs(n_samples_to_log::Int)
         min_weight_c2v_readout = zeros(Float32, n_samples_to_log),
         max_weight_c2v_readout = zeros(Float32, n_samples_to_log),
         median_weight_c2v_readout = zeros(Float32, n_samples_to_log),
-        coupling_scale = zeros(Float32, n_samples_to_log)
+        coupling_scale = zeros(Float32, n_samples_to_log),
+        coupling_logit = zeros(Float32, n_samples_to_log)
     )
     losses_log = DataFrame(
         :epoch => zeros(Int, n_samples_to_log),
@@ -172,7 +173,8 @@ function log_batch_debug!(
     hp_log[index, :min_weight_c2v_readout] = minimum(bpnn.weights_c2v_readout)
     hp_log[index, :max_weight_c2v_readout] = maximum(bpnn.weights_c2v_readout)
     hp_log[index, :median_weight_c2v_readout] = median(bpnn.weights_c2v_readout)
-    hp_log[index, :coupling_scale] = bpnn.coupling_scale[1]
+    hp_log[index, :coupling_scale] = effective_coupling_scale(bpnn)
+    hp_log[index, :coupling_logit] = bpnn.coupling_logit[1]
 
     losses_log[index, :epoch] = epoch
     losses_log[index, :batch] = b
@@ -283,10 +285,9 @@ function train_neuralbp_enzyme!(
     # Pick Adam vs AdamW based on whether the user specified a non-zero
     # weight_decay. Both wrap inside an OptimiserChain that does gradient-norm
     # clipping first, then the adaptive update.
-    inner_opt = if weight_decay > 0f0
-        AdamW(learning_rate, (0.9f0, 0.999f0), weight_decay)
-    else
-        Adam(learning_rate, (0.9f0, 0.999f0), adam_eps)
+    inner_opt::Optimisers.AbstractRule = Adam(learning_rate, (0.9f0, 0.999f0), adam_eps)
+    if weight_decay > 0f0
+        inner_opt = AdamW(learning_rate, (0.9f0, 0.999f0), weight_decay)
     end
     opt_rule  = OptimiserChain(ClipGrad(max_grad_norm), inner_opt)
     opt_state = Optimisers.setup(opt_rule, bpnn)
@@ -294,7 +295,7 @@ function train_neuralbp_enzyme!(
     # from AdamW's weight decay, which would otherwise pull a fixed α toward 0
     # even with a zero gradient.
     if !coupling_scale_learnable
-        Optimisers.freeze!(opt_state.coupling_scale)
+        Optimisers.freeze!(opt_state.coupling_logit)
     end
     # A LEARNED α must not be weight-decayed either. Decay shrinks every
     # parameter toward 0; for the message weights that is the existing
@@ -307,18 +308,18 @@ function train_neuralbp_enzyme!(
             ClipGrad(max_grad_norm), Adam(learning_rate, (0.9f0, 0.999f0), adam_eps))
         # `opt_state` is a NamedTuple over the model's functor children, so the
         # leaf can be swapped by key without touching the others.
-        opt_state = merge(opt_state, (coupling_scale = Optimisers.setup(coupling_scale_rule, bpnn.coupling_scale),))
+        opt_state = merge(opt_state, (coupling_logit = Optimisers.setup(coupling_scale_rule, bpnn.coupling_logit),))
     end
 
     if !is_quiet
         n_weights = length(bpnn.weights_c2v_v2c) + length(bpnn.weights_llrs) + length(bpnn.weights_c2v_readout)
         if coupling_scale_learnable
-            n_weights += length(bpnn.coupling_scale)
+            n_weights += length(bpnn.coupling_logit)
         end
         print_info("Starting training on $(n_samples) samples, split into batches of $(batch_size), with $(n_weights) learnable parameters.")
         if base.check_node_kind == CHECK_NODE_ENRICHED
             print_info("Enriched check node: $(describe_soft_check_tables(base.soft_check_tables)); " *
-                       "coupling scale α = $(bpnn.coupling_scale[1]) " *
+                       "coupling scale α = $(effective_coupling_scale(bpnn)) (logit $(bpnn.coupling_logit[1])) " *
                        "($(coupling_scale_learnable ? "learnable" : "fixed")).")
         end
     end
@@ -373,7 +374,7 @@ function train_neuralbp_enzyme!(
             # Always Duplicated, even when α is frozen or unused: the optimiser
             # leaf decides whether the gradient is applied, and a fixed
             # signature keeps ONE compiled Enzyme thunk for every configuration.
-            grad_coupling_scale::Vector{Float32} = zeros(Float32, length(bpnn.coupling_scale))
+            grad_coupling_scale::Vector{Float32} = zeros(Float32, length(bpnn.coupling_logit))
 
             # -------------------------
             # Enzyme autodiff
@@ -385,7 +386,7 @@ function train_neuralbp_enzyme!(
                 Enzyme.Duplicated(bpnn.weights_c2v_v2c, grad_w_c2v_v2c),
                 Enzyme.Duplicated(bpnn.weights_llrs, grad_w_llrs),
                 Enzyme.Duplicated(bpnn.weights_c2v_readout, grad_w_readout),
-                Enzyme.Duplicated(bpnn.coupling_scale, grad_coupling_scale),
+                Enzyme.Duplicated(bpnn.coupling_logit, grad_coupling_scale),
                 # Constant arguments (order MUST match get_loss_value's signature):
                 Enzyme.Const(hp[:loss_layer_temperature]),
                 Enzyme.Const(warmup_loss_layers),
@@ -437,8 +438,11 @@ function train_neuralbp_enzyme!(
                 weights_c2v_v2c     = grad_w_c2v_v2c,
                 weights_llrs        = grad_w_llrs,
                 weights_c2v_readout = grad_w_readout,
-                coupling_scale      = grad_coupling_scale
+                coupling_logit      = grad_coupling_scale
             )
+            # θ is unconstrained, so the Adam step needs no projection: the
+            # logistic link in `forward_pass_with_weights` keeps α in (0, 1)
+            # however far θ travels.
             (opt_state, bpnn) = Optimisers.update!(opt_state, bpnn, grads)
             n_applied_updates += 1
             # -------------------------
@@ -457,7 +461,7 @@ function train_neuralbp_enzyme!(
                     bpnn.weights_c2v_v2c,
                     bpnn.weights_llrs,
                     bpnn.weights_c2v_readout,
-                    bpnn.coupling_scale,
+                    bpnn.coupling_logit,
                     hp[:loss_layer_temperature],
                     warmup_loss_layers,
                     base,
@@ -492,7 +496,7 @@ function train_neuralbp_enzyme!(
             bpnn.weights_c2v_v2c     .= bpnn_checkpoint.weights_c2v_v2c
             bpnn.weights_llrs        .= bpnn_checkpoint.weights_llrs
             bpnn.weights_c2v_readout .= bpnn_checkpoint.weights_c2v_readout
-            bpnn.coupling_scale      .= bpnn_checkpoint.coupling_scale
+            bpnn.coupling_logit      .= bpnn_checkpoint.coupling_logit
             opt_state = deepcopy(opt_state_checkpoint)
             n_rolled_back_epochs += 1
             # NOT gated on is_quiet: a rolled-back epoch discards its work, and a
@@ -569,10 +573,11 @@ function train_Nachmani_neuralbp(
     # caller supplied it explicitly. Read from the hyperparameters here rather
     # than in the script so a caller using the package directly gets the same
     # default.
-    initial_coupling_scale::Vector{Float32} = get(
-        initial_conditions, "coupling_scale",
-        Float32[Float32(get(hyperparameters, "coupling_scale_init", 1.0f0))]
-    )
+    initial_coupling_scale::Float32 =
+        Float32(get(hyperparameters, "coupling_scale_init", 1.0f0))
+    if haskey(initial_conditions, "coupling_scale")
+        initial_coupling_scale = Float32(initial_conditions["coupling_scale"][1])
+    end
     bpnn = NachmaniNeuralBP(
         base,
         weights_c2v_v2c=initial_conditions["weights_c2v_v2c"],
@@ -580,7 +585,13 @@ function train_Nachmani_neuralbp(
         weights_c2v_readout=initial_conditions["weights_c2v_readout"],
         coupling_scale=initial_coupling_scale
     )
-    
+    # Resuming from a checkpoint restores the TRAINED PARAMETER θ itself, not α.
+    # Rebuilding θ from α above costs one logit(logistic(θ)) round trip, exact
+    # only to Float32; a resumed run should continue from the θ it stopped at.
+    if haskey(initial_conditions, "coupling_logit")
+        bpnn.coupling_logit .= initial_conditions["coupling_logit"]
+    end
+
     # Extract the name of the training file name to include in the weights file name for clarity on what data the model was trained on.
     # We only want the filename without the path and extension.
     # For example, if the training file is `data/hamming/training_data.txt`, we want to extract `training_data`.

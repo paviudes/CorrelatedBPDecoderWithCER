@@ -163,8 +163,15 @@ function load_trained_neuralbp_model(weights_filename::String, bpnn::NachmaniNeu
         weights_c2v_v2c=weights_data["weights_c2v_v2c"],
         weights_llrs=weights_data["weights_llrs"],
         weights_c2v_readout=weights_data["weights_c2v_readout"],
-        coupling_scale=weights_data["coupling_scale"]
+        coupling_scale=Float32(weights_data["coupling_scale"][1])
     )
+    # Restore the EXACT trained parameter when the file carries it. Rebuilding
+    # from α instead would round-trip through logit(logistic(θ)), which is
+    # lossless only to Float32 precision -- fine for decoding, but a saved and
+    # reloaded model should be bit-identical.
+    if haskey(weights_data, "coupling_logit")
+        loaded_bpnn.coupling_logit .= weights_data["coupling_logit"]
+    end
     return loaded_bpnn
 end
 
@@ -198,7 +205,10 @@ function save_trained_neuralbp_model(
     # α of the enriched check node, and which check-node rule the weights were
     # trained under: weights trained with the enriched rule are only meaningful
     # with it, so the file says so.
-    weights_data["coupling_scale"] = vec(bpnn.coupling_scale)
+    # BOTH forms: the logit is the parameter (exact round trip), α is what a
+    # human reads. `load_trained_weights` prefers the logit when present.
+    weights_data["coupling_logit"] = vec(bpnn.coupling_logit)
+    weights_data["coupling_scale"] = Float64[effective_coupling_scale(bpnn)]
     weights_data["check_node"] = check_node_name(bpnn.base.check_node_kind)
     if seed !== nothing
         weights_data["seed"] = seed

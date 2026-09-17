@@ -15,6 +15,10 @@ function unit_weight_neuralbp(base::NeuralBPBase; coupling_scale::Float32 = 1.0f
     CHECK_NODE_ENRICHED`): a fixed hyperparameter here, where nothing is
     learned. α = 1 is the exact Bayesian message for the pairwise prior; α = 0
     reproduces the standard rule. Ignored by the standard check node.
+
+    Stored internally as its logit, so an α of exactly 0 or 1 is nudged inside
+    (0, 1) by `COUPLING_SCALE_LINK_MARGIN` = 1e-6 — far below any decodable
+    difference. For an exact α = 0, use `check_node = "tanh"`.
     """
     n_weights_c2v_v2c::Int = base.nb_weights_c2v_v2c * base.n_layers
     n_weights_llrs::Int = base.code_n_bits * base.n_layers
@@ -24,7 +28,7 @@ function unit_weight_neuralbp(base::NeuralBPBase; coupling_scale::Float32 = 1.0f
         weights_c2v_v2c = ones(Float32, n_weights_c2v_v2c),
         weights_llrs = ones(Float32, n_weights_llrs),
         weights_c2v_readout = ones(Float32, n_weights_c2v_readout),
-        coupling_scale = Float32[coupling_scale]
+        coupling_scale = coupling_scale
     )
     return unit_weight_network
 end
