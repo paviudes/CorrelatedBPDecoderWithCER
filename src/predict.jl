@@ -19,12 +19,16 @@ function predict_neuralbp(bpnn::NeuralBP, syndromes::BitMatrix; batch_size::Int 
 
     predicted_recoveries = falses(n_bits, n_total, n_layers)
 
+    gpu_state::Union{GPUState, Nothing} = nothing
     for start in 1:batch_size:n_total
         stop = min(start + batch_size - 1, n_total)
         chunk_synd = syndromes[:, start:stop]
         chunk_llrs = repeat(bpnn.base.initial_llrs, 1, stop - start + 1)
-        chunk_post = forward_pass_gpu(bpnn, chunk_llrs, chunk_synd)
-        @views predicted_recoveries[:, start:stop, :] .= (chunk_post .< 0)
+        gpu_state = reusable_gpu_state(gpu_state, bpnn, chunk_synd)
+        @views predicted_recoveries[:, start:stop, :] .= predict_recoveries_gpu(gpu_state, chunk_llrs)
+    end
+    if gpu_state !== nothing
+        release_gpu_state!(gpu_state)
     end
 
     return predicted_recoveries
@@ -109,7 +113,12 @@ whether a non-converging sample was close or wildly off.
 This is ADDITIVE. `check_bp_solutions` is deliberately left untouched as an
 independent reference implementation, so the equality of the two `is_correct`
 vectors is a real test rather than a tautology; see
-`expts/misc/test_syndrome_diagnosis.jl`.
+`expts/misc/test_syndrome_diagnosis.jl`. That independence is worth more than
+the speed here: this function is vectorised over samples and `check_bp_solutions`
+is not, so the two now differ in implementation as well as in what they report,
+which makes the agreement test stronger. It also means the NON-diagnostic path
+is now the slow one on large test sets — use `--diagnose true`, or ask for the
+same treatment there.
 
 Arguments and shapes are identical to `check_bp_solutions`.
 """
@@ -119,41 +128,90 @@ function count_syndrome_satisfactions(
     errors::BitMatrix,
     proposed_recoveries::Array{Bool, 3}
 )::NamedTuple
+    n_bits::Int = size(errors, 1)
     n_samples::Int = size(errors, 2)
     n_layers::Int = size(proposed_recoveries, 3)
+    n_checks::Int = size(parity_check_matrix, 1)
+    n_logicals::Int = size(logicals, 1)
 
     syndrome_cleared::BitVector = falses(n_samples)
     is_correct::BitVector = falses(n_samples)
     committed_layers::Vector{Int} = zeros(Int, n_samples)      # 0 = no layer ever cleared
-    min_syndrome_weights::Vector{Int} = zeros(Int, n_samples)
+    min_syndrome_weights::Vector{Int} = fill(typemax(Int), n_samples)
     # Weight of the TRUE error, carried per sample so the failure records can be
     # read against it: coset tipping should concentrate at weights where the
     # residual can reach a low-weight logical, convergence failure should not.
-    error_weights::Vector{Int} = zeros(Int, n_samples)
+    error_weights::Vector{Int} = vec(sum(errors, dims = 1))
 
-    for i in 1:n_samples
-        error_weights[i] = count(view(errors, :, i))
-        # NOTE: `residuals` and `committed_residual` are deliberately left
-        # unannotated. Broadcasting a BitVector against an Array{Bool,2} may yield
-        # either container, and pinning the type would force a `convert` — i.e. a
-        # fresh 72x100 copy — on every one of up to 10^6 iterations.
-        residuals = errors[:, i] .⊻ proposed_recoveries[:, i, :]
-        layer_syndrome_weight::Vector{Int} = vec(sum(mod.(parity_check_matrix * residuals, 2), dims = 1))
-        min_syndrome_weights[i] = minimum(layer_syndrome_weight)
+    # ONE LAYER AT A TIME, ALL SAMPLES AT ONCE. The per-sample version this
+    # replaced did a (n_checks x n_bits) * (n_bits x n_layers) integer matmul
+    # INSIDE a loop over samples: 2.35e11 scalar Int64 MACs and 62 GB of
+    # allocation churn for a 10^6-sample run, single-threaded, which dominated
+    # the whole decode (the GPU forward pass is ~30 s by comparison). Here the
+    # same arithmetic is n_layers BLAS calls per chunk into reused Float32
+    # buffers, with no allocation in the loop.
+    #
+    # Float32 is exact here and the result is identical, not approximate: H and
+    # the residual are 0/1, so every dot product is an integer no larger than
+    # n_bits, far inside Float32's exact-integer range, and `mod(x, 2)` of an
+    # exactly represented small integer is exact.
+    parity_check_float::Matrix{Float32} = Float32.(parity_check_matrix)
+    logicals_float::Matrix{Float32} = Float32.(logicals)
+    residual_layer::Matrix{Float32} = zeros(Float32, n_bits, n_samples)
+    check_values::Matrix{Float32} = zeros(Float32, n_checks, n_samples)
 
-        committed_layer::Union{Int, Nothing} = findfirst(==(0), layer_syndrome_weight)
-        if committed_layer === nothing
-            continue  # convergence failure: no layer produced a syndrome-valid correction
+    for layer in 1:n_layers
+        @inbounds for sample in 1:n_samples
+            for bit in 1:n_bits
+                residual_layer[bit, sample] =
+                    Float32(errors[bit, sample] ⊻ proposed_recoveries[bit, sample, layer])
+            end
         end
+        mul!(check_values, parity_check_float, residual_layer)
+        @inbounds for sample in 1:n_samples
+            layer_syndrome_weight::Int = 0
+            for check in 1:n_checks
+                layer_syndrome_weight += Int(mod(check_values[check, sample], 2.0f0))
+            end
+            if layer_syndrome_weight < min_syndrome_weights[sample]
+                min_syndrome_weights[sample] = layer_syndrome_weight
+            end
+            # FIRST clearing layer only, exactly as `findfirst(==(0), ...)` did.
+            if layer_syndrome_weight == 0 && committed_layers[sample] == 0
+                committed_layers[sample] = layer
+                syndrome_cleared[sample] = true
+            end
+        end
+    end
 
-        syndrome_cleared[i] = true
-        committed_layers[i] = committed_layer
+    # Score ONLY the committed layer: success iff it is also logically trivial.
+    # Gathered once for every sample, then a single matmul against the logicals.
+    committed_residual::Matrix{Float32} = zeros(Float32, n_bits, n_samples)
+    @inbounds for sample in 1:n_samples
+        committed_layer::Int = committed_layers[sample]
+        if committed_layer > 0
+            for bit in 1:n_bits
+                committed_residual[bit, sample] =
+                    Float32(errors[bit, sample] ⊻ proposed_recoveries[bit, sample, committed_layer])
+            end
+        end
+    end
+    logical_values::Matrix{Float32} = logicals_float * committed_residual
+    @inbounds for sample in 1:n_samples
+        if committed_layers[sample] > 0
+            logical_syndrome_weight::Int = 0
+            for logical_row in 1:n_logicals
+                logical_syndrome_weight += Int(mod(logical_values[logical_row, sample], 2.0f0))
+            end
+            is_correct[sample] = logical_syndrome_weight == 0
+        end
+    end
 
-        # Score ONLY the committed layer: success iff it is also logically trivial.
-        committed_residual = residuals[:, committed_layer]
-        logical_syndrome::Vector{Int} = mod.(logicals * committed_residual, 2)
-        if all(logical_syndrome .== 0)
-            is_correct[i] = true
+    # A run with no layers leaves the running minimum at its sentinel; report 0
+    # rather than typemax so the column stays meaningful.
+    @inbounds for sample in 1:n_samples
+        if min_syndrome_weights[sample] == typemax(Int)
+            min_syndrome_weights[sample] = 0
         end
     end
 
@@ -277,6 +335,8 @@ function predict_and_check_neuralbp(
     print_info("Using $(device_name) for predictions with batch size = $(batch_size). Total samples = $(n_samples).")
 
     is_correct = falses(n_samples)
+    # Reused across chunks; see `reusable_gpu_state`.
+    gpu_state::Union{GPUState, Nothing} = nothing
     for start in 1:batch_size:n_samples
         stop = min(start + batch_size - 1, n_samples)
 
@@ -288,21 +348,51 @@ function predict_and_check_neuralbp(
         # Predict the recoveries for the chunk of syndromes using the trained NeuralBP model.
         # `gpu_active()` is false when USE_GPU=0 at runtime OR no GPU backend is
         # compiled in for this platform; the CPU forward pass is then used.
-        chunk_posterior_llrs = nothing
+        chunk_recoveries = nothing
         if use_gpu_forward
-            chunk_posterior_llrs = forward_pass_gpu(bpnn, chunk_llrs, chunk_syndromes)
+            gpu_state = reusable_gpu_state(gpu_state, bpnn, chunk_syndromes)
+            chunk_recoveries = predict_recoveries_gpu(gpu_state, chunk_llrs)
         else
             chunk_posterior_llrs = forward_pass_with_weights(bpnn, chunk_llrs, chunk_syndromes)
+            chunk_recoveries = Array(chunk_posterior_llrs .< 0) # (n_bits, batch, n_layers)
         end
-
-        # Hard threshold the posterior LLRs to get proposed recoveries, and check if they correctly fix the errors.
-        chunk_recoveries  = Array(chunk_posterior_llrs .< 0) # shape (n_bits, batch_size, n_layers)
 
         # Commit to the first syndrome-clearing layer, then score its logical coset.
         @views is_correct[start:stop] .= check_bp_solutions(parity_check_matrix, logicals, chunk_errors, chunk_recoveries)
     end
+    if gpu_state !== nothing
+        release_gpu_state!(gpu_state)
+    end
 
     return is_correct
+end
+
+"""
+    reusable_gpu_state(gpu_state, bpnn, chunk_syndromes) -> GPUState
+
+The `GPUState` to use for this chunk: the one passed in, repointed at the
+chunk's syndromes, or a freshly built one when there is none yet or the chunk
+size has changed (which happens for the final, short chunk).
+
+Everything in the state except the syndromes is a function of the model, so
+rebuilding it per chunk re-derives and re-uploads the per-layer weight tensor
+every time — ~16 MB and a CPU-side scatter per chunk, 123 times in a 10^6-sample
+run. The old state is released before a rebuild, so nothing accumulates.
+"""
+function reusable_gpu_state(
+    gpu_state::Union{GPUState, Nothing},
+    bpnn::NeuralBP,
+    chunk_syndromes::BitMatrix
+)::GPUState
+    if gpu_state !== nothing && gpu_state.n_samples == size(chunk_syndromes, 2)
+        update_gpu_state_syndromes!(gpu_state, bpnn.base, chunk_syndromes)
+        return gpu_state
+    end
+    if gpu_state !== nothing
+        release_gpu_state!(gpu_state)
+    end
+    rebuilt_state::GPUState = build_gpu_state(bpnn, chunk_syndromes)
+    return rebuilt_state
 end
 
 """
@@ -345,24 +435,41 @@ function predict_and_diagnose_neuralbp(
     end
     print_info("Using $(device_name) for predictions with batch size = $(batch_size). Total samples = $(n_samples). [diagnostic mode]")
 
+    n_chunks::Int = cld(n_samples, batch_size)
+    # Report every ~10% of the chunks. Without this a run that dies mid-way is
+    # indistinguishable from one that dies on the first chunk — which is exactly
+    # the difference between "the batch is too big" and "something accumulates
+    # across chunks", and the enriched check node has been mistaken for both.
+    chunk_report_interval::Int = max(1, cld(n_chunks, 10))
     chunk_diagnoses::Vector{NamedTuple} = NamedTuple[]
+    chunk_index::Int = 0
+    # Reused across chunks; see `reusable_gpu_state`.
+    gpu_state::Union{GPUState, Nothing} = nothing
     for start in 1:batch_size:n_samples
         stop::Int = min(start + batch_size - 1, n_samples)
+        chunk_index += 1
+        if chunk_index % chunk_report_interval == 0 || chunk_index == 1
+            print_info("  chunk $(chunk_index)/$(n_chunks) (samples $(start)-$(stop))")
+        end
 
         chunk_syndromes = syndromes[:, start:stop]
         chunk_errors = errors[:, start:stop]
         chunk_llrs = repeat(bpnn.base.initial_llrs, 1, stop - start + 1)
 
-        chunk_posterior_llrs = nothing
+        chunk_recoveries = nothing
         if use_gpu_forward
-            chunk_posterior_llrs = forward_pass_gpu(bpnn, chunk_llrs, chunk_syndromes)
+            gpu_state = reusable_gpu_state(gpu_state, bpnn, chunk_syndromes)
+            chunk_recoveries = predict_recoveries_gpu(gpu_state, chunk_llrs)
         else
             chunk_posterior_llrs = forward_pass_with_weights(bpnn, chunk_llrs, chunk_syndromes)
+            chunk_recoveries = Array(chunk_posterior_llrs .< 0)
         end
-        chunk_recoveries::Array{Bool, 3} = Array(chunk_posterior_llrs .< 0)
 
         push!(chunk_diagnoses,
               count_syndrome_satisfactions(parity_check_matrix, logicals, chunk_errors, chunk_recoveries))
+    end
+    if gpu_state !== nothing
+        release_gpu_state!(gpu_state)
     end
 
     whole_run_diagnosis::NamedTuple = concatenate_diagnoses(chunk_diagnoses)
@@ -392,6 +499,11 @@ and re-triggering precompilation. Resolution order, first hit wins:
   4. `ENV["SLURM_MEM_PER_GPU"]`        — set automatically by `--mem-per-gpu`
   5. `default_batch_size`              — `FALLBACK_PREDICTION_BATCH_SIZE`, 16384
 
+Steps 2-4 size against a real memory budget and account for the enriched check
+node through `extra_bytes_per_sample`. Step 5 has no budget to work from, so for
+the enriched check node it is capped by `cap_batch_size_for_enriched_kernel`.
+Step 1 is neither sized nor capped — an explicit request is used verbatim.
+
 Step 4 is the useful one on the cluster: SLURM exports `--mem-per-gpu=16G` to the
 job as `SLURM_MEM_PER_GPU=16384`, so the batch size tracks the allocation with no
 configuration at all. The geometry (`n_bits`, `n_layers`, `nb_neurons`) is read
@@ -406,6 +518,7 @@ function resolve_prediction_batch_size(
     gpu_memory::AbstractString = "",
     default_batch_size::Int = FALLBACK_PREDICTION_BATCH_SIZE,
 )::Int
+    # An explicit request is honoured as given: the caller has said what they want.
     if batch_size > 0
         return batch_size
     end
@@ -424,8 +537,20 @@ function resolve_prediction_batch_size(
         end
     end
 
+    # No budget was given anywhere, so the fallback applies — but the fallback
+    # was chosen for the standard check node and knows nothing about the
+    # enriched kernel's per-sample tensors. Cap it (a no-op for `tanh`).
     if isempty(memory_specification)
-        return default_batch_size
+        capped_default_batch_size::Int = cap_batch_size_for_enriched_kernel(
+            default_batch_size, bpnn.base.soft_check_tables
+        )
+        if capped_default_batch_size < default_batch_size
+            print_info("Prediction batch size $(capped_default_batch_size) (capped from " *
+                       "$(default_batch_size)): the enriched check node needs " *
+                       "$(enriched_kernel_bytes_per_sample(bpnn.base.soft_check_tables)) bytes " *
+                       "per sample. Set `prediction_batch_size` or `gpu_memory` to override.")
+        end
+        return capped_default_batch_size
     end
 
     # A malformed specification must not abort a run that is otherwise fine, so
@@ -445,6 +570,8 @@ function resolve_prediction_batch_size(
         n_bits     = bpnn.base.code_n_bits,
         n_layers   = bpnn.base.n_layers,
         nb_neurons = bpnn.base.nb_neurons_per_layer,
+        # Zero for the standard check node (empty tables).
+        extra_bytes_per_sample = enriched_kernel_bytes_per_sample(bpnn.base.soft_check_tables),
     )
     print_info("Prediction batch size $(resolved_batch_size) derived from $(memory_in_mb) MB " *
                "($(memory_specification), via $(specification_source)).")

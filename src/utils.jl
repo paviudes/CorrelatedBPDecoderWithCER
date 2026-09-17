@@ -189,97 +189,11 @@ end
 # Define the sigmoid function: σ(x) = 1 / (1 + exp(x))
 sigmoid(x::T) where T <: Number = 1.0f0 / (1.0f0 + exp(x))
 
-function binary_entropy(p::T) where T <: Number
-    """
-    Define the binary entropy function: H(p) = -p log(p) - (1-p) log(1-p).
-    """
-    return -p * log(p) - (1 - p) * log(1 - p)
-end
-
 # Numerically stable version of the softplus function: log(1 + exp(x)).
 # For x ≫ 0, naive log1p(exp(x)) overflows. We use the symmetry
 #     softplus(x) = max(x, 0) + log1p(exp(-|x|))
 # which is well-defined for any finite x in Float32.
 @inline softplus(x) = x > 0 ? x + log1p(exp(-x)) : log1p(exp(x))
-
-function binary_entropy_of_sigmoid(μ::Float32)::Float32
-    """
-    Numerically stable version of the binary entropy of σ(μ), using the
-    convention σ(μ) = 1/(1 + exp(μ)) (positive μ ⇒ low error probability).
-
-    Closed form (no log of saturated σ):
-        h(σ(μ)) = softplus(μ) - (1 - σ(μ)) * μ.
-
-    Derivation. With σ = 1/(1 + e^μ) we have:
-        log σ       = -log(1 + e^μ) = -softplus(μ),
-        1 - σ       = e^μ / (1 + e^μ),
-        log(1 - σ)  = μ - log(1 + e^μ) = μ - softplus(μ).
-
-    Substituting into h = -σ log σ - (1 - σ) log(1 - σ):
-
-        -σ log σ            =  softplus(μ) / (1 + e^μ),
-        -(1 - σ) log(1 - σ) = -(e^μ / (1 + e^μ)) * (μ - softplus(μ))
-                            = -e^μ μ / (1 + e^μ)
-                              + e^μ softplus(μ) / (1 + e^μ).
-
-    Adding the two and factoring softplus(μ) out of the first and third
-    pieces (whose coefficients sum to (1 + e^μ)/(1 + e^μ) = 1):
-
-        h(σ(μ)) = softplus(μ) - e^μ μ / (1 + e^μ)
-                = softplus(μ) - (1 - σ(μ)) * μ.
-
-    Limits: at μ = 0, h = log 2 (max); as |μ| → ∞, h → 0. No log(0)
-    anywhere, so no NaN even when σ(μ) saturates to 0 or 1 in Float32.
-    """
-    return softplus(μ) - (1f0 - sigmoid(μ)) * μ
-end
-
-# =============================================================================
-#              Alternative certainty penalties: the cusp family
-# =============================================================================
-# All three penalties below are symmetric in μ, maximal at μ = 0, and decay to 0
-# as |μ| → ∞, so all three "reward certainty". They differ ONLY in how much force
-# they exert on a nearly-undecided qubit:
-#
-#     penalty              value at 0    |d/dμ| at 0     |d/dμ| peaks at
-#     entropy (default)      log 2          0.0             |μ| ≈ 2.4
-#     exponential            1.0            1.0             |μ| = 0
-#     hinge                  1.0            1/width         everywhere < width
-#
-# The entropy's vanishing derivative at μ = 0 is not an accident of the formula:
-# any penalty symmetric under μ → -μ AND differentiable at 0 must have f'(0) = 0.
-# Getting force at μ = 0 therefore REQUIRES giving up differentiability there —
-# a cusp. Both alternatives below are cusped at 0, which is the whole point.
-#
-# A pole (e.g. tan(μ + π/2) = -cot μ) is NOT a usable way to get that force: it
-# is odd rather than symmetric, so it would push +μ and -μ in the same direction
-# and thereby impose a sign preference on qubits it knows nothing about; it is
-# unbounded, so a single near-zero LLR would swamp the batch loss; and it is
-# periodic, so it repeats its poles at every μ = kπ. Cusped-but-bounded is the
-# shape that delivers the intent without any of that.
-
-function exponential_certainty_penalty(μ::Float32)::Float32
-    """
-    exp(-|μ|). Bounded in (0, 1], maximal at μ = 0, and its derivative
-    -sign(μ)·exp(-|μ|) attains its LARGEST magnitude exactly at μ = 0 — the
-    opposite of the entropy, whose force vanishes there.
-    """
-    penalty::Float32 = exp(-abs(μ))
-    return penalty
-end
-
-function hinge_certainty_penalty(μ::Float32, width::Float32)::Float32
-    """
-    max(0, 1 - |μ|/width): a linear ramp of CONSTANT force 1/width for
-    |μ| < width, and exactly zero (no force, no value) beyond it.
-
-    The flat exterior is the useful property — unlike the entropy and the
-    exponential, this penalty stops acting entirely once a qubit is decided, so
-    it cannot keep inflating already-saturated LLRs.
-    """
-    penalty::Float32 = max(0.0f0, 1.0f0 - abs(μ) / width)
-    return penalty
-end
 
 function xor_affine!(
     out::AbstractMatrix{Bool},
@@ -474,9 +388,13 @@ function compute_optimal_batch_size_for(
     fixed_overhead_mb::Int = -1,
     min_batch_size::Int = 256,
     max_batch_size::Int = 262144,
+    extra_bytes_per_sample::Int = 0,
 )::Int
     if memory_in_mb <= 0
         throw(ArgumentError("compute_optimal_batch_size_for: memory must be positive, got $(memory_in_mb) MB."))
+    end
+    if extra_bytes_per_sample < 0
+        throw(ArgumentError("compute_optimal_batch_size_for: extra_bytes_per_sample must be >= 0, got $(extra_bytes_per_sample)."))
     end
 
     # Batch-independent device allocations, in MB: the per-layer weight tensor
@@ -497,7 +415,10 @@ function compute_optimal_batch_size_for(
         return min_batch_size
     end
 
-    bytes_per_sample::Int = 4 * (n_bits * n_layers + n_bits + layer_temporaries * nb_neurons)
+    # `extra_bytes_per_sample` covers per-sample device memory the standard
+    # geometry does not know about — the enriched check node's configuration
+    # tensors, see `enriched_kernel_bytes_per_sample`.
+    bytes_per_sample::Int = 4 * (n_bits * n_layers + n_bits + layer_temporaries * nb_neurons) + extra_bytes_per_sample
     unrounded_batch_size::Int = floor(Int, usable_mb * 1024 * 1024 / bytes_per_sample)
     if unrounded_batch_size < min_batch_size
         return min_batch_size

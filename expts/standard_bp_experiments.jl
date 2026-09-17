@@ -70,9 +70,27 @@ if abspath(PROGRAM_FILE) == @__FILE__
         print_info("[use_CER=false] Ignoring correlated_weights/: preset p=0.1 priors, outputs tagged `_no_cer`.")
     end
 
-    # The CER data enters standard BP exactly where it enters the neural decoder:
-    # through the channel LLRs. The two-qubit couplings play no part here — they
-    # only ever acted through the training loss, which this script has none of.
+    # The CER data enters standard BP exactly where it enters the neural decoder.
+    # The single-qubit rates always enter through the channel LLRs. The
+    # two-qubit couplings enter ONLY with `check_node = "enriched"`, where they
+    # sit inside each check factor scaled by the fixed `coupling_scale_init`
+    # (alpha = 1 is the Bayesian rule, alpha = 0 is the standard rule). With the
+    # default "tanh" rule they play no part here at all.
+    check_node::String = String(get(hyperparameters, "check_node", "tanh"))
+    check_node_code(check_node)
+    coupling_scale::Float32 = Float32(get(hyperparameters, "coupling_scale_init", 1.0f0))
+    if check_node == "enriched"
+        print_info("[check_node=enriched] couplings enter the check factor with fixed α = $(coupling_scale).")
+        # The results filename carries no check-node tag (only `run_tag` may
+        # extend a name), so without one an enriched run would find the tanh
+        # run's results file and "skip the decode" with the wrong numbers.
+        if run_tag == ""
+            throw(ArgumentError(
+                "check_node = \"enriched\" needs a non-empty `run_tag` in the " *
+                "hyperparameters TOML (e.g. \"_cnenriched\"), or its results file " *
+                "collides with the standard rule's."))
+        end
+    end
     base::NeuralBPBase = load_base_BP_model(
         parity_check_matrix_file,
         logicals_file,
@@ -82,6 +100,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
         prior_llr_clip = prior_llr_clip,
         single_qubit_rescale = Float32(get(hyperparameters, "single_qubit_rescale", 0.0f0)),
         require_correlations = Bool(get(hyperparameters, "require_correlations", false)),
+        check_node = check_node,
     )
 
     results_directory::String = "$(prefix)/results"
@@ -108,6 +127,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     prediction_outcome::Union{BitVector, NamedTuple} = standard_bp_test_predictions(
         base,
         test_errors_file;
+        coupling_scale = coupling_scale,
         batch_size = Int(get(hyperparameters, "prediction_batch_size", 0)),
         gpu_memory = String(get(hyperparameters, "gpu_memory", "")),
         diagnose = diagnose
@@ -157,6 +177,8 @@ if abspath(PROGRAM_FILE) == @__FILE__
     )
 
     extra_result_columns::Vector{Pair{String, Any}} = Pair{String, Any}[]
+    push!(extra_result_columns, "check_node" => check_node)
+    push!(extra_result_columns, "coupling_scale" => coupling_scale)
     if diagnosis !== nothing
         push!(extra_result_columns, "num_syndrome_cleared" => diagnosis.n_syndrome_cleared)
         push!(extra_result_columns, "num_coset_failures" => diagnosis.n_coset_failures)

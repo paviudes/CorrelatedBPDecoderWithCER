@@ -45,146 +45,50 @@ codename         = "72q_BB_cycles_1_spread_comparison"
 # Dataset keys: train_<key>.txt, test_<key>.txt, correlated_weights_<key>.txt
 # KEEP EACH ARRAY ON ONE LINE: the reader below is grep | head -1, so a wrapped
 # array silently loses everything after the first line.
-datasets         = ["p_0.0005_sig_0.001_s_1", "p_0.0005_sig_0.001_s_2", "p_0.0005_sig_0.001_s_3", "p_0.0007_sig_0.001_s_1", "p_0.0007_sig_0.001_s_2", "p_0.0007_sig_0.001_s_3"]
-# These get only lambda = 0 and the no-CER baseline, not the full lambda grid.
+datasets         = ["p_0.0005_sig_0.001_s_1", "p_0.0005_sig_0.001_s_2", "p_0.0005_sig_0.001_s_3"]   # the three devices with classical alpha-scan results
+# These get only the CER tanh arm and the no-CER baseline, not the check-node arms.
 ref_datasets     = []
 
 base_hyperparams = "hyperparams_epochs_5_corrs.toml"
 n_hidden_layers  = 90
-# Seed variance dominated every recent sweep (sd up to 1000 at fixed config),
-# so the coflip test runs ALL cells at 5 seeds rather than replicating a subset.
-# 5 seeds on EVERY cell. Seed variance has been the binding error bar throughout,
-# and it is what exposed the L2 interaction: a single-seed read of the same
-# comparison said "L2 does nothing, 7/12, p = 0.77".
+# Network seeds, on EVERY cell. Seed variance has been the binding error bar
+# throughout (sd up to 1000 failures at a fixed configuration), so nothing is
+# read off fewer than five.
 seeds            = [1, 2, 3, 4, 5]
 
-# Replication grid: extra network seeds on a REDUCED set of cells, to get the
-# seed error bar on the result we would actually quote. Dataset-to-dataset spread
-# has dominated every effect so far and seed spread is still unmeasured.
-# Empty replication_seeds disables this grid entirely.
-# Here it carries the log_agreement lambda study AND its seed error bar: the
-# lam = 0.3 optimum found on 2026-09-01 is bracketed by two blow-up regions, so
-# the peak needs locating, and the variance result that made it interesting
-# rested on a single seed.
-replication_seeds   = []             # main grid carries the seeds this time
-replication_lambdas = ["0.0", "0.1", "0.3", "1.0"]   # plus the no-CER baseline
-replication_taus    = [0.5]
-replication_correlation_form = "log_agreement"
-replication_certainty_penalty = "entropy"
-
 # --- sweep axes -------------------------------------------------------------
-# correlation_weight (lambda), per ACTIVE pair. A bare number is CONSTANT across
-# epochs; a trailing letter anneals it, using the schedule machinery that already
-# exists in command_line.jl ("min,max,decay,direction"):
-#   3.0    constant 3.0                       tag _lam3p0
-#   3.0d   DOWN from 3.0 toward 0             tag _lam3p0d
-#   3.0u   UP from 0 toward 3.0               tag _lam3p0u
-# "down" tests the hypothesis that the couplings should guide early exploration
-# and then get out of L1's way -- which is also the natural fix for the constant
-# lambda = 3 blowups seen at p = 7e-4 with open gates. "up" is the opposite:
-# couplings refine only once the decoder is roughly right.
-# NOTE lambda is NOT comparable across correlation_forms: bilinear is a reward
-# (<= 0, bounded by |J| ~ 5.4) and log_agreement is a penalty (>= 0, reaching
-# ~|J|*log(1/eps) ~ 49 at eps = 1e-4). Roughly 10x the scale, so sweep low.
-# Both forms are penalties of the same scale (per-pair up to |J|*log(1/eps) ~ 49),
-# so one lambda range serves both. lam = 0 kills L3 and is emitted ONCE as the
-# priors-only control; the no-CER arm is the other control.
-lambdas          = ["0.0", "0.1", "0.3", "1.0"]
-lambda_anneal_decay = 0.3            # per-epoch factor for the annealed forms
-
-# L3 functional form.
-#   bilinear       -sum J sigma_i sigma_k. Gradient sigma(1-sigma)*sigma vanishes
-#                  at ALL FOUR corners, so it can reward a configuration but never
-#                  push a pair INTO it. This is the historical term.
-#   log_agreement  -sum |J| log[(1 + sgn(J) t_i t_k)/2] with t = tanh(mu/2).
-#                  (1 + t_i t_k)/2 IS P(pair agrees), so this is a weighted
-#                  negative log-likelihood of concordance. The log's 1/(1+t t)
-#                  divergence cancels the (1 - t^2) saturation, giving gradient
-#                  -> |J| at the two DISCORDANT corners and 0 at the concordant
-#                  ones. sgn(J) sits inside the argument because a raw -J log A
-#                  is unbounded BELOW wherever J < 0 (24% of the couplings).
-# BOTH new L3 forms, head to head. coflip is the term under test; log_agreement
-# is the control that says whether any gain is coflip-SPECIFIC or just "an L3
-# that finally has a stable L2 underneath it". Its previous 5-seed test did have
-# L2 on, so it is the one directly comparable prior.
-correlation_forms = ["coflip"]
-correlation_agreement_floor = 1e-4   # eps; mandatory, see command_line.jl
-include_nocer    = true              # flat p = 0.1 baseline arm
-
-# sparsity_importance (alpha3), now a swept LIST. sum sigma(mu) is the expected
-# error weight -- a minimum-weight prior, NOT a certainty measure (sigma is
-# monotone, so it scores a certainly-flipped qubit and a certainly-clean one at
-# opposite extremes). Positive alpha3 pushes mu UP, i.e. "assume clean".
-# Ordering constraint from loss.jl: alpha3 x typical error weight must stay <~ 1,
-# or a gated solved sample scores worse than a failing one.
-# This has been pinned to 0 in every sweep to date; this is its first test.
-sparsities       = [0.0]             # OFF for this test, per request
-
-# L2 weight, held at the annealed schedule's ceiling. The previous sweep ran this
-# at 0 to isolate L1 + L3; that cost the priors their p = 5e-4 advantage
-# (+0.8% vs -11.8% with L2 on), so L2 is back on for anything headline-bearing.
-# L2 BACK ON, at the constant 0.01 that produced the validated priors result
-# (22/30, -9.2%, p = 0.016 on the 246-run). Switching it off is what destabilised
-# every CER arm last time: priors-only went from mean 535 / sd 157 / max 999 with
-# L2 on, to mean 875 / sd 821 / max 4386 with it off, and 5 of 30 seeds trained
-# smoothly into a bad decoder. no-CER was unaffected either way. So L2 is not
-# decoration -- it is what makes CER training reliable across seeds, and every
-# L3 form has to be judged with it present.
-certainty_importance = 0.01
-
-# tau, in softly broken checks. This gates L2 AND L3, so it moves BOTH arms.
-#   0.5   current: aux only where the syndrome is essentially already cleared
-#   4.0   opens on the near-miss shell: 61% of convergence failures stall at
-#         min_syndrome_weight = 3, one flip short, and are invisible at 0.5
-#   1e6   always open: aux applies to every sample. Layer SELECTION still sees
-#         base alone, so this is not the historical ungated path.
-syndrome_gates   = [0.5]             # tau, the indicator gate on L3 + sparsity; 0.5 is the incumbent
-
-# L3's gate SHAPE. "indicator" is 1[|s| < tau]. "smooth:<rate>" is exp(-rate*|s|),
-# detached from the gradient, so a sample one softly-broken check from solved
-# keeps weight exp(-rate) instead of 0 -- L3 acts on the near-miss shell with
-# reduced authority rather than not at all. L2 keeps the indicator on tau_2.
-#   rate 0.5: |s|=0.5 -> 0.78, 1 -> 0.61, 2 -> 0.37, 4 -> 0.14
-syndrome_gate_modes = ["indicator", "smooth:0.5"]
-
-# tau_2: L2's OWN syndrome gate, decoupled from tau. "inherit" reproduces the
-# historical shared-gate behaviour exactly.
-#   inherit  L2 uses tau. A narrow hinge is then structurally dead: one qubit at
-#            sigma = 0.5 drives |s| to ~2.1 against tau = 0.5, so the samples L2
-#            wants are exactly the ones the gate drops. Measured on 2026-09-01:
-#            0.000 gated contribution over 200000 layer-samples, and the two
-#            hinge widths produced bit-identical weights.
-#   1e6      L2 acts on every sample while L3 stays confined to solved ones.
-#            The only setting under which a narrow hinge is testable at all.
-certainty_gates  = ["inherit"]       # irrelevant with L2 off
-certainty_gate   = 2.2               # c, LLR units (2.2 <=> sigma > 0.9 or < 0.1)
-
-# Certainty penalty f in the L2 term. All are symmetric and peak at mu = 0; they
-# differ ONLY in the force they exert on an undecided qubit:
-#   entropy      h(sigma(mu)).  dh/dmu is EXACTLY 0 at mu = 0 by symmetry; its
-#                force peaks at |mu| ~ 2.4. This is what every run so far used.
-#   exponential  exp(-|mu|).    Cusped at 0, so force is LARGEST at mu = 0.
-#   hinge        max(0, 1-|mu|/w). Constant force 1/w inside w, none outside, so
-#                it repairs aliases without inflating already-decided LLRs.
-# SETTLED 2026-08-31 (162-point sweep): the cusped penalties do not work. Both
-# were correctly signed -- positive, maximal at mu = 0, non-increasing in |mu| --
-# so minimising them does drive |mu| up. They fail on FORCE, not direction:
-# instability rose monotonically with |df/dmu| at mu = 0 (entropy 0.00 -> 1/36
-# blown-up runs; hinge 0.45 -> 2/36; exponential 1.00 -> 7/36), and the blowups
-# concentrated in the lam0 arm where the coupling weight is exactly zero, so L2
-# alone caused them. The CER priors effect survived ONLY under entropy
-# (14/18, p = 0.031; both others exactly 9/18 = chance).
-# Keep this axis at entropy alone unless testing a new penalty deliberately.
-# "hinge:<w>" sets certainty_hinge_width for that arm. Support, not peak force,
-# is what decides who a cusped penalty touches: the hinge is EXACTLY zero beyond
-# w. w = 2.2 (tested, 2/36 blowups, priors effect destroyed) covers the whole
-# lower edge of the decided population. w = 0.3 has the highest force at zero of
-# anything tried (3.3) on the SMALLEST footprint -- inert on 99.99% of qubits --
-# so it can repair a qubit parked at mu ~ 0 on L1's flat manifold without
-# fighting L1 for the qubits it is still legitimately deciding.
-certainty_penalties = ["entropy"]    # inert with L2 off; untagged
-certainty_hinge_width = 2.2          # w, only used by the hinge penalty
+# The loss is the base loss alone (softmin over layers of the residue against
+# [H; L]; see src/loss.jl), so the only arms are the prior and the check node:
+#
+#   no-CER    flat p = 0.1 priors, standard check node        (the baseline)
+#   CER       CER single-qubit priors, check node per `check_node_arms`
+#
+# The auxiliary loss terms and their axes (lambda, sparsity, tau, gate modes,
+# certainty penalties, correlation forms) were removed on 2026-09-16; the L3
+# programme they served never produced a coupling effect through the loss,
+# while the same couplings inside the check node's forward pass cut the
+# classical failure rate in half with nothing trained.
+include_nocer    = true              # emit the no-CER baseline arm
 single_qubit_rescale = 0.1
+
+# --- check node: the FORWARD-PASS rule --------------------------------------
+# "tanh" is the standard check-to-variable rule (untagged; every historical
+# filename stays valid). "enriched:<alpha>:<fixed|learn>" puts the CER couplings
+# inside each check factor (src/soft_constraints.jl) with alpha as the scale on
+# J: "fixed" holds it there, "learn" trains it from that start alongside the
+# message weights. Tag _cnenr<alpha>F / _cnenr<alpha>L.
+#
+# CLASSICAL RESULT (2026-09-16, standard BP, no training, p = 5e-4, 3 devices):
+# alpha = 1 is 10x WORSE than tanh (convergence failures on w2/w3 errors: the
+# priors are softened 17x by single_qubit_rescale but J is not, so pairs cost
+# barely more than singles). alpha = 0.42 = LLR_rescaled / LLR_raw, the
+# temperature-consistent value, is 50% BETTER than tanh (1980 -> 989 failures,
+# paired McNemar z = 21, 1582 recovered vs 591 regressed). The optimum sits at
+# that value; 0.6 is already worse. The question for THIS sweep is whether
+# trained weights add to the classical gain, and whether a learned alpha moves
+# off 0.42. Enriched arms are emitted for CER arms only (the no-CER baseline has
+# no couplings to enrich; NeuralBPBase refuses).
+check_node_arms  = ["tanh", "enriched:0.42:fixed", "enriched:0.42:learn"]
 
 # --- cluster ----------------------------------------------------------------
 # ACTIVE: NARVAL. Two profiles are kept here; switching is the six values marked
@@ -217,7 +121,7 @@ heap_size_hint   = "4G"
 # K tasks cut the wall time by ~K without any task needing a bigger node. Slurm
 # schedules small allocations sooner, so more/smaller tasks generally start
 # earlier than one large one.
-#   240 points / 5 tasks = 48 per task = one 54-core wave = ~45 min.
+#   60 points / 5 tasks = 12 per task, well inside one 54-core wave.
 train_array_tasks = 5
 # --mem-per-cpu is POOLED (mem_per_cpu x cpus_per_task). 54 x 6G = 324G, so this
 # lands on Narval's 498G nodes rather than the 249G ones -- which is what the
@@ -232,7 +136,7 @@ train_wall_time  = "4:00:00"
 # on it: a 1-GPU request schedules far sooner than a whole 4-GPU node, and the
 # no-sharing rule (see below) is satisfied trivially rather than by arithmetic.
 # Scale throughput with test_array_tasks, NOT with processes per card.
-#   240 points / 8 tasks = 30 per task x 3.7 min = ~110 min.
+#   60 points / 8 tasks = 8 per task x ~4 min = ~30 min.
 #
 # NEVER put two processes on one unpartitioned card: the real footprint is ~1.5x
 # the nominal GPU_MEMORY, so two on a 40 GB a100 overcommit and die stochastically
@@ -291,19 +195,13 @@ list() { get "$1" | tr -d '[]"' | tr ',' ' '; }
 WORKDIR=$(get workdir);              CODENAME=$(get codename)
 DATASETS=$(list datasets);           REF_DATASETS=$(list ref_datasets)
 BASE_HP=$(get base_hyperparams);     NLAYERS=$(get n_hidden_layers)
-SEEDS=$(list seeds);                 LAMBDAS=$(list lambdas)
-LAMBDA_DECAY=$(get lambda_anneal_decay)
-REP_SEEDS=$(list replication_seeds); REP_LAMBDAS=$(list replication_lambdas)
-REP_TAUS=$(list replication_taus)
-REP_FORM=$(get replication_correlation_form); REP_CP=$(get replication_certainty_penalty)
-INCLUDE_NOCER=$(get include_nocer);  SPARSITIES=$(list sparsities)
-GATE_TAUS=$(list syndrome_gates);    CERTAINTY=$(get certainty_gate)
-CERT_GATES=$(list certainty_gates)
-GATE_MODES=$(list syndrome_gate_modes)
+SEEDS=$(list seeds)
+INCLUDE_NOCER=$(get include_nocer)
 RESCALE=$(get single_qubit_rescale)
-CORR_FORMS=$(list correlation_forms); AGREE_FLOOR=$(get correlation_agreement_floor)
-CERT_IMPORTANCE=$(get certainty_importance)
-CERT_PENALTIES=$(list certainty_penalties); HINGE_W=$(get certainty_hinge_width)
+CHECK_NODE_ARMS=$(list check_node_arms)
+if [ -z "$CHECK_NODE_ARMS" ]; then
+    CHECK_NODE_ARMS="tanh"
+fi
 ACCOUNT_CPU=$(get account_cpu);      ACCOUNT_GPU=$(get account_gpu)
 EMAIL=$(get email);                  JULIA_MODULE=$(get julia_module)
 CUDA_MODULE=$(get cuda_module);      HEAP=$(get heap_size_hint)
@@ -424,76 +322,54 @@ SLURM_TEST="$CLUSTER_DIR/hp_sweep_test_${TS}.sh"
 tag_of() { echo "$1" | tr '.' 'p' | tr -d '-'; }
 
 # ------------------------------------------------------------ emit points ---
-emit_point() {   # <key> <seed> <use_cer> <lambda|""> <tau> <cert_penalty[:w]> <corr_form> <sparsity> <tau2> <gate_mode[:rate]>
-    local key="$1" seed="$2" use_cer="$3" lambda="$4" tau="$5"
-    local lam_tag="" arm="cer" require="true"
-    # A lambda spec is <value>[d|u]: bare = constant, d = anneal down from
-    # <value> to 0, u = anneal up from 0 to <value>. Build the four-field
-    # "min,max,decay,direction" string command_line.jl expects.
-    local lam_value="$lambda"
-    local lam_schedule=""
-    case "$lambda" in
-        *d) lam_value="${lambda%d}"; lam_schedule="0.0,${lam_value},${LAMBDA_DECAY},down" ;;
-        *u) lam_value="${lambda%u}"; lam_schedule="0.0,${lam_value},${LAMBDA_DECAY},up" ;;
-        "") lam_schedule="" ;;
-        *)  lam_schedule="${lambda},${lambda},0.7,up" ;;
-    esac
-    if [ -n "$lambda" ]; then lam_tag="_lam$(tag_of "$lambda")"; fi
-    if [ "$use_cer" = "false" ]; then arm="nocer"; require="false"; lam_tag=""; fi
-    # tau is in the tag because it is a swept axis now: without it the three tau
-    # points would write the same weights and results files over each other.
-    local tau_tag="_tau$(tag_of "$tau")"
-    # The certainty penalty changes L2, which BOTH arms carry, so it must be in
-    # the tag or the three penalties overwrite each other's weights and results.
-    # "entropy" stays untagged so the historical filenames remain valid.
-    # "hinge:0.3" -> penalty "hinge", width 0.3, tag "_cphinge0p3". The width MUST
-    # be in the tag or two widths overwrite each other's weights and results.
-    local cert_spec="${6:-entropy}"
-    local cert_penalty="${cert_spec%%:*}"
-    local cert_width="$HINGE_W"
-    if [ "$cert_spec" != "$cert_penalty" ]; then
-        cert_width="${cert_spec#*:}"
+emit_point() {   # <key> <seed> <use_cer> <check_node_spec>
+    local key="$1" seed="$2" use_cer="$3" check_node_spec="${4:-tanh}"
+    local arm="cer" require="true"
+    if [ "$use_cer" = "false" ]; then
+        arm="nocer"
+        require="false"
     fi
-    local sparsity_value="${8:-0.0}"
-    # tau_2. "inherit" writes -1.0, which the loss reads as "use tau", and leaves
-    # the filename untagged so every historical name stays valid.
-    # L3 gate shape. "smooth:0.5" -> mode smooth, rate 0.5, tag "_sg0p5". Only
-    # CER arms with lambda > 0 carry L3, so the tag is dropped elsewhere and the
-    # controls stay shared and untagged.
-    local gate_mode_spec="${10:-indicator}"
-    local gate_mode="${gate_mode_spec%%:*}"
-    local gate_rate="0.5"
-    local gate_mode_tag=""
-    if [ "$gate_mode_spec" != "$gate_mode" ]; then
-        gate_rate="${gate_mode_spec#*:}"
-    fi
-    if [ "$gate_mode" != "indicator" ] && [ "$use_cer" != "false" ] && [ -n "$lambda" ] && [ "$lambda" != "0.0" ]; then
-        gate_mode_tag="_sg$(tag_of "$gate_rate")"
-    fi
-    local certainty_gate_spec="${9:-inherit}"
-    local certainty_gate_value="-1.0"
-    local certainty_gate_tag=""
-    if [ "$certainty_gate_spec" != "inherit" ]; then
-        certainty_gate_value="$certainty_gate_spec"
-        certainty_gate_tag="_ct$(tag_of "$certainty_gate_spec")"
-    fi
-    # The L3 form changes only the CER arms -- with use_CER = false the term is
-    # multiplied by nothing -- so the baseline is deliberately left untagged and
-    # shared between forms rather than trained twice identically.
-    local corr_form="${7:-bilinear}"
-    local corr_tag=""
-    if [ "$corr_form" != "bilinear" ] && [ "$use_cer" != "false" ]; then
-        corr_tag="_cf${corr_form}"
-    fi
-    local cert_tag=""
-    if [ "$cert_penalty" != "entropy" ]; then
-        cert_tag="_cp${cert_penalty}$(tag_of "$cert_width")"
+    # Check node. "tanh" is untagged. "enriched:<alpha>:<fixed|learn>" ->
+    # check_node enriched, coupling_scale_init alpha, learnable per the third
+    # field, tag _cnenr<alpha>F or _cnenr<alpha>L. The alpha AND the F/L must be
+    # in the tag: two alphas, or fixed vs learned, would otherwise share one
+    # weights file and one results file.
+    local check_node="${check_node_spec%%:*}"
+    local coupling_scale_init="1.0"
+    local coupling_scale_learnable="false"
+    local check_node_tag=""
+    if [ "$check_node" = "enriched" ]; then
+        if [ "$use_cer" = "false" ]; then
+            echo "emit_point: an enriched check node needs couplings; refusing to emit it on the no-CER arm." >&2
+            exit 1
+        fi
+        local check_node_rest="${check_node_spec#*:}"
+        coupling_scale_init="${check_node_rest%%:*}"
+        local learn_spec="${check_node_rest#*:}"
+        if [ "$learn_spec" = "learn" ]; then
+            coupling_scale_learnable="true"
+            check_node_tag="_cnenr$(tag_of "$coupling_scale_init")L"
+        elif [ "$learn_spec" = "fixed" ]; then
+            check_node_tag="_cnenr$(tag_of "$coupling_scale_init")F"
+        else
+            echo "emit_point: check node spec '$check_node_spec' must end in :fixed or :learn." >&2
+            exit 1
+        fi
+    elif [ "$check_node" != "tanh" ]; then
+        echo "emit_point: unknown check node '$check_node' (tanh or enriched:<alpha>:<fixed|learn>)." >&2
+        exit 1
     fi
 
-    local run_tag="_hp${arm}_sp$(tag_of "$sparsity_value")${lam_tag}${tau_tag}${gate_mode_tag}${certainty_gate_tag}${cert_tag}${corr_tag}"
-    local hp="hyperparams_hp_${arm}_sp$(tag_of "$sparsity_value")${lam_tag}${tau_tag}${gate_mode_tag}${certainty_gate_tag}${cert_tag}${corr_tag}_$(tag_of "$key")_seed${seed}.toml"
+    # The run tag is the arm plus the check node. It is also the start of the
+    # generated TOML's name, so one file per point.
+    local run_tag="_hp${arm}${check_node_tag}"
+    local hp="hyperparams_hp_${arm}${check_node_tag}_$(tag_of "$key")_seed${seed}.toml"
 
-    grep -vE '^[[:space:]]*(sparsity_importance|retrain|run_tag|use_CER|seed|single_qubit_rescale|syndrome_gate_threshold|correlation_certainty_threshold|require_correlations|correlation_weight|certainty_penalty|certainty_hinge_width|certainty_syndrome_gate_threshold|syndrome_gate_mode|syndrome_gate_rate|correlation_form|correlation_agreement_floor|llr_certainty_importance)[[:space:]]*=' \
+    # Start from the base TOML minus every key this generator sets itself, so a
+    # stale value in the base can never override a swept one. The removed loss
+    # terms' keys are stripped too: they are ignored by the code now, but a
+    # generated file should not carry dead settings.
+    grep -vE '^[[:space:]]*(retrain|run_tag|use_CER|seed|single_qubit_rescale|require_correlations|check_node|coupling_scale_init|coupling_scale_learnable|sparsity_importance|syndrome_gate_threshold|correlation_certainty_threshold|correlation_weight|correlation_importance|certainty_penalty|certainty_hinge_width|certainty_syndrome_gate_threshold|syndrome_gate_mode|syndrome_gate_rate|correlation_form|correlation_agreement_floor|llr_certainty_importance)[[:space:]]*=' \
         "$MODELS_DIR/$BASE_HP" > "$MODELS_DIR/$hp"
     {
         echo ""
@@ -502,22 +378,11 @@ emit_point() {   # <key> <seed> <use_cer> <lambda|""> <tau> <cert_penalty[:w]> <
         echo "run_tag = \"${run_tag}\""
         echo "use_CER = $use_cer"
         echo "seed = $seed"
-        echo "sparsity_importance = \"${sparsity_value},${sparsity_value},0.8,up\""
-        echo "syndrome_gate_threshold = ${tau}"
-        echo "certainty_syndrome_gate_threshold = ${certainty_gate_value}"
-        echo "syndrome_gate_mode = \"${gate_mode}\""
-        echo "syndrome_gate_rate = ${gate_rate}"
-        echo "correlation_certainty_threshold = ${CERTAINTY}"
-        echo "certainty_penalty = \"${cert_penalty}\""
-        echo "certainty_hinge_width = ${cert_width}"
-        echo "correlation_form = \"${corr_form}\""
-        echo "correlation_agreement_floor = ${AGREE_FLOOR}"
-        echo "llr_certainty_importance = \"${CERT_IMPORTANCE},${CERT_IMPORTANCE},0.7,up\""
         echo "single_qubit_rescale = ${RESCALE}"
         echo "require_correlations = ${require}"
-        if [ -n "$lam_schedule" ]; then
-            echo "correlation_weight = \"${lam_schedule}\""
-        fi
+        echo "check_node = \"${check_node}\""
+        echo "coupling_scale_init = ${coupling_scale_init}"
+        echo "coupling_scale_learnable = ${coupling_scale_learnable}"
     } >> "$MODELS_DIR/$hp"
 
     local common="julia --project=\"./../\" --heap-size-hint=$HEAP neural_bp_experiments.jl \
@@ -527,66 +392,25 @@ emit_point() {   # <key> <seed> <use_cer> <lambda|""> <tau> <cert_penalty[:w]> <
     echo "$common --diagnose true --train train_${key}.txt --test test_${key}.txt" >> "$TEST_CMDS"
 }
 
+# The check node is a forward-pass axis, so it crosses every CER cell; the
+# no-CER baseline has no couplings to enrich and is emitted once, with the
+# standard rule. `ref_datasets` get the CER tanh arm and the baseline only.
 for key in $DATASETS; do
     for seed in $SEEDS; do
-        for tau in $GATE_TAUS; do
-            for ct in $CERT_GATES; do
-                for sp in $SPARSITIES; do
-                    for cp in $CERT_PENALTIES; do
-                        for lam in $LAMBDAS; do
-                            if [ "$lam" = "0.0" ]; then
-                                emit_point "$key" "$seed" true "$lam" "$tau" "$cp" "bilinear" "$sp" "$ct" "indicator"
-                            else
-                                for cf in $CORR_FORMS; do
-                                    for gm in $GATE_MODES; do
-                                        emit_point "$key" "$seed" true "$lam" "$tau" "$cp" "$cf" "$sp" "$ct" "$gm"
-                                    done
-                                done
-                            fi
-                        done
-                        # tau, tau_2, the L2 form and alpha3 all act on the
-                        # baseline too, so it needs an arm for each combination.
-                        if [ "$INCLUDE_NOCER" = "true" ]; then
-                            emit_point "$key" "$seed" false "" "$tau" "$cp" "bilinear" "$sp" "$ct"
-                        fi
-                    done
-                done
-            done
+        for cn in $CHECK_NODE_ARMS; do
+            emit_point "$key" "$seed" true "$cn"
         done
+        if [ "$INCLUDE_NOCER" = "true" ]; then
+            emit_point "$key" "$seed" false "tanh"
+        fi
     done
 done
 for key in $REF_DATASETS; do
     for seed in $SEEDS; do
-        for tau in $GATE_TAUS; do
-            for sp in $SPARSITIES; do
-                for cp in $CERT_PENALTIES; do
-                    emit_point "$key" "$seed" true "0.0" "$tau" "$cp" "bilinear" "$sp"
-                    if [ "$INCLUDE_NOCER" = "true" ]; then
-                        emit_point "$key" "$seed" false "" "$tau" "$cp" "bilinear" "$sp"
-                    fi
-                done
-            done
-        done
-    done
-done
-# --- replication grid: extra seeds on a reduced set of cells ----------------
-# Runs only if replication_seeds is non-empty. Same emit_point, so these points
-# are indistinguishable from main-grid points except for their seed tag, and the
-# collector groups them by (label, seed) automatically.
-for rep_seed in $REP_SEEDS; do
-    for key in $DATASETS; do
-        for rep_tau in $REP_TAUS; do
-            for rep_lam in $REP_LAMBDAS; do
-                if [ "$rep_lam" = "0.0" ]; then
-                    emit_point "$key" "$rep_seed" true "$rep_lam" "$rep_tau" "$REP_CP" "bilinear" "0.0"
-                else
-                    emit_point "$key" "$rep_seed" true "$rep_lam" "$rep_tau" "$REP_CP" "$REP_FORM" "0.0"
-                fi
-            done
-            if [ "$INCLUDE_NOCER" = "true" ]; then
-                emit_point "$key" "$rep_seed" false "" "$rep_tau" "$REP_CP" "bilinear" "0.0"
-            fi
-        done
+        emit_point "$key" "$seed" true "tanh"
+        if [ "$INCLUDE_NOCER" = "true" ]; then
+            emit_point "$key" "$seed" false "tanh"
+        fi
     done
 done
 
@@ -868,9 +692,9 @@ chmod +x "$SLURM_TEST"
 echo
 echo "[hp_sweep] $N_POINTS point(s)"
 echo "  datasets  -> $DATASETS"
-echo "  ref       -> $REF_DATASETS   (lambda = 0 and no-CER only)"
-echo "  lambdas   -> $LAMBDAS   seeds -> $SEEDS"
-echo "  gates     -> tau = $GATE_TAUS;  certainty c = $CERTAINTY;  sparsity = $SPARSITIES"
+echo "  ref       -> $REF_DATASETS   (CER tanh and no-CER only)"
+echo "  seeds     -> $SEEDS"
+echo "  check node-> $CHECK_NODE_ARMS   (no-CER baseline: $INCLUDE_NOCER)"
 echo "  cluster   -> $CLUSTER_NAME"
 echo "  train     -> $ACCOUNT_CPU: array 0-$((TRAIN_ARRAY-1)) ($TRAIN_ARRAY x $TRAIN_CPUS cpu x $TRAIN_MEM = $(( TRAIN_TOTAL_MB / 1024 ))G/node), $TRAIN_WALL"
 echo "  test      -> $ACCOUNT_GPU: array 0-$((TEST_ARRAY-1)) ($TEST_ARRAY tasks x ${N_GPUS}x $GPU_TYPE (${VRAM_PER_GPU}G vram), $TEST_CPUS cpu),"
@@ -881,9 +705,10 @@ echo
 # The two jobs are SEPARATE submissions on DIFFERENT accounts: training is
 # CPU-only on $ACCOUNT_CPU, testing needs a GPU on $ACCOUNT_GPU. Nothing is
 # submitted automatically.
-# Must match emit_point's tag exactly, tau included, or the check reads a path
-# that was never written and reports a missing file instead of a weights spread.
-FIRST_MODEL="neuralbp_weights_nlayers_${NLAYERS}_epochs_$(grep -E '^[[:space:]]*n_epochs' "$MODELS_DIR/$BASE_HP" | head -1 | sed -E 's/[^0-9]*([0-9]+).*/\1/')_trained_using_train_$(echo $DATASETS | awk '{print $1}')_hpcer_sp$(tag_of "$(echo $SPARSITIES | awk '{print $1}')")_lam$(tag_of "$(echo $LAMBDAS | awk '{print $NF}')")_tau$(tag_of "$(echo $GATE_TAUS | awk '{print $1}')")_seed_$(echo $SEEDS | awk '{print $1}').json"
+# Must match emit_point's tag exactly, or the check reads a path that was never
+# written and reports a missing file instead of a weights spread. This is the
+# CER tanh arm of the first dataset and seed.
+FIRST_MODEL="neuralbp_weights_nlayers_${NLAYERS}_epochs_$(grep -E '^[[:space:]]*n_epochs' "$MODELS_DIR/$BASE_HP" | head -1 | sed -E 's/[^0-9]*([0-9]+).*/\1/')_trained_using_train_$(echo $DATASETS | awk '{print $1}')_hpcer_seed_$(echo $SEEDS | awk '{print $1}').json"
 echo "submit — TRAIN first (CPU, $ACCOUNT_CPU), then TEST (GPU, $ACCOUNT_GPU):"
 echo
 echo "  # 1. training"
@@ -918,8 +743,10 @@ if [ "$LOCAL" -eq 1 ]; then
           "$DATA/correlated_weights/correlated_weights_${SMOKE_KEY}.txt"
 
     SMOKE_HP="hyperparams_hp_smoke.toml"
-    grep -vE '^[[:space:]]*(sparsity_importance|retrain|run_tag|use_CER|seed|single_qubit_rescale|syndrome_gate_threshold|correlation_certainty_threshold|require_correlations|correlation_weight|certainty_penalty|certainty_hinge_width|certainty_syndrome_gate_threshold|syndrome_gate_mode|syndrome_gate_rate|correlation_form|correlation_agreement_floor|llr_certainty_importance|n_epochs|n_gradient_updates_per_epoch)[[:space:]]*=' \
+    grep -vE '^[[:space:]]*(retrain|run_tag|use_CER|seed|single_qubit_rescale|require_correlations|check_node|coupling_scale_init|coupling_scale_learnable|n_epochs|n_gradient_updates_per_epoch|sparsity_importance|syndrome_gate_threshold|correlation_certainty_threshold|correlation_weight|correlation_importance|certainty_penalty|certainty_hinge_width|certainty_syndrome_gate_threshold|syndrome_gate_mode|syndrome_gate_rate|correlation_form|correlation_agreement_floor|llr_certainty_importance)[[:space:]]*=' \
         "$MODELS_DIR/$BASE_HP" > "$MODELS_DIR/$SMOKE_HP"
+    # The smoke test exercises the enriched check node with a LEARNED alpha,
+    # which is the arm with the most new code on its path.
     {
         echo ""
         echo "# smoke test: 1 epoch, 20 updates — enough to exercise every code path."
@@ -929,18 +756,11 @@ if [ "$LOCAL" -eq 1 ]; then
         echo "seed = 1"
         echo "n_epochs = 1"
         echo "n_gradient_updates_per_epoch = 20"
-        SMOKE_SP=$(echo $SPARSITIES | awk '{print $1}')
-        echo "sparsity_importance = \"${SMOKE_SP},${SMOKE_SP},0.8,up\""
-        echo "syndrome_gate_threshold = ${GATE_TAU}"
-        echo "correlation_certainty_threshold = ${CERTAINTY}"
-        echo "certainty_penalty = \"$(set -- $CERT_PENALTIES; echo ${1:-entropy})\""
-        echo "certainty_hinge_width = ${HINGE_W}"
-        echo "correlation_form = \"${corr_form}\""
-        echo "correlation_agreement_floor = ${AGREE_FLOOR}"
-        echo "llr_certainty_importance = \"${CERT_IMPORTANCE},${CERT_IMPORTANCE},0.7,up\""
         echo "single_qubit_rescale = ${RESCALE}"
         echo "require_correlations = true"
-        echo "correlation_weight = \"3.0,3.0,0.7,up\""
+        echo "check_node = \"enriched\""
+        echo "coupling_scale_init = 0.42"
+        echo "coupling_scale_learnable = true"
     } >> "$MODELS_DIR/$SMOKE_HP"
 
     SMOKE_CMD="julia --project=\"./../\" neural_bp_experiments.jl --workdir $WORKDIR --codename $CODENAME \
@@ -948,7 +768,7 @@ if [ "$LOCAL" -eq 1 ]; then
 --quiet false --isdebug true --train train_${SMOKE_KEY}.txt --test test_${SMOKE_KEY}.txt"
 
     echo
-    echo "local smoke test — lambda = 3.0, both gates on, $SMOKE_N samples, 1 epoch:"
+    echo "local smoke test — enriched check node, learned alpha from 0.42, $SMOKE_N samples, 1 epoch:"
     echo "  cd $SCRIPT_DIR"
     echo "  rm -f $DATA/results/simulation_results_*_smoke_seed_1.csv"
     echo "  USE_GPU=0 $SMOKE_CMD"

@@ -7,9 +7,16 @@ function load_base_BP_model(
     prior_llr_clip::Float32=0f0,
     single_qubit_rescale::Float32=0f0,
     require_correlations::Bool=false,
+    check_node::String="tanh",
 )
     """
     Load the base BP model from the parity check matrix and logical operators files.
+
+    `check_node` selects the check-to-variable rule: "tanh" (the standard rule,
+    the default, reproducing every earlier run) or "enriched" (the CER
+    couplings inside each check factor, see soft_constraints.jl). "enriched"
+    requires two-qubit couplings and therefore `use_cer = true` and a CER file
+    with pairs; `NeuralBPBase` refuses otherwise.
     The parity check matrix file is a text file where each line corresponds to a row of the parity check matrix, and the entries are separated by spaces.
     The logical operators file is a text file where each line corresponds to a logical operator, and the entries are separated by spaces.
     The function will read these files, construct the parity check matrix and logical operators, and return a NeuralBPBase model.
@@ -119,7 +126,11 @@ function load_base_BP_model(
         n_hidden_layers;
         connectivity=connectivity_matrix,
         correlation_strengths=correlation_strengths,
+        check_node=check_node,
     )
+    if base.check_node_kind == CHECK_NODE_ENRICHED
+        print_info("Enriched check node: $(describe_soft_check_tables(base.soft_check_tables)).")
+    end
     return base
 end
 
@@ -136,12 +147,23 @@ function load_trained_neuralbp_model(weights_filename::String, bpnn::NachmaniNeu
     """
     # Load the weights from the file
     weights_data = load_trained_weights(weights_filename)
+    # Weights trained under one check-node rule are being run under another.
+    # Not an error — that is how "does the enriched rule help an already
+    # trained model?" is asked — but never silent.
+    recorded_check_node::String = String(get(weights_data, "check_node", "tanh"))
+    active_check_node::String = check_node_name(bpnn.base.check_node_kind)
+    if recorded_check_node != active_check_node
+        @warn "load_trained_neuralbp_model: $(weights_filename) was trained with " *
+              "check_node = \"$(recorded_check_node)\" but is being loaded into a " *
+              "model with check_node = \"$(active_check_node)\"."
+    end
     # Create a NachmaniNeuralBP model with the loaded weights
     loaded_bpnn = NachmaniNeuralBP(
         bpnn.base,
         weights_c2v_v2c=weights_data["weights_c2v_v2c"],
         weights_llrs=weights_data["weights_llrs"],
-        weights_c2v_readout=weights_data["weights_c2v_readout"]
+        weights_c2v_readout=weights_data["weights_c2v_readout"],
+        coupling_scale=weights_data["coupling_scale"]
     )
     return loaded_bpnn
 end
@@ -173,6 +195,11 @@ function save_trained_neuralbp_model(
     weights_data["weights_c2v_v2c"] = vec(bpnn.weights_c2v_v2c)
     weights_data["weights_llrs"] = vec(bpnn.weights_llrs)
     weights_data["weights_c2v_readout"] = vec(bpnn.weights_c2v_readout)
+    # α of the enriched check node, and which check-node rule the weights were
+    # trained under: weights trained with the enriched rule are only meaningful
+    # with it, so the file says so.
+    weights_data["coupling_scale"] = vec(bpnn.coupling_scale)
+    weights_data["check_node"] = check_node_name(bpnn.base.check_node_kind)
     if seed !== nothing
         weights_data["seed"] = seed
     end

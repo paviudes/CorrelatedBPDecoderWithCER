@@ -180,6 +180,7 @@ function compute_layer_with_weights!(
     weights_c2v_v2c,
     weights_llrs,
     weights_c2v_readout,
+    coupling_scale,
     # constant arguments
     base,
     layer,
@@ -189,6 +190,10 @@ function compute_layer_with_weights!(
     Compute one layer forward transition in the Neural BP model (one iteration of BP).
     Same as compute_layer!, but uses explicit weights instead of bpnn.
     This version is for the in-place version of the forward pass, with explicit weight arguments, so that it's friendly for Enzyme.jl.
+
+    `coupling_scale` is the length-1 vector holding α, the learnable scale on
+    the CER couplings inside the enriched check node. It is read only when
+    `base.check_node_kind == CHECK_NODE_ENRICHED`; the standard rule ignores it.
     """
     # ---- Slice the weights relevant for the current layer ----
     weights_c2v_v2c_layer, weights_llr_layer = get_layer_weights(weights_c2v_v2c, weights_llrs, base, layer, nsamples)
@@ -219,6 +224,18 @@ function compute_layer_with_weights!(
         syndromes_batch,
         base
     )
+    # Enriched check node: the standard rule above has filled every row; the
+    # kernel overwrites the rows of checks that carry CER couplings, using the
+    # RAW v2c messages of this layer (not their log-tanh activations).
+    if base.check_node_kind == CHECK_NODE_ENRICHED
+        apply_enriched_checks!(
+            messages_c2v,
+            messages_v2c,
+            syndromes_batch,
+            coupling_scale,
+            base.soft_check_tables
+        )
+    end
     # -------------------------
     # 3. Readout
     # -------------------------
@@ -237,12 +254,15 @@ function forward_pass_with_weights(
     weights_c2v_v2c,
     weights_llrs,
     weights_c2v_readout,
+    coupling_scale,
     base,
     initial_llrs_batch,
     syndromes_batch
 )
     """
     Forward pass with explicit weights as arguments, so that it's friendly for Enzyme.jl.
+    `coupling_scale` is the length-1 vector holding α for the enriched check
+    node (ignored by the standard rule); see `compute_layer_with_weights!`.
     """
     n_samples = size(initial_llrs_batch, 2)
     neurons_per_layer = base.nb_neurons_per_layer
@@ -282,6 +302,7 @@ function forward_pass_with_weights(
             weights_c2v_v2c,
             weights_llrs,
             weights_c2v_readout,
+            coupling_scale,
             base,
             layer,
             n_samples
@@ -297,12 +318,13 @@ function forward_pass_with_weights(
     syndromes_batch
 )
     """
-    Only for testing purposes: forward pass with explicit weights as arguments, so that it's friendly for Enzyme.jl.
+    Forward pass of a model, unpacking its weights into the explicit-weight version above.
     """
     return forward_pass_with_weights(
         bpnn.weights_c2v_v2c,
         bpnn.weights_llrs,
         bpnn.weights_c2v_readout,
+        bpnn.coupling_scale,
         bpnn.base,
         initial_llrs_batch,
         syndromes_batch

@@ -1,190 +1,74 @@
 function get_loss_value(
-    weights_c2v_v2c, # learanble weights for computing m^t_(v→c) from m^(t-1)_(c→v).
+    weights_c2v_v2c, # learnable weights for computing m^t_(v→c) from m^(t-1)_(c→v).
     weights_llrs, # learnable weights for m^t_(v→c) from the initial LLRs, and also for computing the posterior LLRs from m^t_(c→v).
     weights_c2v_readout, # learnable weights for computing the readout (posterior LLRs) from m^t_(c→v).
-    correlation_weight, # overall weight α₄ on the correlation term, annealed during training.
-    loss_layer_regularizer, # temperature for the smooth minimum approximation when combining losses from different layers, to be annealed during training.
-    llr_certainty_importance, # term for ensuring that the LLRs have converged.
-    sparsity_regularizer, # term for encouraging sparsity in the LLRs, to be annealed during training.
-    syndrome_gate_threshold, # τ for the per-sample detached syndrome gate on the aux terms.
-    certainty_syndrome_gate_threshold, # τ₂ for L2's own syndrome gate; < 0 inherits τ.
-    syndrome_gate_mode, # indicator or smooth gate on L3 (see `smooth_syndrome_gate_per_sample`).
-    syndrome_gate_rate, # rate for the smooth gate; ignored by the indicator.
-    correlation_certainty_threshold, # c for the per-pair detached certainty gate on the correlation term.
-    certainty_penalty_kind, # which certainty penalty f to use (see `certainty_per_sample`).
-    certainty_hinge_width, # w for the hinge certainty penalty; ignored by the others.
-    correlation_form, # which L3 to use (see `correlation_term_per_sample`).
-    correlation_agreement_floor, # ε for the log-agreement L3; ignored by the bilinear form.
-    warmup_loss_layers, # First number of layers to leave unconstrained in the Loss function.
-    base, # constant parameters of the model, including the parity-check matrix, connectivity, correlation strengths, etc.
-    llrs_batch, # batch of initial LLRs for the bits, to be used as input to the network
-    syndromes_batch, # batch of syndromes, to be used as input to the network
-    expected_recoveries # batch of expected recoveries (error patterns), to be used for computing the Loss function
+    coupling_scale, # learnable length-1 vector holding α, the scale on the CER couplings inside the enriched check node (inert for the standard rule).
+    loss_layer_temperature, # temperature of the softmin over layers, annealed during training.
+    warmup_loss_layers, # first number of layers to leave unconstrained in the loss.
+    base, # constant parameters of the model: the parity-check matrices, the check node tables, etc.
+    llrs_batch, # batch of initial LLRs for the bits, the input to the network
+    syndromes_batch, # batch of syndromes, the input to the network
+    expected_recoveries # batch of expected recoveries (error patterns), the target
 )::Float32
     """
-    Compute the value of the Loss function for a given batch of data and given values for the weights.
-    This version is friendly to Enzyme.jl, which requires a functional approach where the model parameters are passed explicitly to the function computing the loss, rather than being accessed as fields of a struct.
+    The training loss for one batch at the given weights: the forward pass,
+    then `compute_loss` — the softmin over scored layers of the base loss.
+
+    Written functionally, with every weight an explicit argument, because that
+    is what Enzyme.jl differentiates. The forward pass is always the CPU one:
+    Enzyme cannot differentiate through device-array allocation, and the GPU
+    path is inference-only.
     """
-    # Forward pass through the network to get the posterior LLRs.
-    # Always use the CPU path here: Enzyme cannot differentiate through Metal GPU
-    # array allocation (MtlArray constructors call task_local_storage via device(),
-    # which is non-differentiable). The GPU path is only valid for inference, not AD.
     syndromes_batch_matrix = Matrix{Bool}(syndromes_batch)
     posterior_llrs = forward_pass_with_weights(
         weights_c2v_v2c,
         weights_llrs,
         weights_c2v_readout,
+        coupling_scale,
         base,
         llrs_batch,
         syndromes_batch_matrix
     )
-
-    # Compute the total Loss including the correlation penalty
-    total_loss = compute_loss_including_correlations(
+    total_loss = compute_loss(
         posterior_llrs,
         expected_recoveries,
-        base.parity_check_matrix,
         base.parity_check_matrix_dual,
-        base.connectivity,
-        base.correlation_strengths,
-        base.is_correlated,
-        correlation_weight, # overall weight α₄ on the correlation term.
-        loss_layer_regularizer, # temperature for the smooth minimum approximation when combining losses from different layers, to be annealed during training.
-        llr_certainty_importance, # weight for ensuring that the LLRs are converged.
-        sparsity_regularizer, # term for encouraging sparsity in the LLRs, to be annealed during training.
-        syndrome_gate_threshold, # τ for the per-sample detached syndrome gate.
-        certainty_syndrome_gate_threshold, # τ₂ for L2's own syndrome gate.
-        syndrome_gate_mode, # indicator or smooth gate on L3.
-        syndrome_gate_rate, # rate for the smooth gate.
-        correlation_certainty_threshold, # c for the per-pair detached certainty gate.
-        certainty_penalty_kind, # which certainty penalty f to use.
-        certainty_hinge_width, # w for the hinge certainty penalty.
-        correlation_form, # which L3 to use.
-        correlation_agreement_floor, # ε for the log-agreement L3.
-        warmup_loss_layers # first number of layers that should be unconstrained since the optimizer doesn't know what the right beliefs are.
+        loss_layer_temperature,
+        warmup_loss_layers
     )
     return total_loss
 end
 
 function get_individual_loss_values(
-    weights_c2v_v2c::Vector{Float32}, # learanble weights for computing m^t_(v→c) from m^(t-1)_(c→v).
-    weights_llrs::Vector{Float32}, # learnable weights for m^t_(v→c) from the initial LLRs, and also for computing the posterior LLRs from m^t_(c→v).
-    weights_c2v_readout::Vector{Float32}, # learnable weights for computing the readout (posterior LLRs) from m^t_(c→v).
-    correlation_weight::Float32, # overall weight α₄ on the correlation term, annealed during training.
-    loss_layer_regularizer::Float32, # temperature for the smooth minimum approximation when combining losses from different layers, to be annealed during training.
-    llr_certainty_importance::Float32, # term for ensuring that the LLRs have converged.
-    sparsity_importance::Float32, # term for encouraging sparsity in the LLRs, to be annealed during training.
-    syndrome_gate_threshold::Float32, # τ for the per-sample detached syndrome gate.
-    certainty_syndrome_gate_threshold::Float32, # τ₂ for L2's own syndrome gate; < 0 inherits τ.
-    syndrome_gate_mode::Int, # indicator or smooth gate on L3.
-    syndrome_gate_rate::Float32, # rate for the smooth gate; ignored by the indicator.
-    correlation_certainty_threshold::Float32, # c for the per-pair detached certainty gate.
-    certainty_penalty_kind::Int, # which certainty penalty f to use (see `certainty_per_sample`).
-    certainty_hinge_width::Float32, # w for the hinge certainty penalty; ignored by the others.
-    correlation_form::Int, # which L3 to use (see `correlation_term_per_sample`).
-    correlation_agreement_floor::Float32, # ε for the log-agreement L3; ignored by the bilinear form.
-    warmup_loss_layers::Int, # first number of layers that should be excluded from the loss function.
-    base::NeuralBPBase, # constant parameters of the model, including the parity-check matrix, connectivity, correlation strengths, etc.
-    llrs_batch::Matrix{Float32}, # batch of initial LLRs for the bits, to be used as input to the network
-    syndromes_batch::BitMatrix, # batch of syndromes, to be used as input to the network
-    expected_recoveries::BitMatrix # batch of expected recoveries (error patterns), to be used for computing the Loss function
-)
+    weights_c2v_v2c::Vector{Float32},
+    weights_llrs::Vector{Float32},
+    weights_c2v_readout::Vector{Float32},
+    coupling_scale::Vector{Float32},
+    loss_layer_temperature::Float32,
+    warmup_loss_layers::Int,
+    base::NeuralBPBase,
+    llrs_batch::Matrix{Float32},
+    syndromes_batch::BitMatrix,
+    expected_recoveries::BitMatrix
+)::Tuple{Float32, Vector{Float32}}
     """
-    Logging mirror of `compute_loss_including_correlations`.
-
-    Returns (total_loss, losses_per_layer::Matrix{Float32}(n_scored, 7)):
-      col 1: base_loss   residue against [H; L], batch mean
-      col 2: llr_reg     batch-summed binary entropy
-      col 3: corr_pen    mean Ising reward over ACTIVE pairs, per sample
-      col 4: sparse_pen  batch-mean predicted weight
-      col 5: base + mean_j(g_j · aux_j), the layer's total. Selection sees col 1
-             alone, so this is not the softmin argument.
-      col 6: syndrome gate-open fraction, mean_j(g_j)
-      col 7: correlation certainty gate-open fraction over (pair, sample) slots
+    Logging mirror of `get_loss_value`: the total loss and the base loss at
+    every scored layer, so the debug log can show which layers the softmin is
+    weighting. Same forward pass, same `base_loss_per_layer`, so the two cannot
+    disagree.
     """
-    # Forward pass through the network to get the posterior LLRs.
-    # Always use the CPU path: same reason as in get_loss_value — Metal GPU array
-    # allocation is non-differentiable and this function is also used in AD contexts.
     posterior_llrs = forward_pass_with_weights(
         weights_c2v_v2c,
         weights_llrs,
         weights_c2v_readout,
+        coupling_scale,
         base,
         llrs_batch,
         syndromes_batch
     )
-
-    parity_check_matrix      = base.parity_check_matrix
-    parity_check_matrix_dual = base.parity_check_matrix_dual
-    connectivity = base.connectivity
-    correlation_strengths = base.correlation_strengths
-    is_correlated = base.is_correlated
-
-    n_layers::Int = size(posterior_llrs, 3)
-    n_samples = size(posterior_llrs, 2)
-    losses_per_layer = zeros(Float32, (n_layers - warmup_loss_layers, 8))
-    for layer in (warmup_loss_layers + 1):n_layers
-        post = posterior_llrs[:, :, layer]
-        row = layer - warmup_loss_layers
-
-        base_loss = compute_smooth_loss_from_llrs(post, expected_recoveries, parity_check_matrix_dual)
-        # MUST mirror compute_loss_including_correlations exactly, including the
-        # two-threshold split: one soft-syndrome pass, two detached gates.
-        syndrome_weights = soft_syndrome_weight_per_sample(
-            post, expected_recoveries, parity_check_matrix
-        )
-        effective_certainty_threshold::Float32 = certainty_syndrome_gate_threshold
-        if certainty_syndrome_gate_threshold < 0.0f0
-            effective_certainty_threshold = syndrome_gate_threshold
-        end
-        # Branchless, mirroring compute_loss_including_correlations exactly: a
-        # conditional assignment here makes `gate` a phi that merges an
-        # Enzyme-inactive value with an active-derived one, which is what raised
-        # EnzymeRuntimeActivityError on every point of the 2026-09-04 sweep.
-        indicator_gate::Vector{Float32} =
-            Float32.(syndrome_weights .< syndrome_gate_threshold)
-        smooth_gate::Vector{Float32} = smooth_syndrome_gate_per_sample(
-            syndrome_weights, syndrome_gate_rate, SYNDROME_GATE_LEVELS
-        )
-        use_smooth_gate::Float32 = Float32(syndrome_gate_mode == SYNDROME_GATE_SMOOTH)
-        gate = @. (1.0f0 - use_smooth_gate) * indicator_gate +
-                  use_smooth_gate * smooth_gate
-        certainty_gate = Float32.(syndrome_weights .< effective_certainty_threshold)
-        cert_j   = certainty_per_sample(post, certainty_penalty_kind, certainty_hinge_width)
-        sparse_j = sparsity_per_sample(post)
-        corr_j   = zeros(Float32, n_samples)
-        corr_open::Float32 = 0.0f0
-        if is_correlated
-            corr_j = correlation_term_per_sample(
-                post, connectivity, correlation_strengths, correlation_certainty_threshold,
-                correlation_form, correlation_agreement_floor
-            )
-            corr_open = correlation_gate_open_fraction(
-                post, connectivity, correlation_certainty_threshold
-            )
-        end
-        certainty_contribution = @. certainty_gate * llr_certainty_importance * cert_j
-        correlation_contribution = @. gate * (correlation_weight * corr_j +
-                                              sparsity_importance * sparse_j)
-        gated_aux = sum(certainty_contribution .+ correlation_contribution) / n_samples
-
-        losses_per_layer[row, 1] = base_loss
-        losses_per_layer[row, 2] = sum(cert_j) / n_samples
-        losses_per_layer[row, 3] = sum(corr_j) / n_samples
-        losses_per_layer[row, 4] = sum(sparse_j) / n_samples
-        losses_per_layer[row, 5] = base_loss + gated_aux
-        losses_per_layer[row, 6] = sum(gate) / n_samples
-        losses_per_layer[row, 7] = corr_open
-        # Column 8 is what would have caught the narrow-hinge failure immediately:
-        # the fraction of samples L2's OWN gate admits, which is not the same as
-        # column 6 once tau_2 differs from tau.
-        losses_per_layer[row, 8] = sum(certainty_gate) / n_samples
-    end
-
-    gated_aux_loss = sum(losses_per_layer[:, 5] .- losses_per_layer[:, 1]) /
-                     size(losses_per_layer, 1)
-    selection_loss = softmin_loss(losses_per_layer[:, 1], loss_layer_regularizer)
-    total_loss = selection_loss + gated_aux_loss
+    losses_per_layer::Vector{Float32} = base_loss_per_layer(
+        posterior_llrs, expected_recoveries, base.parity_check_matrix_dual, warmup_loss_layers)
+    total_loss::Float32 = softmin_loss(losses_per_layer, loss_layer_temperature)
     return (total_loss, losses_per_layer)
 end
 
@@ -227,20 +111,14 @@ end
 
 function init_training_debug_logs(n_samples_to_log::Int)
     """
-    Initialize DataFrames for logging hyperparameters, losses, and weight statistics during training.
-    The `hp_log` DataFrame logs the hyperparameters and weight statistics for each batch, while the `losses_log` DataFrame logs the individual loss components for each layer and the total loss for each batch.
+    Pre-allocate the two per-batch debug tables. `hp_log` carries the
+    hyperparameters in force, the loss, the NaN-skip count, the weight
+    statistics and α; `losses_log` carries the base loss at every scored layer.
     """
     hp_log = DataFrame(
         epoch = zeros(Int, n_samples_to_log),
         sample = zeros(Int, n_samples_to_log),
         loss_layer_temp = zeros(Float32, n_samples_to_log),
-        correlation_weight = zeros(Float32, n_samples_to_log),
-        llr_certainty_importance = zeros(Float32, n_samples_to_log),
-        sparsity_importance = zeros(Float32, n_samples_to_log),
-        syndrome_gate_threshold = zeros(Float32, n_samples_to_log),
-        correlation_certainty_threshold = zeros(Float32, n_samples_to_log),
-        certainty_syndrome_gate_threshold = zeros(Float32, n_samples_to_log),
-        syndrome_gate_rate = zeros(Float32, n_samples_to_log),
         loss = zeros(Float32, n_samples_to_log),
         nan_skip_count = zeros(Int, n_samples_to_log),
         min_weight_c2v_v2c = zeros(Float32, n_samples_to_log),
@@ -251,20 +129,14 @@ function init_training_debug_logs(n_samples_to_log::Int)
         median_weight_llrs = zeros(Float32, n_samples_to_log),
         min_weight_c2v_readout = zeros(Float32, n_samples_to_log),
         max_weight_c2v_readout = zeros(Float32, n_samples_to_log),
-        median_weight_c2v_readout = zeros(Float32, n_samples_to_log)
+        median_weight_c2v_readout = zeros(Float32, n_samples_to_log),
+        coupling_scale = zeros(Float32, n_samples_to_log)
     )
     losses_log = DataFrame(
         :epoch => zeros(Int, n_samples_to_log),
         :batch => zeros(Int, n_samples_to_log),
         :layers => zeros(Int, n_samples_to_log),
         :base_loss => ["" for _ in 1:n_samples_to_log],
-        :syndrome_regularizer => ["" for _ in 1:n_samples_to_log],
-        :correlation_penalty => ["" for _ in 1:n_samples_to_log],
-        :sparsity_penalty => ["" for _ in 1:n_samples_to_log],
-        :loss_at_layer => ["" for _ in 1:n_samples_to_log],
-        :gate_open_fraction => ["" for _ in 1:n_samples_to_log],
-        :correlation_gate_open_fraction => ["" for _ in 1:n_samples_to_log],
-        :certainty_gate_open_fraction => ["" for _ in 1:n_samples_to_log],
         :total_loss => zeros(Float32, n_samples_to_log)
     )
     return hp_log, losses_log
@@ -281,7 +153,7 @@ function log_batch_debug!(
     aggregate_loss::Float32,
     nan_skip_count::Int,
     bpnn::NachmaniNeuralBP,
-    individual_losses::Matrix{Float32}
+    losses_per_layer::Vector{Float32}
 )
     """
     Log the hyperparameters, loss values, and weight statistics for a given batch into the provided DataFrames.
@@ -289,13 +161,6 @@ function log_batch_debug!(
     hp_log[index, :epoch] = epoch
     hp_log[index, :sample] = b
     hp_log[index, :loss_layer_temp] = hp[:loss_layer_temperature]
-    hp_log[index, :correlation_weight] = hp[:correlation_weight]
-    hp_log[index, :llr_certainty_importance] = hp[:llr_certainty_importance]
-    hp_log[index, :sparsity_importance] = hp[:sparsity_importance]
-    hp_log[index, :syndrome_gate_threshold] = hp[:syndrome_gate_threshold]
-    hp_log[index, :correlation_certainty_threshold] = hp[:correlation_certainty_threshold]
-    hp_log[index, :certainty_syndrome_gate_threshold] = hp[:certainty_syndrome_gate_threshold]
-    hp_log[index, :syndrome_gate_rate] = hp[:syndrome_gate_rate]
     hp_log[index, :loss] = aggregate_loss
     hp_log[index, :nan_skip_count] = nan_skip_count
     hp_log[index, :min_weight_c2v_v2c] = minimum(bpnn.weights_c2v_v2c)
@@ -307,18 +172,12 @@ function log_batch_debug!(
     hp_log[index, :min_weight_c2v_readout] = minimum(bpnn.weights_c2v_readout)
     hp_log[index, :max_weight_c2v_readout] = maximum(bpnn.weights_c2v_readout)
     hp_log[index, :median_weight_c2v_readout] = median(bpnn.weights_c2v_readout)
+    hp_log[index, :coupling_scale] = bpnn.coupling_scale[1]
 
     losses_log[index, :epoch] = epoch
     losses_log[index, :batch] = b
     losses_log[index, :layers] = n_layers
-    losses_log[index, :base_loss]             = join(["$(individual_losses[l, 1])" for l in 1:n_layers], ",")
-    losses_log[index, :syndrome_regularizer]  = join(["$(individual_losses[l, 2])" for l in 1:n_layers], ",")
-    losses_log[index, :correlation_penalty]   = join(["$(individual_losses[l, 3])" for l in 1:n_layers], ",")
-    losses_log[index, :sparsity_penalty]      = join(["$(individual_losses[l, 4])" for l in 1:n_layers], ",")
-    losses_log[index, :loss_at_layer]         = join(["$(individual_losses[l, 5])" for l in 1:n_layers], ",")
-    losses_log[index, :gate_open_fraction]    = join(["$(individual_losses[l, 6])" for l in 1:n_layers], ",")
-    losses_log[index, :correlation_gate_open_fraction] = join(["$(individual_losses[l, 7])" for l in 1:n_layers], ",")
-    losses_log[index, :certainty_gate_open_fraction] = join(["$(individual_losses[l, 8])" for l in 1:n_layers], ",")
+    losses_log[index, :base_loss] = join(["$(losses_per_layer[l])" for l in 1:n_layers], ",")
     losses_log[index, :total_loss] = aggregate_loss
     return nothing
 end
@@ -347,16 +206,11 @@ function train_neuralbp_enzyme!(
     We use Enzyme.jl for AD of the loss w.r.t. the model parameters, and an
     `Optimisers.jl` optimizer chain (gradient-clip → Adam/AdamW) for updates.
 
-    Annealing intent (see also `compute_hyperparameters`):
-    - The four keys in `annealing_schedule` follow the "min,max,decay,direction"
-      specs in the hyperparameters TOML; the per-layer combiner is the softmin
-      at `loss_layer_temperature` (annealed down so late training commits to
-      the best layer).
-    - `syndrome_gate_threshold` (τ) and `correlation_certainty_threshold` (c) are
-      plain scalars, not annealed. The auxiliary terms apply per sample only
-      where the soft H-syndrome is below τ; the correlation term additionally
-      applies per PAIR only where both endpoints have |μ| > c. Both gates are
-      detached indicators, and layer selection sees base_loss alone.
+    The loss is `compute_loss`: the softmin over scored layers of the base loss
+    (the residue of e + σ(μ) against [H; L]). Its one annealed hyperparameter,
+    `loss_layer_temperature`, follows the "min,max,decay,direction" spec in the
+    TOML (see `compute_hyperparameters`) and is annealed DOWN so early training
+    averages over layers and late training commits to the best one.
 
     Robustness against numerical instability:
     - Each batch's gradients are checked for NaN/Inf BEFORE the optimizer step.
@@ -381,46 +235,15 @@ function train_neuralbp_enzyme!(
     adam_eps = hyperparameters["adam_eps"]
     max_nan_skips_per_epoch = hyperparameters["nanskip"]
     warmup_loss_layers = hyperparameters["warmup_layers"]
-    # Per-sample syndrome gate threshold τ for the auxiliary loss terms.
-    # Plain scalar (NOT annealed). ≤ 0 (the default when the key is absent
-    # from the TOML) disables the gate.
-    syndrome_gate_threshold = Float32(get(hyperparameters, "syndrome_gate_threshold", 0.5))
-    correlation_certainty_threshold = Float32(get(hyperparameters, "correlation_certainty_threshold", 2.2))
-    # tau_2: L2's own syndrome gate. Negative inherits tau, which reproduces every
-    # pre-split run bit for bit.
-    certainty_syndrome_gate_threshold::Float32 =
-        Float32(get(hyperparameters, "certainty_syndrome_gate_threshold", -1.0))
-    syndrome_gate_mode::Int = syndrome_gate_code(
-        String(get(hyperparameters, "syndrome_gate_mode", "indicator")))
-    syndrome_gate_rate::Float32 = Float32(get(hyperparameters, "syndrome_gate_rate", 0.5))
-    if syndrome_gate_rate <= 0.0f0
-        throw(ArgumentError("syndrome_gate_rate must be > 0, got $(syndrome_gate_rate)."))
-    end
-    # Which certainty penalty f to use in the aux loss, and the hinge width.
-    # Resolved from the string ONCE here so an unknown name throws before the
-    # first epoch rather than inside the Enzyme call.
-    certainty_penalty_kind::Int = certainty_penalty_code(
-        String(get(hyperparameters, "certainty_penalty", "entropy")))
-    certainty_hinge_width::Float32 = Float32(get(hyperparameters, "certainty_hinge_width", 2.2))
-    correlation_form::Int = correlation_form_code(
-        String(get(hyperparameters, "correlation_form", "bilinear")))
-    correlation_agreement_floor::Float32 =
-        Float32(get(hyperparameters, "correlation_agreement_floor", 1.0e-4))
-    if correlation_agreement_floor <= 0.0f0
-        throw(ArgumentError("correlation_agreement_floor must be > 0; log(0) gives a NaN gradient."))
-    end
-    if certainty_hinge_width <= 0.0f0
-        throw(ArgumentError("certainty_hinge_width must be > 0, got $(certainty_hinge_width)."))
-    end
-    annealing_schedule = Dict(
-        key => hyperparameters[key]
-        for key in [
-            "loss_layer_temperature",
-            "correlation_weight",
-            "llr_certainty_importance",
-            "sparsity_importance"
-        ]
-    )
+    # Whether α (the scale on the CER couplings inside the enriched check node)
+    # is learned. Irrelevant for the standard rule, where α is never read; the
+    # leaf is frozen there too so that a tanh run never moves it, and a later
+    # `check_node = "enriched"` re-test of the same weights file sees α = 1.
+    coupling_scale_learnable::Bool =
+        Bool(get(hyperparameters, "coupling_scale_learnable", true)) &&
+        base.check_node_kind == CHECK_NODE_ENRICHED
+    # The softmin temperature is the only annealed hyperparameter.
+    annealing_schedule = Dict("loss_layer_temperature" => hyperparameters["loss_layer_temperature"])
 
     # ---------------------------------
     # Create batches
@@ -467,10 +290,37 @@ function train_neuralbp_enzyme!(
     end
     opt_rule  = OptimiserChain(ClipGrad(max_grad_norm), inner_opt)
     opt_state = Optimisers.setup(opt_rule, bpnn)
+    # A frozen leaf ignores its gradient in `Optimisers.update!` AND is exempt
+    # from AdamW's weight decay, which would otherwise pull a fixed α toward 0
+    # even with a zero gradient.
+    if !coupling_scale_learnable
+        Optimisers.freeze!(opt_state.coupling_scale)
+    end
+    # A LEARNED α must not be weight-decayed either. Decay shrinks every
+    # parameter toward 0; for the message weights that is the existing
+    # regulariser, but for α it is a standing bias toward "no couplings" — a
+    # thumb on the scale against the very hypothesis the run is testing. Give
+    # α's own leaf a decay-free rule (Adam with the same rate and clipping),
+    # leaving every other leaf exactly as before.
+    if coupling_scale_learnable && weight_decay > 0f0
+        coupling_scale_rule::OptimiserChain = OptimiserChain(
+            ClipGrad(max_grad_norm), Adam(learning_rate, (0.9f0, 0.999f0), adam_eps))
+        # `opt_state` is a NamedTuple over the model's functor children, so the
+        # leaf can be swapped by key without touching the others.
+        opt_state = merge(opt_state, (coupling_scale = Optimisers.setup(coupling_scale_rule, bpnn.coupling_scale),))
+    end
 
     if !is_quiet
         n_weights = length(bpnn.weights_c2v_v2c) + length(bpnn.weights_llrs) + length(bpnn.weights_c2v_readout)
+        if coupling_scale_learnable
+            n_weights += length(bpnn.coupling_scale)
+        end
         print_info("Starting training on $(n_samples) samples, split into batches of $(batch_size), with $(n_weights) learnable parameters.")
+        if base.check_node_kind == CHECK_NODE_ENRICHED
+            print_info("Enriched check node: $(describe_soft_check_tables(base.soft_check_tables)); " *
+                       "coupling scale α = $(bpnn.coupling_scale[1]) " *
+                       "($(coupling_scale_learnable ? "learnable" : "fixed")).")
+        end
     end
     # -------------------------
     # Progress bars
@@ -483,14 +333,6 @@ function train_neuralbp_enzyme!(
         batch_progress = is_quiet ? nothing : Progress(n_gradient_updates_per_epoch, desc="Epoch $epoch Batches: ")
 
         hp = compute_hyperparameters(epoch, annealing_schedule)
-        # Not annealed; carried in `hp` so the debug logger and the loss calls
-        # read one consistent value.
-        hp[:syndrome_gate_threshold] = syndrome_gate_threshold
-        hp[:correlation_certainty_threshold] = correlation_certainty_threshold
-        hp[:certainty_syndrome_gate_threshold] = certainty_syndrome_gate_threshold
-        hp[:syndrome_gate_rate] = syndrome_gate_rate
-        hp[:certainty_hinge_width] = certainty_hinge_width
-        hp[:correlation_agreement_floor] = correlation_agreement_floor
 
         # -------------------------
         # Per-epoch checkpoint — restored at end-of-epoch if too many batches
@@ -528,6 +370,10 @@ function train_neuralbp_enzyme!(
             grad_w_c2v_v2c = zeros(Float32, length(bpnn.weights_c2v_v2c))
             grad_w_llrs    = zeros(Float32, length(bpnn.weights_llrs))
             grad_w_readout = zeros(Float32, length(bpnn.weights_c2v_readout))
+            # Always Duplicated, even when α is frozen or unused: the optimiser
+            # leaf decides whether the gradient is applied, and a fixed
+            # signature keeps ONE compiled Enzyme thunk for every configuration.
+            grad_coupling_scale::Vector{Float32} = zeros(Float32, length(bpnn.coupling_scale))
 
             # -------------------------
             # Enzyme autodiff
@@ -539,20 +385,9 @@ function train_neuralbp_enzyme!(
                 Enzyme.Duplicated(bpnn.weights_c2v_v2c, grad_w_c2v_v2c),
                 Enzyme.Duplicated(bpnn.weights_llrs, grad_w_llrs),
                 Enzyme.Duplicated(bpnn.weights_c2v_readout, grad_w_readout),
+                Enzyme.Duplicated(bpnn.coupling_scale, grad_coupling_scale),
                 # Constant arguments (order MUST match get_loss_value's signature):
-                Enzyme.Const(hp[:correlation_weight]),
                 Enzyme.Const(hp[:loss_layer_temperature]),
-                Enzyme.Const(hp[:llr_certainty_importance]),
-                Enzyme.Const(hp[:sparsity_importance]),
-                Enzyme.Const(hp[:syndrome_gate_threshold]),
-                Enzyme.Const(hp[:certainty_syndrome_gate_threshold]),
-                Enzyme.Const(syndrome_gate_mode),
-                Enzyme.Const(hp[:syndrome_gate_rate]),
-                Enzyme.Const(hp[:correlation_certainty_threshold]),
-                Enzyme.Const(certainty_penalty_kind),
-                Enzyme.Const(hp[:certainty_hinge_width]),
-                Enzyme.Const(correlation_form),
-                Enzyme.Const(hp[:correlation_agreement_floor]),
                 Enzyme.Const(warmup_loss_layers),
                 Enzyme.Const(base),
                 Enzyme.Const(llrs_batch),
@@ -565,10 +400,11 @@ function train_neuralbp_enzyme!(
             # gradient component is non-finite. This preserves the last
             # known-good Adam state and the last known-good weights.
             # -------------------------
-            grads_finite = isfinite(loss_value)          && 
+            grads_finite = isfinite(loss_value)          &&
                            all(isfinite, grad_w_c2v_v2c) &&
                            all(isfinite, grad_w_llrs)    &&
-                           all(isfinite, grad_w_readout)
+                           all(isfinite, grad_w_readout) &&
+                           all(isfinite, grad_coupling_scale)
 
             if !grads_finite
                 nan_skip_count += 1
@@ -600,7 +436,8 @@ function train_neuralbp_enzyme!(
             grads = (
                 weights_c2v_v2c     = grad_w_c2v_v2c,
                 weights_llrs        = grad_w_llrs,
-                weights_c2v_readout = grad_w_readout
+                weights_c2v_readout = grad_w_readout,
+                coupling_scale      = grad_coupling_scale
             )
             (opt_state, bpnn) = Optimisers.update!(opt_state, bpnn, grads)
             n_applied_updates += 1
@@ -620,19 +457,8 @@ function train_neuralbp_enzyme!(
                     bpnn.weights_c2v_v2c,
                     bpnn.weights_llrs,
                     bpnn.weights_c2v_readout,
-                    hp[:correlation_weight],
+                    bpnn.coupling_scale,
                     hp[:loss_layer_temperature],
-                    hp[:llr_certainty_importance],
-                    hp[:sparsity_importance],
-                    hp[:syndrome_gate_threshold],
-                    hp[:certainty_syndrome_gate_threshold],
-                    syndrome_gate_mode,
-                    hp[:syndrome_gate_rate],
-                    hp[:correlation_certainty_threshold],
-                    certainty_penalty_kind,
-                    hp[:certainty_hinge_width],
-                    correlation_form,
-                    hp[:correlation_agreement_floor],
                     warmup_loss_layers,
                     base,
                     llrs_batch,
@@ -666,6 +492,7 @@ function train_neuralbp_enzyme!(
             bpnn.weights_c2v_v2c     .= bpnn_checkpoint.weights_c2v_v2c
             bpnn.weights_llrs        .= bpnn_checkpoint.weights_llrs
             bpnn.weights_c2v_readout .= bpnn_checkpoint.weights_c2v_readout
+            bpnn.coupling_scale      .= bpnn_checkpoint.coupling_scale
             opt_state = deepcopy(opt_state_checkpoint)
             n_rolled_back_epochs += 1
             # NOT gated on is_quiet: a rolled-back epoch discards its work, and a
@@ -732,17 +559,26 @@ function train_Nachmani_neuralbp(
     
     # Load the base BP model and the neural BP model with randomly initialized weights.
     if length(initial_conditions) == 0
-        initial_conditions = Dict(String, Vector{Float32})(
+        initial_conditions = Dict{String, Vector{Float32}}(
             "weights_c2v_v2c" => random_values_around_one([base.nb_weights_c2v_v2c * base.n_layers]; scale=0.1f0),
             "weights_llrs" => random_values_around_one([base.code_n_bits * base.n_layers]; scale=0.1f0),
             "weights_c2v_readout" => random_values_around_one([base.nb_weights_c2v_readout]; scale=0.1f0)
         )
     end
+    # α starts at `coupling_scale_init` (1 = the Bayesian value) unless the
+    # caller supplied it explicitly. Read from the hyperparameters here rather
+    # than in the script so a caller using the package directly gets the same
+    # default.
+    initial_coupling_scale::Vector{Float32} = get(
+        initial_conditions, "coupling_scale",
+        Float32[Float32(get(hyperparameters, "coupling_scale_init", 1.0f0))]
+    )
     bpnn = NachmaniNeuralBP(
         base,
         weights_c2v_v2c=initial_conditions["weights_c2v_v2c"],
         weights_llrs=initial_conditions["weights_llrs"],
-        weights_c2v_readout=initial_conditions["weights_c2v_readout"]
+        weights_c2v_readout=initial_conditions["weights_c2v_readout"],
+        coupling_scale=initial_coupling_scale
     )
     
     # Extract the name of the training file name to include in the weights file name for clarity on what data the model was trained on.
@@ -756,7 +592,7 @@ function train_Nachmani_neuralbp(
     # preflight) so a no-CER model never overwrites its CER counterpart.
     # `run_tag` does the same job for hyperparameter sweeps: the filename encodes
     # only nlayers/epochs/training_source, so two runs differing ONLY in e.g.
-    # `correlation_weight` would otherwise silently share one weights file.
+    # `check_node` would otherwise silently share one weights file.
     # `seed_tag` is essential, not cosmetic: without it two runs differing ONLY in
     # seed resolve to the same path, and with `retrain = false` the second would
     # silently load the first's weights — which is precisely the comparison the

@@ -79,7 +79,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     cer_tag = use_CER ? "" : "_no_cer"
 
     # Optional free-form tag appended to the results AND model filenames, so a
-    # hyperparameter sweep (which varies only e.g. `correlation_weight`) doesn't
+    # hyperparameter sweep (which varies only e.g. `check_node`) doesn't
     # have every point overwrite the same files. Set `run_tag` in the
     # hyperparameters TOML; empty (default) reproduces the old names exactly.
     run_tag = String(get(hyperparams, "run_tag", ""))
@@ -97,6 +97,29 @@ if abspath(PROGRAM_FILE) == @__FILE__
         println("[use_CER=false] Ignoring correlated_weights/: preset p=0.1 priors, correlation loss dropped, outputs tagged `_no_cer`.")
     end
 
+    # Check-to-variable rule of the forward pass: "tanh" (standard) or
+    # "enriched" (CER couplings inside the check factor). Resolved here so a
+    # typo fails before any data is read. No automatic filename tag: put it in
+    # `run_tag`, as for every other hyperparameter that defines an arm.
+    check_node::String = String(get(hyperparams, "check_node", "tanh"))
+    check_node_code(check_node)
+    coupling_scale_init::Float32 = Float32(get(hyperparams, "coupling_scale_init", 1.0f0))
+    if check_node == "enriched"
+        print_info("[check_node=enriched] couplings enter the check factor with " *
+                   "α = $(coupling_scale_init) " *
+                   "($(Bool(get(hyperparams, "coupling_scale_learnable", true)) ? "learnable" : "fixed")).")
+        # Neither the weights nor the results filename carries a check-node tag
+        # (only `run_tag` and the seed may extend a name), so without a run_tag
+        # an enriched run would LOAD the tanh run's weights under
+        # `retrain = false` and skip its test on the tanh run's results file.
+        if run_tag == ""
+            throw(ArgumentError(
+                "check_node = \"enriched\" needs a non-empty `run_tag` in the " *
+                "hyperparameters TOML (e.g. \"_cnenriched\"), or its weights and " *
+                "results files collide with the standard rule's."))
+        end
+    end
+
     # Train the Neural BP model
     base = load_base_BP_model(
         parity_check_matrix_file, logicals_file, n_hidden_layers;
@@ -105,11 +128,15 @@ if abspath(PROGRAM_FILE) == @__FILE__
         prior_llr_clip=prior_llr_clip,
         single_qubit_rescale=Float32(get(hyperparams, "single_qubit_rescale", 0.0f0)),
         require_correlations=Bool(get(hyperparams, "require_correlations", false)),
+        check_node=check_node,
     )
     initial_conditions = Dict{String, Vector{Float32}}(
         "weights_c2v_v2c" => random_values_around_one([base.nb_weights_c2v_v2c * base.n_layers]; scale=hyperparams["initial_conditions_scale"]),
         "weights_llrs" => random_values_around_one([base.code_n_bits * base.n_layers]; scale=hyperparams["initial_conditions_scale"]),
-        "weights_c2v_readout" => random_values_around_one([base.nb_weights_c2v_readout]; scale=hyperparams["initial_conditions_scale"])
+        "weights_c2v_readout" => random_values_around_one([base.nb_weights_c2v_readout]; scale=hyperparams["initial_conditions_scale"]),
+        # α is NOT drawn at random: it starts at the Bayesian value (or whatever
+        # `coupling_scale_init` says) so the run begins AT the hypothesis.
+        "coupling_scale" => Float32[coupling_scale_init]
     )
     start = time()
     bpnn = train_Nachmani_neuralbp(
@@ -222,6 +249,11 @@ if abspath(PROGRAM_FILE) == @__FILE__
     if training_seed !== nothing
         push!(extra_result_columns, "seed" => training_seed)
     end
+    # Which check-node rule decoded this, and the α it ended with (the learned
+    # value when α was trainable, the fixed one otherwise). Recorded always, so
+    # the collector can separate enriched from tanh arms without parsing names.
+    push!(extra_result_columns, "check_node" => check_node)
+    push!(extra_result_columns, "coupling_scale" => bpnn.coupling_scale[1])
 
     # Diagnostic aggregates. `num_failures` (already recorded) is the sum of
     # num_coset_failures and num_convergence_failures; splitting it is the whole

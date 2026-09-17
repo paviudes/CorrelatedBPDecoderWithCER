@@ -93,7 +93,7 @@ const USAGE = """
 #   _hp<arm>_sp<tag>[_lam<tag>]_seed_<n>          sweep_hyperparams.sh
 # The gate token is optional because the second generator dropped it once the
 # ungated path was deleted from loss.jl: every run is gated now.
-const RUN_PATTERN = r"_trained_using_train_(p_[0-9.eE+-]+(?:_sig_[0-9.eE+-]+)?_s_\d+)(_no_cer)?_(?:cw|hp)(cer|nocer)(?:_(ungated|gated))?_sp([0-9p]+)(?:_lam([0-9p]+[du]?))?(?:_tau([0-9pe]+))?(?:_sg([0-9p]+))?(?:_ct([0-9pe]+))?(?:_cp([a-z]+[0-9p]*))?(?:_cf([a-z_]+))?_seed_(\d+)\.csv$"
+const RUN_PATTERN = r"_trained_using_train_(p_[0-9.eE+-]+(?:_sig_[0-9.eE+-]+)?_s_\d+)(_no_cer)?_(?:cw|hp)(cer|nocer)(?:_(ungated|gated))?(?:_sp([0-9p]+))?(?:_lam([0-9p]+[du]?))?(?:_tau([0-9pe]+))?(?:_sg([0-9p]+))?(?:_ct([0-9pe]+))?(?:_cp([a-z]+[0-9p]*))?(?:_cf([a-z_]+))?(?:_cn([a-z]+[0-9p]+[FL]))?_seed_(\d+)\.csv$"
 
 """
     tag_to_number(tag) -> Float64
@@ -183,7 +183,14 @@ function parse_run(filename::String)::Union{NamedTuple, Nothing}
         arm = arm,
         gate = filename_match.captures[4] === nothing ? "gated" :
                                                  String(filename_match.captures[4]),
-        sparsity_tag = String(filename_match.captures[5]),
+        # Files from the reduced-loss generator (2026-09-16 on) carry no
+        # sparsity / lambda / tau segments at all: the loss has no such terms.
+        # Their absence is what distinguishes the new scheme from the legacy one,
+        # and every legacy-only segment below is reconstructed only when
+        # `legacy_scheme` is true.
+        legacy_scheme = filename_match.captures[5] !== nothing,
+        sparsity_tag = filename_match.captures[5] === nothing ? "0p0" :
+                       String(filename_match.captures[5]),
         lambda_tag = lambda_tag,
         lambda_pinned = lambda_pinned,
         lambda = lambda_value,
@@ -199,7 +206,12 @@ function parse_run(filename::String)::Union{NamedTuple, Nothing}
                             String(filename_match.captures[10]),
         correlation_form = filename_match.captures[11] === nothing ? "bilinear" :
                            String(filename_match.captures[11]),
-        seed = parse(Int, filename_match.captures[12]),
+        # Check node of the FORWARD PASS: "" for the standard tanh rule (every
+        # historical file), "enr0p42F" / "enr0p42L" for the enriched node at a
+        # fixed / learned alpha. Both the alpha and the F/L are part of the arm.
+        check_node_tag = filename_match.captures[12] === nothing ? "" :
+                         String(filename_match.captures[12]),
+        seed = parse(Int, filename_match.captures[13]),
     )
     return run_key
 end
@@ -212,6 +224,12 @@ lambda (with `use_CER = false` the couplings do not exist, so the weight
 multiplies nothing) and is always just "nocer".
 """
 function label_for(run_key::NamedTuple)::String
+    # The check node changes the forward pass of the CER arms only, so it is the
+    # last segment of a CER label and the no-CER baseline stays untagged.
+    check_node_label::String = ""
+    if !isempty(run_key.check_node_tag)
+        check_node_label = "_cn$(run_key.check_node_tag)"
+    end
     # The certainty penalty changes L2, which BOTH arms carry, so it has to be
     # part of the label: otherwise runs with different L2 terms would be pooled
     # into one arm mean and the contrast would compare mixtures.
@@ -248,6 +266,11 @@ function label_for(run_key::NamedTuple)::String
         end
         return base_label * certainty_gate_label * sparsity_tag_segment * certainty_tag
     end
+    # New scheme: the CER arm is "cer", plus the check node. There is no lambda
+    # because there is no correlation term in the loss any more.
+    if !run_key.legacy_scheme
+        return "cer" * check_node_label
+    end
     if !run_key.lambda_pinned
         return "cer_annealed" * certainty_gate_label * sparsity_tag_segment * certainty_tag
     end
@@ -255,7 +278,7 @@ function label_for(run_key::NamedTuple)::String
     if !isempty(run_key.tau_tag)
         label = label * "_tau$(run_key.tau_tag)"
     end
-    label = label * gate_mode_label * certainty_gate_label * sparsity_tag_segment * certainty_tag * correlation_form_tag
+    label = label * gate_mode_label * certainty_gate_label * sparsity_tag_segment * certainty_tag * correlation_form_tag * check_node_label
     return label
 end
 
@@ -583,11 +606,20 @@ function collect_per_run(results_dir::String, logs_dir::String)::DataFrame
         if run_key.correlation_form != "bilinear"
             correlation_segment = "_cf$(run_key.correlation_form)"
         end
+        check_node_segment::String = ""
+        if !isempty(run_key.check_node_tag)
+            check_node_segment = "_cn$(run_key.check_node_tag)"
+        end
+        legacy_loss_segments::String = ""
+        if run_key.legacy_scheme
+            legacy_loss_segments = "_sp$(run_key.sparsity_tag)$(lambda_segment)" *
+                                   (isempty(run_key.tau_tag) ? "" : "_tau$(run_key.tau_tag)") *
+                                   gate_mode_segment * certainty_gate_segment * certainty_segment * correlation_segment
+        end
         run_tail::String = "train_$(run_key.dataset)$(cer_tag)" *
                            "_$(run_key.prefix)$(run_key.arm)$(run_key.gate_segment)" *
-                           "_sp$(run_key.sparsity_tag)$(lambda_segment)" *
-                           (isempty(run_key.tau_tag) ? "" : "_tau$(run_key.tau_tag)") *
-                           gate_mode_segment * certainty_gate_segment * certainty_segment * correlation_segment *
+                           legacy_loss_segments *
+                           check_node_segment *
                            "_seed_$(run_key.seed)"
         debug_summary::Dict{Symbol, Any} = debug_log_summary(logs_dir, run_tail)
         for (key, value) in debug_summary
@@ -691,6 +723,14 @@ function arm_order(label::String)::Float64
     if label == "cer_annealed"
         return Inf
     end
+    # New scheme: baseline, then the CER tanh arm, then enriched fixed, then
+    # enriched learned.
+    if label == "cer"
+        return 0.0
+    end
+    if startswith(label, "cer_cn")
+        return endswith(label, "L") ? 2.0 : 1.0
+    end
     if startswith(label, "lam")
         base_part::String = split(label, "_tau")[1]
         return tag_to_number(base_part[4:end])
@@ -707,6 +747,10 @@ function collect_per_arm(per_run::DataFrame)::DataFrame
         :mean_committed_layer, :layer1_clearing_fraction,
         :convergence_near_miss_frac, :gate_open_fraction_mean,
         :correlation_penalty_mean, :lambda_final_epoch, :sparsity_final_epoch,
+        # The learned (or fixed) alpha of the enriched check node, from the
+        # results CSV. For a `_cnenr..L` arm its mean/sd across seeds says where
+        # training took alpha from its 0.42 start; for `F` it is constant.
+        :coupling_scale,
         :runtime,
     ]
     collected_rows::Vector{Dict{Symbol, Any}} = Dict{Symbol, Any}[]
@@ -860,7 +904,16 @@ the tau tag was introduced and silently produced an empty contrasts table from
 then on — every branch skipped, no error, no warning.
 """
 function control_labels(label::String)::Tuple{String, String}
-    without_form::String = replace(replace(label, r"_cf[a-z_]+$" => ""), r"_sg[0-9p]+" => "")
+    # The check-node segment is stripped FIRST: an enriched arm's priors control
+    # is the same cell with the standard (untagged) check node, and its no-CER
+    # baseline never carries the segment at all. So "lam0p0_tau0p5_cnenr0p42L"
+    # contrasts against "lam0p0_tau0p5" and "nocer_tau0p5".
+    without_check_node::String = replace(label, r"_cn[a-z]+[0-9p]+[FL]$" => "")
+    # New scheme: "cer[_cn...]" contrasts against "cer" and "nocer".
+    if without_check_node == "cer"
+        return ("cer", "nocer")
+    end
+    without_form::String = replace(replace(without_check_node, r"_cf[a-z_]+" => ""), r"_sg[0-9p]+" => "")
     priors_control::String = replace(without_form, r"^lam[0-9pdu]+" => "lam0p0")
     nocer_baseline::String = replace(priors_control, r"^lam0p0" => "nocer")
     return (priors_control, nocer_baseline)

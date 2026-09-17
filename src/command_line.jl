@@ -311,18 +311,12 @@ function parse_hyper_parameters(hyperparams_file::String=""; prefix::String="./.
     default_hyperparams::Dict{String, Any} = Dict(
         "retrain" => false, # Whether to retrain the model even if trained weights are available.
         "require_correlations" => false, # When true, `load_base_BP_model` REFUSES to run if the CER file yielded no two-qubit couplings, instead of silently proceeding with an inactive correlation term. Off by default because a pair-free file is legitimate (that is how a single-qubit-priors-only arm is built). Set it in any sweep whose content IS the correlation term, so a missing-pairs file cannot masquerade as a null result.
-        "syndrome_gate_threshold" => 0.5f0, # tau for the per-sample detached syndrome gate on the auxiliary loss terms, in units of softly broken checks: the aux terms apply only where the residual already nearly clears the syndrome, and layer selection sees base_loss alone.
-        "correlation_certainty_threshold" => 2.2f0, # c for the per-pair detached certainty gate on the correlation term, in LLR units: a pair contributes only when both endpoints have |mu| > c (2.2 corresponds to sigma > 0.9 or < 0.1). Without it the term's gradient peaks at sigma = 0.5 and vanishes once decided, so it pushes undecided qubits instead of selecting among decided ones.
-        "certainty_syndrome_gate_threshold" => -1.0f0, # tau_2: the syndrome gate for the L2 certainty term ALONE, decoupled from tau which gates L3 and sparsity. NEGATIVE (the default) inherits tau, reproducing every pre-split run exactly. This exists because the two are not independent: L2 fires hardest near mu = 0, but one qubit at sigma = 0.5 sits in 3 Z-checks and drives |s| to ~2.1, four times tau = 0.5, so at a shared gate L2 is excluded from precisely the samples it wants to fix -- a narrow hinge measured IDENTICALLY ZERO gated contribution over 200000 layer-samples. Set 1e6 to let L2 act everywhere while L3 stays confined. A value of exactly 0 means never open.
-        "syndrome_gate_mode" => "indicator", # Gate on L3 (and sparsity): "indicator" is 1[|s| < tau], the historical hard gate; "smooth" is exp(-rate*|s|), DETACHED from the gradient, so a sample one broken check from solved keeps weight exp(-rate) instead of 0. L2 keeps the indicator on tau_2 either way.
-        "syndrome_gate_rate" => 0.5f0, # rate for the smooth gate, in inverse softly-broken-checks. 0.5: |s|=0.5 -> 0.78, 1 -> 0.61, 2 -> 0.37, 4 -> 0.14. Larger is stricter. Ignored by the indicator.
-        "certainty_penalty" => "entropy", # Which certainty penalty f the aux loss uses: "entropy" (h(sigma(mu)), the historical default), "exponential" (exp(-|mu|)), or "hinge" (max(0, 1-|mu|/w)). All are symmetric and peak at mu = 0; only the latter two are CUSPED there, so only they exert force on a perfectly undecided qubit -- the entropy's derivative is exactly 0 at sigma = 0.5 by symmetry.
-        "certainty_hinge_width" => 2.2f0, # w for the hinge certainty penalty, in LLR units. Ignored by the other penalties. Constant force 1/w for |mu| < w and exactly none beyond, so the term stops acting once a qubit is decided.
-        "correlation_form" => "bilinear", # Which L3 term to use. "bilinear" is the historical co-activation reward -sum J sigma_i sigma_k, whose gradient sigma(1-sigma) vanishes at ALL FOUR corners so it cannot push a pair INTO the configuration it prefers. "log_agreement" is -sum |J| log[(1 + sgn(J) tanh(mu_i/2) tanh(mu_k/2))/2], i.e. the weighted negative log-likelihood of pair concordance, whose gradient tends to |J| at the two discordant corners and 0 at the concordant ones. The two differ in SIGN as well as shape (bilinear <= 0, log_agreement >= 0), so lambda is NOT comparable between them. "coflip" is -sum_{J>0} J*(sigma_k*log(sigma_i+eps) + sigma_i*log(sigma_k+eps)): the cross log-likelihood of CO-FLIP, positive couplings only, whose gradient is silent at (0,0) and (1,1) and kicks the CLEAN qubit of a discordant pair toward errored with strength ~J. Requested 2026-09-02; the symmetric prescribed field has curl so this is its integrable counterpart.
-        "correlation_agreement_floor" => 1.0f-4, # epsilon clamping the log-agreement argument. MANDATORY: tanh(mu/2) saturates to exactly 1.0f0 in Float32 by |mu| ~ 18, so the argument reaches exactly 0 and log(0) gives a NaN gradient, which NaN-skips every batch and silently ships untrained weights. Ignored by the bilinear form.
         "single_qubit_rescale" => 0.0f0, # Put the CER SINGLE-QUBIT rates at this scale: rescale them so their MEDIAN lands here, UNLESS their maximum already reaches it, in which case leave them exactly as parsed. 0 (the default) disables it entirely. One value, two roles — read it as "priors at this scale, unless they already get there". It can therefore only ever SOFTEN, never sharpen. This is an INFERENCE TEMPERATURE, not a calibration fix: the raw rates were measured correct to 0.5%, and deliberately softening them to median 0.1 decoded 12.5x better because BP cannot iterate out of a prior at LLR 5.46. Couplings J_ij are never touched. Prefer this to `prior_llr_clip`, which clamps and therefore flattens all qubits to one constant when every raw LLR exceeds the clip.
         "prior_llr_clip" => 0.0f0, # Cap on |initial LLR| (0 = disabled). SUPERSEDED for CER data by `single_qubit_rescale`: every raw CER LLR here is 5.33..5.58, so any clip below that collapses all 72 qubits to a single constant and destroys the per-qubit information. Separates the CER prior's INFORMATION from its MAGNITUDE: CER rates give LLR ~ 5.4 (tanh' ~ 0.018) vs the no-CER fallback's 2.2 (tanh' ~ 0.36), a ~20x weaker gradient through the message nonlinearity. Clip to ~2.5 to equalise conditioning between the arms.
         "use_CER" => true, # Whether to use correlated-error-rate (CER) priors. If false, the correlated_weights/ folder is ignored: single-qubit priors default to p=0.1 and the correlation loss term is dropped. Outputs are tagged `_no_cer` so CER and no-CER runs don't overwrite each other.
+        "check_node" => "tanh", # Check-to-variable rule of the FORWARD PASS (training and testing alike). "tanh" is the standard rule, the historical default. "enriched" puts the CER two-qubit couplings inside each check factor, psi_c = 1[parity] exp(alpha sum J e e), and sends the exact marginal of that factor (see src/soft_constraints.jl and refs/soft_check_nbp.tex); it reduces to "tanh" at alpha = 0 and needs use_CER = true with a CER file that has pairs. This is the couplings entering INFERENCE, not the loss: it needs no L3 term to act, and it acts at test time. NOTE: no automatic filename tag -- put e.g. `_cnenriched` in `run_tag`, or an enriched run will load/overwrite the tanh run's weights file.
+        "coupling_scale_init" => 1.0f0, # Initial alpha for the enriched check node. 1 is the Bayesian value for the pairwise prior; 0 makes "enriched" bit-equivalent to "tanh" (a useful control). Also the fixed alpha of standard BP in standard_bp_experiments.jl. Ignored by check_node = "tanh".
+        "coupling_scale_learnable" => true, # Whether alpha is trained (one scalar shared by every coupling, alongside the message weights). false keeps it at coupling_scale_init: the no-new-parameters Bayesian control. The learned value is written to the weights JSON, the debug hp log and the results CSV.
         "learning_rate" => 1f-1, # Learning rate for training the Neural BP model using the ADAM optimizer
         "max_grad_norm" => 2f0, # Gradient clipping threshold
         "weight_decay" => 1f-4, # L2 regularization strength for ADAM optimizer
@@ -335,11 +329,8 @@ function parse_hyper_parameters(hyperparams_file::String=""; prefix::String="./.
 		"warmup_layers" => 10, # First number of layers to leave unconstrained in the loss function.
 		"online_training" => false, # If true, we will generate training samples on the fly instead of reading from a file. However, right now we don't have an implementation for this, so we will simply read a random subset of `batch_size` samples from the training dataset to simulate the online training scenario. Important: when this is set to true, explicitly make sure that the batch size divides the number of samples in the training dataset.
 		"n_gradient_updates_per_epoch" => 0, # If `online_training` is true, this specifies the number of gradient updates to perform per epoch. If set to 0, it defaults to the number of batches in the training dataset.
-        # Annealing schedule for the loss hyperparameters
+        # The one annealed hyperparameter: the softmin temperature over layers, "min,max,decay,direction".
         "loss_layer_temperature" => "0.1,5.0,0.9,down", # Smooth minimum approximation temperature
-        "correlation_weight" => "1.0,1.0,0.1,down", # Overall weight α₄ on the correlation term (constant 1.0 by default; raise to strengthen). NOTE: the correlation term has no internal counterweight, so tune this together with `sparsity_importance` (α₃).
-        "llr_certainty_importance" => "0.001,0.01,0.1,down", # LLR convergence term importance
-        "sparsity_importance" => "0.0,0.01,0.5,up", # Sparsity encouragement term importance
 		# Initial conditions: all weights are initialized to Gaussian random values around 1, with a standard deviation of σ = 0.3.
 		"initial_conditions_scale" => 0.3f0
     )
@@ -355,10 +346,7 @@ function parse_hyper_parameters(hyperparams_file::String=""; prefix::String="./.
 
         # --- Convert specific keys to Float32 ---
         float32_keys = ["learning_rate", "max_grad_norm", "weight_decay", "adam_eps", "initial_conditions_scale",
-                        "prior_llr_clip", "single_qubit_rescale", "syndrome_gate_threshold",
-                        "certainty_syndrome_gate_threshold", "syndrome_gate_rate",
-                        "correlation_certainty_threshold", "certainty_hinge_width",
-                        "correlation_agreement_floor"]
+                        "prior_llr_clip", "single_qubit_rescale", "coupling_scale_init"]
         for key in float32_keys
             if haskey(updated_hyperparams, key)
                 updated_hyperparams[key] = Float32(updated_hyperparams[key])
@@ -377,7 +365,7 @@ function parse_hyper_parameters(hyperparams_file::String=""; prefix::String="./.
         end
 		
 		# Parse annealing schedules from strings into structured dictionaries
-        for key in ["loss_layer_temperature", "correlation_weight", "llr_certainty_importance", "sparsity_importance"]
+        for key in ["loss_layer_temperature"]
             # Added `isa String` check for safety, in case the TOML file is ever updated to use inline tables
             if haskey(updated_hyperparams, key) && isa(updated_hyperparams[key], String)
                 schedule_parts = split(updated_hyperparams[key], ",")
@@ -400,7 +388,7 @@ function parse_hyper_parameters(hyperparams_file::String=""; prefix::String="./.
         println("Hyperparameters file not provided or does not exist. Using default values.")
 
         # Convert default annealing schedules from strings to structured dictionaries
-        for key in ["loss_layer_temperature", "correlation_weight", "llr_certainty_importance", "sparsity_importance"]
+        for key in ["loss_layer_temperature"]
             schedule_parts = split(default_hyperparams[key], ",")
             default_hyperparams[key] = Dict(
                 "min" => parse(Float32, schedule_parts[1]),

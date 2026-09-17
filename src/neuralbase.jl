@@ -61,13 +61,20 @@ struct NeuralBPBase <: NeuralBP
     initial_llrs::Vector{Float32}
     n_layers::Int
 
+    # Check-to-variable rule: CHECK_NODE_TANH (the standard rule) or
+    # CHECK_NODE_ENRICHED (the CER couplings inside each check factor, see
+    # soft_constraints.jl). The tables are empty for the standard rule.
+    check_node_kind::Int
+    soft_check_tables::SoftCheckTables
+
     function NeuralBPBase(
         parity_check_matrix::Matrix{Int},
         parity_check_matrix_dual::Matrix{Int},
         initial_llrs::Vector{Float32},
         n_layers::Int;
         connectivity::Matrix{Int}=Matrix{Int}(undef, 0, 0),
-        correlation_strengths::Vector{Float32}=Float32[]
+        correlation_strengths::Vector{Float32}=Float32[],
+        check_node::String="tanh"
     )
         """
         Construct the elements of a `NeuralBPLayer` from a given parity-check matrix.
@@ -200,7 +207,25 @@ struct NeuralBPBase <: NeuralBP
         non_zero_C2V_readout = findall(adj_C2V_readout .== 1)
         non_zero_rows_C2V_readout = [i[1] for i in non_zero_C2V_readout]
         non_zero_cols_C2V_readout = [i[2] for i in non_zero_C2V_readout]
-        
+
+        ## Check-to-variable rule. The enriched rule needs couplings to enrich
+        ## with: an "enriched" arm built without them would be bit-identical to
+        ## the standard rule, which is exactly the silent collision the seed
+        ## bookkeeping exists to prevent. Refuse instead.
+        check_node_kind::Int = check_node_code(check_node)
+        soft_check_tables::SoftCheckTables = empty_soft_check_tables()
+        if check_node_kind == CHECK_NODE_ENRICHED
+            if !is_correlated
+                throw(ArgumentError(
+                    "NeuralBPBase: check_node = \"enriched\" but no two-qubit " *
+                    "couplings were given (use_CER = false, or a CER file without " *
+                    "pairs). The enriched check node would equal the standard one."))
+            end
+            soft_check_tables = build_soft_check_tables(
+                parity_check_matrix, connectivity, correlation_strengths, neuron_to_check_variable
+            )
+        end
+
         return new(
             parity_check_matrix,
             is_correlated,
@@ -227,7 +252,9 @@ struct NeuralBPBase <: NeuralBP
             non_zero_rows_C2V_readout,
             non_zero_cols_C2V_readout,
             initial_llrs,
-            n_layers
+            n_layers,
+            check_node_kind,
+            soft_check_tables
         )
     end
 end

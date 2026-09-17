@@ -2,574 +2,135 @@ using CorrelatedBPDecoderWithCER
 using Test
 using Enzyme
 
-"""
-Exercise the two detached gates on the correlation term and the active-pair
-normalisation, on a hand-built 4-qubit example where every value is checkable by
-hand.
-"""
-function test_correlation_gates()::Nothing
-    # SIGN CONVENTION. `sigmoid(μ) = 1/(1 + exp(μ))` is the ERROR probability, so
-    # μ = -4 is a qubit that almost certainly FLIPPED (σ ≈ 0.982) and μ = +4 is
-    # one that almost certainly did not (σ ≈ 0.018). An earlier version of this
-    # test used 1/(1 + exp(-μ)) and so asserted the mirror image of every case.
-    n_bits = 4
-    n_samples = 4
-
-    # Pair under test is (qubit 1, qubit 2). Columns, in order:
-    #   1  both FLIPPED and decided  -> gate open, co-activation ≈ 1
-    #   2  undecided                 -> gate closed
-    #   3  both CLEAN and decided    -> gate open, co-activation ≈ 0
-    #   4  one flipped one clean     -> gate open, co-activation small
-    posterior_llrs = Float32[
-       -4.0   0.2   4.0  -4.0
-       -4.0   0.2   4.0   4.0
-       -4.0  -4.0  -4.0  -4.0
-       -4.0  -4.0  -4.0  -4.0
-    ]
-    connectivity = [1 2]
-    correlation_strengths = Float32[3.0]
-    certainty_threshold = 2.2f0
-
-    rewards = ising_correlation_reward_per_sample(
-        posterior_llrs, connectivity, correlation_strengths, certainty_threshold
-    )
-
-    # Probability that a qubit at μ = ∓4 is flipped, in the CODE's convention.
-    flipped_probability::Float32 = sigmoid(-4.0f0)   # ≈ 0.98201
-    clean_probability::Float32   = sigmoid(4.0f0)    # ≈ 0.01799
-
-    @testset "certainty gate" begin
-        # Sample 1: both decided (|μ| = 4 > 2.2) and both flipped. One active
-        # pair, so the normaliser is 1 and r = -J σ σ ≈ -3 × 0.982² = -2.893.
-        @test rewards[1] ≈ -3.0f0 * flipped_probability^2 atol=1e-5
-        # Sample 2: |μ| = 0.2 < 2.2, gate closed, no active pairs, r = 0 exactly.
-        # Ungated this pair would have contributed ≈ -3 × 0.45² = -0.61.
-        @test rewards[2] == 0.0f0
-        # Sample 3: gate open, but neither qubit flipped, so the co-activation
-        # product is ≈ 0.018² and the reward is ≈ -0.001.
-        @test rewards[3] ≈ -3.0f0 * clean_probability^2 atol=1e-5
-        @test abs(rewards[3]) < 1e-2
-        # Sample 4: gate open, exactly one qubit flipped. The couplings reward
-        # CO-activation, so a mixed pair earns far less than a co-flipped one.
-        @test rewards[4] ≈ -3.0f0 * flipped_probability * clean_probability atol=1e-5
-        @test abs(rewards[4]) < abs(rewards[1]) / 10
-    end
-
-    @testset "gate-open fraction" begin
-        open_fraction = correlation_gate_open_fraction(
-            posterior_llrs, connectivity, certainty_threshold
-        )
-        # Three of four samples clear the threshold on both endpoints.
-        @test open_fraction ≈ 3.0f0 / 4.0f0 atol=1e-6
-    end
-
-    @testset "active-pair normalisation" begin
-        # Two identical pairs must give the same per-sample reward as one, since
-        # the reward is a MEAN over active pairs, not a sum over all edges.
-        wide_llrs = Float32[4.0; 4.0; 4.0; 4.0;;]
-        one_pair = ising_correlation_reward_per_sample(
-            wide_llrs, [1 2], Float32[3.0], certainty_threshold
-        )
-        two_pairs = ising_correlation_reward_per_sample(
-            wide_llrs, [1 2; 3 4], Float32[3.0, 3.0], certainty_threshold
-        )
-        @test one_pair[1] ≈ two_pairs[1] atol=1e-6
-    end
-
-    @testset "reward is non-positive for positive couplings" begin
-        # Ordering safety: a gated solved sample can never score worse than a
-        # failing one, whose base loss is ≳ 1 per broken check.
-        @test all(rewards .<= 0.0f0)
-    end
-    return nothing
-end
-
-"""
-The syndrome gate is an indicator on the soft H-weight, so it must be exactly 0
-or 1 and must use the stabilizers alone.
-"""
-function test_syndrome_gate()::Nothing
-    parity_check_matrix = BitMatrix([1 1 0 0; 0 0 1 1])
-    expected_recoveries = BitMatrix([0 0; 0 0; 0 0; 0 0])
-    # Sample 1 is a clean solution; sample 2 flips one qubit of the first check.
-    posterior_llrs = Float32[-8.0 8.0; -8.0 -8.0; -8.0 -8.0; -8.0 -8.0]
-
-    weights = soft_syndrome_weight_per_sample(
-        posterior_llrs, expected_recoveries, parity_check_matrix
-    )
-    gate = syndrome_gate_per_sample(
-        posterior_llrs, expected_recoveries, parity_check_matrix, 0.5f0
-    )
-    @testset "syndrome gate" begin
-        @test weights[1] < 0.5f0
-        @test weights[2] > 0.5f0
-        @test gate == Float32[1.0, 0.0]
-        @test all(g -> g == 0.0f0 || g == 1.0f0, gate)
-    end
-    return nothing
-end
-
-test_correlation_gates()
-test_syndrome_gate()
-
 # =============================================================================
-#  Certainty penalty family: the point of the alternatives is the force at mu=0
-# =============================================================================
-@testset "certainty penalty family" begin
-    # --- shape: all three are symmetric, peak at 0, decay to 0 ---------------
-    for penalty_function in (binary_entropy_of_sigmoid,
-                             exponential_certainty_penalty,
-                             μ -> hinge_certainty_penalty(μ, 2.2f0))
-        @test penalty_function(1.5f0) ≈ penalty_function(-1.5f0) atol = 1f-6
-        @test penalty_function(0.0f0) > penalty_function(1.0f0)
-        @test penalty_function(1.0f0) > penalty_function(4.0f0)
-        @test penalty_function(20.0f0) ≈ 0.0f0 atol = 1f-5
-    end
-
-    # --- the whole reason these exist: force at a perfectly undecided qubit --
-    # Central differences, so a cusp reports ~0 by symmetry; take the one-sided
-    # slope just off zero, which is what the optimizer actually sees.
-    step::Float32 = 1f-3
-    entropy_force::Float32 =
-        abs(binary_entropy_of_sigmoid(step) - binary_entropy_of_sigmoid(0.0f0)) / step
-    exponential_force::Float32 =
-        abs(exponential_certainty_penalty(step) - exponential_certainty_penalty(0.0f0)) / step
-    hinge_force::Float32 =
-        abs(hinge_certainty_penalty(step, 2.2f0) - hinge_certainty_penalty(0.0f0, 2.2f0)) / step
-    @test entropy_force < 1f-2                     # vanishes, as symmetry demands
-    @test exponential_force > 0.9f0                # ~1, its maximum
-    @test hinge_force ≈ 1.0f0 / 2.2f0 rtol = 1f-2  # exactly 1/w
-
-    # --- hinge is exactly inert beyond its width ----------------------------
-    @test hinge_certainty_penalty(2.2f0, 2.2f0) == 0.0f0
-    @test hinge_certainty_penalty(5.0f0, 2.2f0) == 0.0f0
-
-    # --- code lookup is strict ----------------------------------------------
-    @test certainty_penalty_code("entropy")      == CERTAINTY_PENALTY_ENTROPY
-    @test certainty_penalty_code("  Hinge  ")    == CERTAINTY_PENALTY_HINGE
-    @test_throws ArgumentError certainty_penalty_code("gaussian")
-
-    # --- per-sample sum dispatches and stays finite --------------------------
-    posterior_llrs::Matrix{Float32} = Float32[0.0 3.0; -0.5 -8.0; 1.0 0.2]
-    for kind in (CERTAINTY_PENALTY_ENTROPY, CERTAINTY_PENALTY_EXPONENTIAL, CERTAINTY_PENALTY_HINGE)
-        certainties::Vector{Float32} = certainty_per_sample(posterior_llrs, kind, 2.2f0)
-        @test length(certainties) == 2
-        @test all(isfinite, certainties)
-        @test all(certainties .>= 0.0f0)
-        # sample 1 is far less decided than sample 2, for every penalty
-        @test certainties[1] > certainties[2]
-    end
-end
-
-# =============================================================================
-#  log-agreement L3: force at the DISCORDANT corners, none at the concordant ones
+# Tests for the training loss, src/loss.jl. The loss is the softmin over scored
+# layers of the base loss — the residue of e + σ(μ) against [H; L] — and nothing
+# else, so these tests are short.
+#
+# Run from `tests/`:  julia --project="./../" -e 'include("test_loss.jl")'
 # =============================================================================
 
-# Single-pair, single-sample wrappers so the corner cases below read as scalars.
-# Named top-level functions rather than closures because an anonymous
-# `function (args...)::T` is a syntax error in Julia — the return-type annotation
-# is only allowed on a named definition — and the house style requires one.
-function log_agreement_penalty_for_pair(
-    mu_i::Float32,
-    mu_k::Float32,
-    coupling::Float32,
-    certainty_threshold::Float32,
-    agreement_floor::Float32
-)::Float32
-    posterior_llrs::Matrix{Float32} = reshape(Float32[mu_i, mu_k], 2, 1)
-    pair_connectivity::Matrix{Int} = [1 2]
-    penalties::Vector{Float32} = ising_log_agreement_penalty_per_sample(
-        posterior_llrs, pair_connectivity, Float32[coupling],
-        certainty_threshold, agreement_floor
-    )
-    return penalties[1]
-end
-
-function bilinear_reward_for_pair(
-    mu_i::Float32,
-    mu_k::Float32,
-    coupling::Float32,
-    certainty_threshold::Float32
-)::Float32
-    posterior_llrs::Matrix{Float32} = reshape(Float32[mu_i, mu_k], 2, 1)
-    pair_connectivity::Matrix{Int} = [1 2]
-    rewards::Vector{Float32} = ising_correlation_reward_per_sample(
-        posterior_llrs, pair_connectivity, Float32[coupling], certainty_threshold
-    )
-    return rewards[1]
-end
-
-@testset "log agreement correlation term" begin
-    # Certainty gate wide open: the gate is |μ| > threshold, so 0 admits every
-    # decided qubit. (μ = 0 exactly still fails it, which the ≥ 0 grid below uses.)
-    open_gate_threshold::Float32 = 0.0f0
-    floor_value::Float32 = 1.0f-4
-    saturated::Float32 = 12.0f0
-    step::Float32 = 1.0f-3
-
-    # (1 + t_i t_k)/2 IS P(agree): check against the explicit probability.
-    for (mu_i, mu_k) in ((2.0f0, 3.0f0), (-1.0f0, 4.0f0), (0.0f0, 0.0f0))
-        error_probability_i::Float32 = sigmoid(mu_i)
-        error_probability_k::Float32 = sigmoid(mu_k)
-        agreement::Float32 = 0.5f0 * (1.0f0 + tanh(mu_i / 2) * tanh(mu_k / 2))
-        expected_agreement::Float32 =
-            error_probability_i * error_probability_k +
-            (1.0f0 - error_probability_i) * (1.0f0 - error_probability_k)
-        @test agreement ≈ expected_agreement atol=1f-5
-    end
-
-    # POSITIVE coupling: concordant corners cost nothing, discordant ones cost.
-    @test log_agreement_penalty_for_pair( saturated,  saturated, 1.5f0, open_gate_threshold, floor_value) ≈ 0.0f0 atol=1f-4
-    @test log_agreement_penalty_for_pair(-saturated, -saturated, 1.5f0, open_gate_threshold, floor_value) ≈ 0.0f0 atol=1f-4
-    @test log_agreement_penalty_for_pair( saturated, -saturated, 1.5f0, open_gate_threshold, floor_value) > 10.0f0
-    # NEGATIVE coupling: the barrier moves to AGREEMENT, and stays a penalty.
-    @test log_agreement_penalty_for_pair( saturated, -saturated, -0.6f0, open_gate_threshold, floor_value) ≈ 0.0f0 atol=1f-4
-    @test log_agreement_penalty_for_pair( saturated,  saturated, -0.6f0, open_gate_threshold, floor_value) > 1.0f0
-
-    # Never negative, for either sign of J — this is what a raw -J log A lacked:
-    # with J < 0 that form is unbounded BELOW, and 24% of the real couplings are
-    # negative, so the optimizer would have had a free escape to -Inf.
-    for coupling in (2.0f0, -2.0f0), mu_i in (-saturated, 0.0f0, saturated), mu_k in (-saturated, 0.0f0, saturated)
-        @test log_agreement_penalty_for_pair(mu_i, mu_k, coupling, open_gate_threshold, floor_value) >= 0.0f0
-    end
-
-    # Finite even where tanh saturates to exactly 1.0f0 (|μ| ≳ 18): without the
-    # floor this is log(0) = -Inf, a NaN gradient and silently untrained weights.
-    @test isfinite(log_agreement_penalty_for_pair(40.0f0, -40.0f0,  5.36f0, open_gate_threshold, floor_value))
-    @test isfinite(log_agreement_penalty_for_pair(40.0f0,  40.0f0, -5.36f0, open_gate_threshold, floor_value))
-
-    # Gradient: ~0 at the concordant corners, non-vanishing at the discordant ones.
-    concordant_force::Float32 = abs(
-        log_agreement_penalty_for_pair(saturated + step, saturated, 1.5f0, open_gate_threshold, floor_value) -
-        log_agreement_penalty_for_pair(saturated,        saturated, 1.5f0, open_gate_threshold, floor_value)) / step
-    discordant_force::Float32 = abs(
-        log_agreement_penalty_for_pair(2.0f0 + step, -2.0f0, 1.5f0, open_gate_threshold, floor_value) -
-        log_agreement_penalty_for_pair(2.0f0,        -2.0f0, 1.5f0, open_gate_threshold, floor_value)) / step
-    @test concordant_force < 1f-3
-    @test discordant_force > 0.1f0
-
-    # The bilinear form vanishes at the discordant corner too — the defect.
-    bilinear_discordant_force::Float32 = abs(
-        bilinear_reward_for_pair(saturated + step, -saturated, 1.5f0, open_gate_threshold) -
-        bilinear_reward_for_pair(saturated,        -saturated, 1.5f0, open_gate_threshold)) / step
-    @test bilinear_discordant_force < 1f-3
-
-    @test correlation_form_code("bilinear") == CORRELATION_FORM_BILINEAR
-    @test correlation_form_code(" Log_Agreement ") == CORRELATION_FORM_LOG_AGREEMENT
-    @test_throws ArgumentError correlation_form_code("ising")
-end
-
-# =============================================================================
-#  tau_2: L2's own syndrome gate. The narrow hinge is DEAD under a shared gate.
-# =============================================================================
-
-function gated_certainty_contribution(
-    posterior_llrs::Matrix{Float32},
-    expected_recoveries::BitMatrix,
-    parity_check_matrix::BitMatrix,
-    syndrome_gate_threshold::Float32,
-    certainty_syndrome_gate_threshold::Float32,
-    certainty_penalty_kind::Int,
-    certainty_hinge_width::Float32
-)::Float32
+function two_check_dual()::BitMatrix
     """
-    The part of L2 that actually reaches the gradient: gate x penalty, summed.
-    Testing the penalty VALUE alone is what let a structurally dead term ship --
-    both hinge widths logged non-zero penalties while contributing exactly zero.
+    Four bits, two stabilizer rows and one logical row: [H; L].
     """
-    syndrome_weights::Vector{Float32} = soft_syndrome_weight_per_sample(
-        posterior_llrs, expected_recoveries, parity_check_matrix)
-    effective_threshold::Float32 = certainty_syndrome_gate_threshold
-    if certainty_syndrome_gate_threshold < 0.0f0
-        effective_threshold = syndrome_gate_threshold
-    end
-    certainty_gate::Vector{Float32} = Float32.(syndrome_weights .< effective_threshold)
-    penalties::Vector{Float32} = certainty_per_sample(
-        posterior_llrs, certainty_penalty_kind, certainty_hinge_width)
-    total::Float32 = sum(certainty_gate .* penalties)
-    return total
+    dual::BitMatrix = BitMatrix([1 1 0 0; 0 0 1 1; 1 0 1 0])
+    return dual
 end
 
-@testset "L2 gate decoupling" begin
-    # Two weight-2 checks on 4 qubits. Sample 1 carries TWO undecided qubits
-    # (mu = 0.0 and 0.4); sample 2 is fully decided and clean. mu = 0.4 matters:
-    # at mu = 0 the hinge is 1.0 for EVERY width, so a fixture with only that
-    # qubit could not tell two widths apart even with the gate open.
-    parity_check_matrix = BitMatrix([1 1 0 0; 0 0 1 1])
-    expected_recoveries = BitMatrix([0 0; 0 0; 0 0; 0 0])
-    posterior_llrs = Float32[0.0 8.0; 0.4 8.0; 8.0 8.0; 8.0 8.0]
+@testset "smooth_loss is the piecewise quadratic distance to the even integers" begin
+    @test smooth_loss(0.0f0) == 0.0f0
+    @test smooth_loss(2.0f0) == 0.0f0
+    @test smooth_loss(4.0f0) == 0.0f0
+    @test smooth_loss(1.0f0) == 1.0f0          # maximal at the odd integers
+    @test smooth_loss(0.5f0) == 0.25f0
+    @test smooth_loss(1.5f0) == 0.25f0         # symmetric about 1
+    @test smooth_loss(2.5f0) == 0.25f0         # periodic with period 2
+    @test smooth_loss(3.0f0) == 1.0f0
+end
 
-    syndrome_weights::Vector{Float32} = soft_syndrome_weight_per_sample(
-        posterior_llrs, expected_recoveries, parity_check_matrix)
-    # An undecided qubit lifts |s| far above tau = 0.5. That is the whole
-    # mechanism: the shared gate drops exactly the sample L2 wants to fix.
-    @test syndrome_weights[1] > 0.5f0     # ~0.989
-    @test syndrome_weights[2] < 0.5f0     # ~0.002
+@testset "compute_smooth_loss_from_llrs is zero exactly at the right decode" begin
+    dual::BitMatrix = two_check_dual()
+    # Sample 1: error on bit 1. Sample 2: no error.
+    expected::BitMatrix = BitMatrix([1 0; 0 0; 0 0; 0 0])
+    # Confident correct decisions: σ(μ) ≈ 1 where the error is (μ ≪ 0), ≈ 0 elsewhere.
+    correct::Matrix{Float32} = Float32[-30 30; 30 30; 30 30; 30 30]
+    @test compute_smooth_loss_from_llrs(correct, expected, dual) < 1e-6
+    # Confident WRONG decision on sample 1 (says bit 1 is clean): e + σ(μ) = 1 on
+    # bit 1, which breaks check 1 and logical 1 -> two unit penalties for one of
+    # two samples.
+    wrong::Matrix{Float32} = Float32[30 30; 30 30; 30 30; 30 30]
+    @test isapprox(compute_smooth_loss_from_llrs(wrong, expected, dual), 2.0f0 / 2; atol = 1e-5)
+    # Undecided (μ = 0, σ = 0.5 everywhere). Sample 1: e + σ = [1.5, .5, .5, .5],
+    # rows give 2.0, 1.0, 2.0 -> penalty 1. Sample 2: every row sums to 1.0 ->
+    # penalty 3. Mean over the two samples: 2. Note this is WORSE than the
+    # confidently wrong decode above: the penalty is periodic in the residue, so
+    # half-decided bits can land on the odd integers where it is maximal.
+    undecided::Matrix{Float32} = zeros(Float32, 4, 2)
+    @test isapprox(compute_smooth_loss_from_llrs(undecided, expected, dual), 2.0f0; atol = 1e-5)
+end
 
-    narrow::Float32 = 0.3f0
-    wider::Float32  = 0.5f0
-    inherit_tau::Float32 = -1.0f0
-    opened::Float32 = 1.0f6
+@testset "softmin_loss interpolates between the mean and the minimum" begin
+    losses::Vector{Float32} = Float32[3.0, 1.0, 2.0]
+    @test softmin_loss(Float32[1.5], 0.3f0) == 1.5f0                    # one layer: itself
+    @test isapprox(softmin_loss(losses, 1.0f-3), 1.0f0; atol = 1e-2)   # cold: the minimum
+    @test softmin_loss(losses, 1.0f-3) <= softmin_loss(losses, 1.0f0)  # colder is lower ...
+    @test softmin_loss(losses, 1.0f0) <= minimum(losses)                # ... and never above the minimum
+    @test softmin_loss(Float32[2.0, 2.0, 2.0], 0.5f0) < 2.0f0           # T·log(n) below at zero spread
+    @test isapprox(softmin_loss(Float32[2.0, 2.0, 2.0], 0.5f0), 2.0f0 - 0.5f0 * log(3.0f0); atol = 1e-6)
+end
 
-    shared_narrow::Float32 = gated_certainty_contribution(posterior_llrs,
-        expected_recoveries, parity_check_matrix, 0.5f0, inherit_tau,
-        CERTAINTY_PENALTY_HINGE, narrow)
-    shared_wider::Float32 = gated_certainty_contribution(posterior_llrs,
-        expected_recoveries, parity_check_matrix, 0.5f0, inherit_tau,
-        CERTAINTY_PENALTY_HINGE, wider)
-    opened_narrow::Float32 = gated_certainty_contribution(posterior_llrs,
-        expected_recoveries, parity_check_matrix, 0.5f0, opened,
-        CERTAINTY_PENALTY_HINGE, narrow)
-    opened_wider::Float32 = gated_certainty_contribution(posterior_llrs,
-        expected_recoveries, parity_check_matrix, 0.5f0, opened,
-        CERTAINTY_PENALTY_HINGE, wider)
-
-    # Under the INHERITED gate a narrow hinge contributes nothing at all, and the
-    # two widths are indistinguishable -- the exact symptom that shipped 72 dead
-    # runs whose weights came out bit-identical.
-    @test shared_narrow == 0.0f0
-    @test shared_wider == 0.0f0
-    @test shared_narrow == shared_wider
-    # DECOUPLED, it fires, and the widths separate.
-    @test opened_narrow ≈ 1.0f0 atol = 1f-4
-    @test opened_wider ≈ 1.2f0 atol = 1f-4
-    @test opened_narrow != opened_wider
-
-    # The entropy survives a shared gate: its tail reaches the decided sample.
-    shared_entropy::Float32 = gated_certainty_contribution(posterior_llrs,
-        expected_recoveries, parity_check_matrix, 0.5f0, inherit_tau,
-        CERTAINTY_PENALTY_ENTROPY, narrow)
-    @test shared_entropy > 0.0f0
-
-    # tau_2 < 0 must reproduce the shared gate exactly, for every penalty: this
-    # is what keeps every pre-split run bit-for-bit reproducible.
-    for kind in (CERTAINTY_PENALTY_ENTROPY, CERTAINTY_PENALTY_EXPONENTIAL, CERTAINTY_PENALTY_HINGE)
-        @test gated_certainty_contribution(posterior_llrs, expected_recoveries,
-                  parity_check_matrix, 0.5f0, -1.0f0, kind, 2.2f0) ==
-              gated_certainty_contribution(posterior_llrs, expected_recoveries,
-                  parity_check_matrix, 0.5f0, 0.5f0, kind, 2.2f0)
+@testset "compute_loss is the softmin of the per-layer base losses, after warmup" begin
+    dual::BitMatrix = two_check_dual()
+    expected::BitMatrix = BitMatrix([1 0; 0 0; 0 0; 0 0])
+    # Three layers: wrong, undecided, correct.
+    posteriors::Array{Float32, 3} = zeros(Float32, 4, 2, 3)
+    posteriors[:, :, 1] .= Float32[30 30; 30 30; 30 30; 30 30]
+    posteriors[:, :, 2] .= 0.0f0
+    posteriors[:, :, 3] .= Float32[-30 30; 30 30; 30 30; 30 30]
+    per_layer::Vector{Float32} = base_loss_per_layer(posteriors, expected, dual, 0)
+    @test length(per_layer) == 3
+    @test isapprox(per_layer[1], 1.0f0; atol = 1e-5)   # wrong (see the test above)
+    @test isapprox(per_layer[2], 2.0f0; atol = 1e-5)   # undecided
+    @test per_layer[3] < 1e-6                          # correct
+    # A cold softmin commits to the correct layer whichever earlier layers are
+    # still being scored.
+    @test compute_loss(posteriors, expected, dual, 1.0f-3, 0) < 1e-2
+    @test compute_loss(posteriors, expected, dual, 1.0f-3, 1) < 1e-2
+    @test compute_loss(posteriors, expected, dual, 1.0f-3, 2) < 1e-2
+    # Warmup drops the first layers from scoring.
+    @test base_loss_per_layer(posteriors, expected, dual, 1) == per_layer[2:3]
+    @test_throws ArgumentError base_loss_per_layer(posteriors, expected, dual, 3)
+    for temperature in (0.01f0, 0.5f0, 5.0f0)
+        @test compute_loss(posteriors, expected, dual, temperature, 0) ==
+              softmin_loss(per_layer, temperature)
+        @test compute_loss(posteriors, expected, dual, temperature, 1) ==
+              softmin_loss(per_layer[2:3], temperature)
     end
 end
 
-# =============================================================================
-#  coflip L3: silent at concordant corners, kicks the CLEAN qubit of a
-#  discordant pair toward errored, positive couplings only.
-# =============================================================================
-
-function coflip_penalty_for_pair(
-    mu_i::Float32,
-    mu_k::Float32,
-    coupling::Float32,
-    certainty_threshold::Float32,
-    agreement_floor::Float32
-)::Float32
-    posterior_llrs::Matrix{Float32} = reshape(Float32[mu_i, mu_k], 2, 1)
-    pair_connectivity::Matrix{Int} = [1 2]
-    penalties::Vector{Float32} = ising_coflip_penalty_per_sample(
-        posterior_llrs, pair_connectivity, Float32[coupling],
-        certainty_threshold, agreement_floor
+@testset "Enzyme differentiates the training loss through the forward pass" begin
+    parity_check_matrix::Matrix{Int} = [1 1 0 0; 0 0 1 1]
+    parity_check_matrix_dual::Matrix{Int} = [1 1 0 0; 0 0 1 1; 1 0 1 0]
+    initial_llrs::Vector{Float32} = fill(Float32(log(9)), 4)
+    base::NeuralBPBase = NeuralBPBase(parity_check_matrix, parity_check_matrix_dual, initial_llrs, 3)
+    bpnn::NachmaniNeuralBP = NachmaniNeuralBP(
+        base;
+        weights_c2v_v2c = random_values_around_one([base.nb_weights_c2v_v2c * base.n_layers]; scale = 0.1f0),
+        weights_llrs = random_values_around_one([base.code_n_bits * base.n_layers]; scale = 0.1f0),
+        weights_c2v_readout = random_values_around_one([base.nb_weights_c2v_readout]; scale = 0.1f0),
     )
-    return penalties[1]
-end
+    expected::BitMatrix = BitMatrix([1 0; 0 0; 0 1; 0 0])
+    syndromes::BitMatrix = BitMatrix(mod.(parity_check_matrix * Matrix{Int}(expected), 2) .== 1)
+    llrs_batch::Matrix{Float32} = repeat(base.initial_llrs, 1, 2)
 
-@testset "coflip correlation term" begin
-    open_gate::Float32 = 0.0f0
-    floor_value::Float32 = 1.0f-4
-    # |mu| = 6 is DECIDED (sigma = 2.5e-3) but not hyper-saturated: the kick is
-    # near full strength there. At |mu| = 14 (sigma = 8e-7 < eps) the eps floor
-    # caps the 1/sigma divergence and the kick decays -- by design, since a
-    # bounded loss cannot move a qubit that saturated anyway.
-    decided::Float32 = 6.0f0
-    step::Float32 = 1.0f-3
-
-    # --- values: small at both concordant corners, large at discordance ------
-    # At (clean, clean) the VALUE is ~0.044, not 0: each term is sigma*|log sigma|
-    # ~ mu*exp(-mu), which only reaches 0 asymptotically. What the request was
-    # about -- and what the gradient assertions below check -- is that the FORCE
-    # is silent there. 0.044 against 8.9 at discordance is a 200x separation.
-    @test coflip_penalty_for_pair( decided,  decided, 1.5f0, open_gate, floor_value) < 0.1f0
-    @test coflip_penalty_for_pair(-decided, -decided, 1.5f0, open_gate, floor_value) ≈ 0.0f0 atol=1f-2
-    @test coflip_penalty_for_pair( decided, -decided, 1.5f0, open_gate, floor_value) > 5.0f0
-    @test coflip_penalty_for_pair(-decided,  decided, 1.5f0, open_gate, floor_value) > 5.0f0
-
-    # --- the requested gradient profile --------------------------------------
-    kick_on_clean::Float32 = abs(
-        coflip_penalty_for_pair(decided + step, -decided, 1.5f0, open_gate, floor_value) -
-        coflip_penalty_for_pair(decided,        -decided, 1.5f0, open_gate, floor_value)) / step
-    kick_on_errored::Float32 = abs(
-        coflip_penalty_for_pair(decided, -decided - step, 1.5f0, open_gate, floor_value) -
-        coflip_penalty_for_pair(decided, -decided,        1.5f0, open_gate, floor_value)) / step
-    silent_both_clean::Float32 = abs(
-        coflip_penalty_for_pair(decided + step, decided, 1.5f0, open_gate, floor_value) -
-        coflip_penalty_for_pair(decided,        decided, 1.5f0, open_gate, floor_value)) / step
-    silent_both_errored::Float32 = abs(
-        coflip_penalty_for_pair(-decided + step, -decided, 1.5f0, open_gate, floor_value) -
-        coflip_penalty_for_pair(-decided,        -decided, 1.5f0, open_gate, floor_value)) / step
-    @test kick_on_clean > 1.0f0            # ~ J * 0.956 = 1.43: the strong kick
-    @test kick_on_errored < 0.1f0          # the errored partner is left alone
-    @test silent_both_clean < 0.05f0       # concordant: silent
-    @test silent_both_errored < 0.05f0     # concordant: silent
-
-    # --- negative couplings are excluded entirely ----------------------------
-    @test coflip_penalty_for_pair( decided, -decided, -0.6f0, open_gate, floor_value) == 0.0f0
-    @test coflip_penalty_for_pair(-decided, -decided, -0.6f0, open_gate, floor_value) == 0.0f0
-    # ...including from the active-pair normaliser: a mixed edge list must give
-    # the same value as the positive edge alone.
-    mixed_llrs::Matrix{Float32} = reshape(Float32[decided, -decided, decided, -decided], 4, 1)
-    positive_only::Vector{Float32} = ising_coflip_penalty_per_sample(
-        mixed_llrs, [1 2], Float32[1.5], open_gate, floor_value)
-    with_negative::Vector{Float32} = ising_coflip_penalty_per_sample(
-        mixed_llrs, [1 2; 3 4], Float32[1.5, -0.6], open_gate, floor_value)
-    @test positive_only[1] ≈ with_negative[1] atol=1f-6
-
-    # --- finite at Float32 sigmoid underflow (mu >= 104 gives sigma == 0.0f0) --
-    @test isfinite(coflip_penalty_for_pair(120.0f0, -120.0f0, 5.36f0, open_gate, floor_value))
-    @test coflip_penalty_for_pair(120.0f0, -120.0f0, 5.36f0, open_gate, floor_value) >= 0.0f0
-
-    # --- certainty gate still applies ----------------------------------------
-    @test coflip_penalty_for_pair(0.2f0, -0.2f0, 1.5f0, 2.2f0, floor_value) == 0.0f0
-
-    # --- never negative over a grid, for either coupling sign ----------------
-    for coupling in (2.0f0, -2.0f0), a in (-decided, 0.0f0, decided), b in (-decided, 0.0f0, decided)
-        @test coflip_penalty_for_pair(a, b, coupling, open_gate, floor_value) >= 0.0f0
-    end
-
-    @test correlation_form_code("coflip") == CORRELATION_FORM_COFLIP
-end
-
-# =============================================================================
-#  Smooth syndrome gate: graded in value, and DETACHED — no gradient through it.
-#  The second property is the one that matters and the one nothing else checks.
-# =============================================================================
-
-function toy_smooth_gated_loss(posterior_llrs::Vector{Float32})::Float32
-    """
-    sum( w(mu) * mu^2 ) with w the staircase gate of |mu|. If the gate is
-    detached the gradient is exactly w * 2mu; if it leaked, an extra
-    -rate*w*mu^2*sign(mu) term would appear, of comparable size.
-    """
-    stand_in_syndrome_weights::Vector{Float32} = abs.(posterior_llrs)
-    gate::Vector{Float32} = smooth_syndrome_gate_per_sample(
-        stand_in_syndrome_weights, 1.0f0, SYNDROME_GATE_LEVELS)
-    total::Float32 = sum(gate .* posterior_llrs .^ 2)
-    return total
-end
-
-@testset "smooth syndrome gate" begin
-    # The staircase approximates exp(-rate*|s|) to ~1/K, so compare with the
-    # tolerance the approximation actually has rather than to 1e-6.
-    staircase_tolerance::Float32 = 1.0f0 / Float32(SYNDROME_GATE_LEVELS)
-    weights::Vector{Float32} = Float32[0.0, 0.5, 1.0, 2.0, 4.0]
-    gate::Vector{Float32} = smooth_syndrome_gate_per_sample(
-        weights, 0.5f0, SYNDROME_GATE_LEVELS)
-    # --- values: graded, monotone, exactly 1 at a solved sample --------------
-    @test gate[1] == 1.0f0
-    @test gate[2] ≈ exp(-0.25f0) atol = staircase_tolerance
-    @test gate[5] ≈ exp(-2.0f0)  atol = staircase_tolerance
-    @test all(diff(gate) .<= 0.0f0)
-    @test all(0.0f0 .<= gate .<= 1.0f0)
-    # a stricter rate closes faster
-    @test smooth_syndrome_gate_per_sample(weights, 2.0f0, SYNDROME_GATE_LEVELS)[3] <
-          gate[3]
-    # more levels track the exponential more closely
-    coarse_error::Float32 = abs(
-        smooth_syndrome_gate_per_sample(weights, 0.5f0, 4)[3] - exp(-0.5f0))
-    fine_error::Float32 = abs(
-        smooth_syndrome_gate_per_sample(weights, 0.5f0, 64)[3] - exp(-0.5f0))
-    @test fine_error <= coarse_error
-    # --- code lookup is strict ----------------------------------------------
-    @test syndrome_gate_code("indicator") == SYNDROME_GATE_INDICATOR
-    @test syndrome_gate_code(" Smooth ")  == SYNDROME_GATE_SMOOTH
-    @test_throws ArgumentError syndrome_gate_code("sigmoid")
-
-    # --- THE DETACHMENT CHECK, through Enzyme itself ------------------------
-    # The gate is built from comparisons, so no gradient may flow through it.
-    llrs::Vector{Float32} = Float32[0.3, -0.8, 1.5, -2.0]
-    gradient::Vector{Float32} = zeros(Float32, length(llrs))
-    Enzyme.autodiff(Enzyme.Reverse, toy_smooth_gated_loss,
-                    Enzyme.Duplicated(llrs, gradient))
-    gate_at_llrs::Vector{Float32} = smooth_syndrome_gate_per_sample(
-        abs.(llrs), 1.0f0, SYNDROME_GATE_LEVELS)
-    detached_expected::Vector{Float32} = gate_at_llrs .* (2.0f0 .* llrs)
-    leaked_extra::Vector{Float32} = -gate_at_llrs .* llrs .^ 2 .* sign.(llrs)
-    @test isapprox(gradient, detached_expected; atol = 1f-4)
-    @test !isapprox(gradient, detached_expected .+ leaked_extra; atol = 1f-3)
-end
-
-# =============================================================================
-#  THE TEST THAT MATTERS: Enzyme must differentiate the REAL loss, in BOTH gate
-#  modes. A toy function is not enough -- the 2026-09-04 sweep failed on every
-#  one of 240 points with EnzymeRuntimeActivityError raised inside
-#  compute_loss_including_correlations, from a `gate` assigned in a branch. The
-#  toy smooth-gate test above passed throughout, because the toy had no branch.
-# =============================================================================
-
-function differentiate_total_loss(
-    posterior_llrs::Array{Float32, 3},
-    expected_recoveries::BitMatrix,
-    parity_check_matrix::BitMatrix,
-    parity_check_matrix_dual::BitMatrix,
-    connectivity::Matrix{Int},
-    correlation_strengths::Vector{Float32},
-    syndrome_gate_mode::Int,
-    correlation_form::Int
-)::Array{Float32, 3}
-    """
-    Reverse-mode gradient of the total loss w.r.t. the posterior LLRs, taken
-    through the same entry point train.jl differentiates.
-    """
-    gradient::Array{Float32, 3} = zeros(Float32, size(posterior_llrs))
-    Enzyme.autodiff(
-        Enzyme.Reverse, compute_loss_including_correlations,
-        Enzyme.Duplicated(posterior_llrs, gradient),
-        Enzyme.Const(expected_recoveries),
-        Enzyme.Const(parity_check_matrix),
-        Enzyme.Const(parity_check_matrix_dual),
-        Enzyme.Const(connectivity),
-        Enzyme.Const(correlation_strengths),
-        Enzyme.Const(true),          # is_correlated
-        Enzyme.Const(0.3f0),         # correlation_weight
-        Enzyme.Const(0.5f0),         # loss_layer_temperature
-        Enzyme.Const(0.01f0),        # llr_certainty_importance
-        Enzyme.Const(0.0f0),         # sparsity_importance
-        Enzyme.Const(0.5f0),         # syndrome_gate_threshold
-        Enzyme.Const(-1.0f0),        # certainty_syndrome_gate_threshold
-        Enzyme.Const(syndrome_gate_mode),
-        Enzyme.Const(0.5f0),         # syndrome_gate_rate
-        Enzyme.Const(2.2f0),         # correlation_certainty_threshold
-        Enzyme.Const(CERTAINTY_PENALTY_ENTROPY),
-        Enzyme.Const(2.2f0),         # certainty_hinge_width
-        Enzyme.Const(correlation_form),
-        Enzyme.Const(1.0f-4),        # correlation_agreement_floor
-        Enzyme.Const(0)              # warmup_loss_layers
+    grad_w_c2v_v2c::Vector{Float32} = zeros(Float32, length(bpnn.weights_c2v_v2c))
+    grad_w_llrs::Vector{Float32} = zeros(Float32, length(bpnn.weights_llrs))
+    grad_w_readout::Vector{Float32} = zeros(Float32, length(bpnn.weights_c2v_readout))
+    grad_alpha::Vector{Float32} = zeros(Float32, 1)
+    (_, loss_value) = Enzyme.autodiff(
+        Enzyme.ReverseWithPrimal,
+        CorrelatedBPDecoderWithCER.get_loss_value,
+        Enzyme.Duplicated(bpnn.weights_c2v_v2c, grad_w_c2v_v2c),
+        Enzyme.Duplicated(bpnn.weights_llrs, grad_w_llrs),
+        Enzyme.Duplicated(bpnn.weights_c2v_readout, grad_w_readout),
+        Enzyme.Duplicated(bpnn.coupling_scale, grad_alpha),
+        Enzyme.Const(1.0f0),         # loss_layer_temperature
+        Enzyme.Const(0),             # warmup_loss_layers
+        Enzyme.Const(base),
+        Enzyme.Const(llrs_batch),
+        Enzyme.Const(syndromes),
+        Enzyme.Const(expected)
     )
-    return gradient
-end
-
-@testset "Enzyme differentiates the real loss in both gate modes" begin
-    # 4 qubits, 2 samples, 3 layers; two weight-2 checks plus one logical row.
-    parity_check_matrix = BitMatrix([1 1 0 0; 0 0 1 1])
-    parity_check_matrix_dual = BitMatrix([1 1 0 0; 0 0 1 1; 1 0 1 0])
-    expected_recoveries = BitMatrix([0 0; 0 0; 0 0; 0 0])
-    connectivity::Matrix{Int} = [1 2; 3 4]
-    correlation_strengths::Vector{Float32} = Float32[1.5, -0.6]
-    posterior_llrs::Array{Float32, 3} = reshape(
-        Float32[ 3.0, -2.0, 1.0, -4.0,   0.4, 5.0, -3.0, 2.0,
-                -1.0,  2.5, 0.2, -0.3,   6.0, -1.5, 0.8, 3.0,
-                 2.0, -2.0, 4.0, -1.0,  -0.5, 1.2, -2.5, 0.9], 4, 2, 3)
-
-    for gate_mode in (SYNDROME_GATE_INDICATOR, SYNDROME_GATE_SMOOTH)
-        for form in (CORRELATION_FORM_BILINEAR, CORRELATION_FORM_LOG_AGREEMENT,
-                     CORRELATION_FORM_COFLIP)
-            gradient::Array{Float32, 3} = differentiate_total_loss(
-                copy(posterior_llrs), expected_recoveries, parity_check_matrix,
-                parity_check_matrix_dual, connectivity, correlation_strengths,
-                gate_mode, form)
-            @test size(gradient) == size(posterior_llrs)
-            @test all(isfinite, gradient)
-            # A gradient of exactly zero everywhere would mean the loss was
-            # detached from the LLRs entirely -- silently untrainable.
-            @test any(!iszero, gradient)
-        end
-    end
+    @test isfinite(loss_value)
+    @test loss_value > 0.0f0
+    @test all(isfinite, grad_w_c2v_v2c)
+    @test all(isfinite, grad_w_llrs)
+    @test all(isfinite, grad_w_readout)
+    # A gradient of exactly zero everywhere would mean the loss was detached
+    # from the weights entirely -- silently untrainable.
+    @test any(!iszero, grad_w_c2v_v2c)
+    @test any(!iszero, grad_w_llrs)
+    # The standard check node never reads alpha, so its gradient is exactly 0.
+    @test grad_alpha[1] == 0.0f0
 end

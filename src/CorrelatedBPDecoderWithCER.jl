@@ -141,6 +141,17 @@ include("command_line.jl")
 export parse_command_line_args_BP, parse_command_line_args_NN, print_arguments, generate_runs, parse_hyper_parameters, disable_retrain_in_hyperparams,
        hyperparameter_seed, seed_tag_for, apply_training_seed!
 
+# Correlation-adapted check node. BEFORE neuralbase.jl, whose `NeuralBPBase`
+# carries a `SoftCheckTables` field; the kernels themselves only need `softplus`
+# from utils.jl, which is resolved at call time.
+include("soft_constraints.jl")
+export CHECK_NODE_TANH, CHECK_NODE_ENRICHED, check_node_code, check_node_name, SoftCheckTables,
+       empty_soft_check_tables, build_soft_check_tables, describe_soft_check_tables,
+       apply_enriched_checks!, GPUSoftCheckState, build_gpu_soft_check_state,
+       apply_enriched_checks_gpu, ENRICHED_MESSAGE_CAP, enriched_kernel_bytes_per_sample,
+       cap_batch_size_for_enriched_kernel, release_device_array!, release_gpu_soft_check_state!,
+       ENRICHED_KERNEL_MEMORY_BUDGET_BYTES
+
 # Neural belief propagation
 include("neuralbase.jl")
 export NeuralBPBase, NeuralBP, add_soft_constraints_to_neuralbpbase, parse_cer_data,
@@ -156,7 +167,8 @@ export forward_pass_with_weights, c2v_to_v2c_with_weights!, readout_with_weights
 
 # GPU-accelerated forward pass
 include("forward_gpu.jl")
-export forward_pass_gpu
+export forward_pass_gpu, release_gpu_state!, predict_recoveries_gpu, build_gpu_state,
+       update_gpu_state_syndromes!, GPUState
 
 include("legacy.jl") # these are solely for debugging and testing, not intended for external use.
 export forward_pass, c2v_to_v2c, v2c_to_c2v, readout,
@@ -186,15 +198,7 @@ export save_trained_weights, extract_weights_for_BP, save_extracted_weights_for_
 
 # Loss functions
 include("loss.jl")
-export compute_loss_including_correlations, compute_smooth_loss_from_llrs, softmin_loss,
-       soft_syndrome_weight_per_sample, syndrome_gate_per_sample, certainty_per_sample,
-       sparsity_per_sample, ising_correlation_reward_per_sample, correlation_gate_open_fraction,
-       ising_log_agreement_penalty_per_sample, correlation_term_per_sample, correlation_form_code,
-       CORRELATION_FORM_BILINEAR, CORRELATION_FORM_LOG_AGREEMENT, CORRELATION_FORM_COFLIP,
-       ising_coflip_penalty_per_sample,
-       SYNDROME_GATE_INDICATOR, SYNDROME_GATE_SMOOTH, syndrome_gate_code,
-       SYNDROME_GATE_LEVELS, smooth_syndrome_gate_per_sample,
-       CERTAINTY_PENALTY_ENTROPY, CERTAINTY_PENALTY_EXPONENTIAL, CERTAINTY_PENALTY_HINGE
+export compute_loss, base_loss_per_layer, compute_smooth_loss_from_llrs, softmin_loss, smooth_loss
 
 # Training routines
 include("train.jl")
@@ -203,7 +207,7 @@ export train_neuralbp!, train_neuralbp_enzyme!, train_Nachmani_neuralbp
 # Predictions with trained models
 include("predict.jl")
 export predict_neuralbp, check_bp_solutions, predict_and_check_neuralbp, neuralbp_test_predictions,
-       resolve_prediction_batch_size,
+       resolve_prediction_batch_size, reusable_gpu_state,
        count_syndrome_satisfactions, predict_and_diagnose_neuralbp, concatenate_diagnoses,
        mean_committed_layer
 
@@ -215,8 +219,7 @@ export unit_weight_neuralbp, standard_bp_test_predictions
 # Utility functions
 include("utils.jl")
 export safe_atanh_exp_signed, safe_atanh_exp_signed!, safe_log_tanh_split, safe_log_tanh_split!, random_values_around_one, compute_std_assuming_bernoulli,
-       debug_log_tanh_split, xor_affine!, sparse_multiply!, sigmoid, binary_entropy, binary_entropy_of_sigmoid,
-       exponential_certainty_penalty, hinge_certainty_penalty, certainty_penalty_code, fmt_probs,
+       debug_log_tanh_split, xor_affine!, sparse_multiply!, sigmoid, softplus, fmt_probs,
        parse_memory, compute_optimal_batch_size_for
 
 #===============================================================================

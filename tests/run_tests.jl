@@ -3,6 +3,9 @@ include("test_bp_algo.jl")
 include("test_bp_utils.jl")
 include("test_loss.jl")
 include("test_classical_bp.jl")
+# Enriched (correlation-adapted) check node. Like test_loss.jl, its @testsets
+# run at include time.
+include("test_soft_constraints.jl")
 
 """
 Main test runner for all Neural BP tests.
@@ -11,7 +14,7 @@ Available test functions:
 - Forward propagation tests: test_forward_propagation()
 - BP algorithm tests: test_neural_BP(), test_training_Nachmani_BP()
 - BP utilities tests: test_activation_functions(), test_messages_c2v_to_v2c(), test_messages_v2c_c2v(), test_readout()
-- Loss function tests: test_loss(), test_correlation_loss()
+- Loss function tests: the @testsets in test_loss.jl, run at include time
 - Classical BP tests: test_classical_BP()
 """
 
@@ -67,22 +70,9 @@ function run_all_tests()
         println("✗ test_readout failed: $e")
     end
     
-    # Loss function tests
-    println("\n--- LOSS FUNCTION TESTS ---")
-    try
-        test_loss()
-        println("✓ test_loss passed")
-    catch e
-        println("✗ test_loss failed: $e")
-    end
-    
-    try
-        test_correlation_loss()
-        println("✓ test_correlation_loss passed")
-    catch e
-        println("✗ test_correlation_loss failed: $e")
-    end
-    
+    # Loss function tests: test_loss.jl runs its @testsets at include time
+    # (above), so there is nothing to call here.
+
     # Classical BP tests
     println("\n--- CLASSICAL BP TESTS ---")
     try

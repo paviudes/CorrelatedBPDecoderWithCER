@@ -125,3 +125,38 @@ end
   workers each balloon to their high-water mark and collapse the page cache.
 - `--mem-per-cpu` is a **pooled** cgroup limit (`mem_per_cpu × cpus_per_task`) shared
   by every process in the task — not a per-process cap.
+
+---
+
+## The loss (`src/loss.jl`)
+
+- `compute_loss` = softmin over scored layers of the base loss, the residue of
+  e + σ(μ) against [H; L]. **That is the whole loss.** The certainty (L2), sparsity
+  and correlation (L3) terms, their gates, and every hyperparameter that fed them
+  were removed on 2026-09-16: six L3 forms over ~1500 runs never produced a
+  coupling effect through the loss, while the couplings inside the check node
+  (below) halve the classical failure rate with nothing trained.
+- The only annealed hyperparameter is `loss_layer_temperature`; `warmup_layers`
+  drops the first layers from scoring. TOML keys for the removed terms are ignored
+  if present in an old file.
+- Sweep tags are now `_hp<cer|nocer>[_cnenr<alpha><F|L>]`; the collector still
+  parses the legacy `_sp/_lam/_tau/...` scheme for old results directories.
+- `expts/misc/{sweep_correlation_weight,sweep_gate_cer,sweep_lambda,sweep_h2_checks}.sh`,
+  `collect_{lambda,gate_cer}.jl`, `summarize_cer_sweep.jl` drove the removed terms
+  and are obsolete.
+
+## Enriched check node (`src/soft_constraints.jl`, branch `correlation-adapted-messages`)
+
+- `check_node = "tanh" | "enriched"` in the hyperparameters TOML selects the
+  check-to-variable rule of the **forward pass** (training and testing alike).
+  "enriched" puts the CER couplings inside each check factor and sends the exact
+  marginal; derivation in `refs/soft_check_nbp.tex`. Reduces to "tanh" at α = 0.
+- α is `coupling_scale` (a length-1 weight vector on `NachmaniNeuralBP`), initialised
+  from `coupling_scale_init` (1 = Bayesian), learned unless
+  `coupling_scale_learnable = false`, saved in the weights JSON and the results CSV.
+- **An enriched run needs a non-empty `run_tag`** (the scripts refuse otherwise): no
+  filename carries a check-node tag, so it would load/overwrite the tanh run's files.
+- Same kernel for classical BP: `standard_bp_experiments.jl` with `check_node = "enriched"`
+  and a fixed `coupling_scale_init` is the training-free α = 0 vs α = 1 comparison.
+- Tests: `tests/test_soft_constraints.jl` (tables, α = 0 ≡ tanh, brute-force posterior,
+  Enzyme gradients, CPU ≡ GPU, tanh path unchanged, weights-file round trip).
