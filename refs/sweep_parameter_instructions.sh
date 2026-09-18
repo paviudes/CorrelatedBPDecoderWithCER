@@ -1,5 +1,5 @@
-[debankan@narval1 expts]$ bash sweep_hyperparams.sh --no-edit
-[hp_sweep] wrote defaults to: /scratch/debankan/CorrelatedBPDecoderWithCER/expts/scripts/hp_sweep_settings_2026-09-16_23-44-01.toml
+[debankan@narval3 expts]$ bash sweep_hyperparams.sh --no-edit
+[hp_sweep] wrote defaults to: /scratch/debankan/CorrelatedBPDecoderWithCER/expts/scripts/hp_sweep_settings_2026-09-17_15-09-26.toml
 
 [hp_sweep] 60 point(s)
   datasets  -> p_0.0005_sig_0.001_s_1  p_0.0005_sig_0.001_s_2  p_0.0005_sig_0.001_s_3
@@ -10,13 +10,13 @@
   train     -> def-jemerson: array 0-4 (5 x 54 cpu x 6G = 324G/node), 4:00:00
   test      -> def-jemerson_gpu: array 0-7 (8 tasks x 1x a100 (40G vram), 12 cpu),
                --mem-per-gpu=32G host ram, GPU_MEMORY=34816M, 1 at a time
-  commands  -> ./../data/72q_BB_cycles_1_spread_comparison/cluster/hp_sweep_train_2026-09-16_23-44-01.txt
-               ./../data/72q_BB_cycles_1_spread_comparison/cluster/hp_sweep_test_2026-09-16_23-44-01.txt
+  commands  -> ./../data/72q_BB_cycles_1_spread_comparison/cluster/hp_sweep_train_2026-09-17_15-09-26.txt
+               ./../data/72q_BB_cycles_1_spread_comparison/cluster/hp_sweep_test_2026-09-17_15-09-26.txt
 
 submit — TRAIN first (CPU, def-jemerson), then TEST (GPU, def-jemerson_gpu):
 
   # 1. training
-  sbatch ./../data/72q_BB_cycles_1_spread_comparison/cluster/hp_sweep_train_2026-09-16_23-44-01.sh
+  sbatch ./../data/72q_BB_cycles_1_spread_comparison/cluster/hp_sweep_train_2026-09-17_15-09-26.sh
 
   # 2. when it finishes, CHECK THE MODELS TRAINED before spending a GPU:
   julia -e 'using JSON, Statistics; w=JSON.parsefile("./../data/72q_BB_cycles_1_spread_comparison/models/neuralbp_weights_nlayers_90_epochs_5_trained_using_train_p_0.0005_sig_0.001_s_1_hpcer_seed_1.json");
@@ -24,8 +24,9 @@ submit — TRAIN first (CPU, def-jemerson), then TEST (GPU, def-jemerson_gpu):
   # 0.058 => never trained (every batch NaN-skipped); larger => trained.
 
   # 3. testing
-  sbatch ./../data/72q_BB_cycles_1_spread_comparison/cluster/hp_sweep_test_2026-09-16_23-44-01.sh
+  sbatch ./../data/72q_BB_cycles_1_spread_comparison/cluster/hp_sweep_test_2026-09-17_15-09-26.sh
 
   To chain them without the check instead:
-    TRAIN=$(sbatch --parsable ./../data/72q_BB_cycles_1_spread_comparison/cluster/hp_sweep_train_2026-09-16_23-44-01.sh)
-    sbatch --dependency=afterok:$TRAIN ./../data/72q_BB_cycles_1_spread_comparison/cluster/hp_sweep_test_2026-09-16_23-44-01.sh
+    TRAIN=$(sbatch --parsable ./../data/72q_BB_cycles_1_spread_comparison/cluster/hp_sweep_train_2026-09-17_15-09-26.sh)
+    sbatch --dependency=afterok:$TRAIN ./../data/72q_BB_cycles_1_spread_comparison/cluster/hp_sweep_test_2026-09-17_15-09-26.sh
+[debankan@narval3 expts]$ 
