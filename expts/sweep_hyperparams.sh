@@ -40,7 +40,7 @@ SETTINGS_FILE="$SCRIPTS_DIR/hp_sweep_settings_${TS}.toml"
 
 cat > "$SETTINGS_FILE" <<'EOF'
 workdir          = "./../data"
-codename         = "72q_BB_cycles_1_soft_constraints"
+codename         = "72q_BB_cycles_1_trainable_alpha"
 
 # Dataset keys: train_<key>.txt, test_<key>.txt, correlated_weights_<key>.txt
 # KEEP EACH ARRAY ON ONE LINE: the reader below is grep | head -1, so a wrapped
@@ -55,7 +55,7 @@ datasets         = ["p_0.0015_sig_0.0015_s_1", "p_0.0015_sig_0.0015_s_2", "p_0.0
 # These get only the CER tanh arm and the no-CER baseline, not the check-node arms.
 ref_datasets     = []
 
-base_hyperparams = "hyperparams_epochs_5_corrs.toml"
+base_hyperparams = "hyperparams_baseline.toml"
 n_hidden_layers  = 90
 # Network seeds, on EVERY cell. Seed variance has been the binding error bar
 # throughout (sd up to 1000 failures at a fixed configuration), so nothing is
