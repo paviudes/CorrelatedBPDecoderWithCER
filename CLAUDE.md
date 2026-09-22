@@ -191,3 +191,9 @@ end
   epoch with 6 non-finite gradients is **rolled back**, weights and Adam state) and
   weight sd (~0.058 = never moved). Arm comparisons are only meaningful when
   completed epochs are equal across arms.
+- `python3 misc/cleanup.py --workdir <codename> [--dry-run|--yes]` resets a run dir
+  to its inputs. Rules are one table (`RULES`): logs/ cluster/ results/ emptied;
+  models/ loses `*.json` and sweep TOMLs (`hyperparams_hp_*`, `hyperparams_xf_*`),
+  keeps every other `*.toml` as the base config. Refuses `/`, `$HOME`, the repo,
+  `data/` itself, anything outside `data/`, and any run whose models/ would be left
+  with no `.toml`. Replaces `clean_up_data.sh`.
