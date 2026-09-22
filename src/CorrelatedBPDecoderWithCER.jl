@@ -151,7 +151,10 @@ export CHECK_NODE_TANH, CHECK_NODE_ENRICHED, check_node_code, check_node_name, S
        apply_enriched_checks_gpu, ENRICHED_MESSAGE_CAP, enriched_kernel_bytes_per_sample,
        cap_batch_size_for_enriched_kernel, release_device_array!, release_gpu_soft_check_state!,
        ENRICHED_KERNEL_MEMORY_BUDGET_BYTES,
-       coupling_scale_from_logit, logit_from_coupling_scale, COUPLING_SCALE_LINK_MARGIN
+       coupling_scale_from_logit, logit_from_coupling_scale, COUPLING_SCALE_LINK_MARGIN,
+       COUPLING_SCHEDULE_CONSTANT, COUPLING_SCHEDULE_STEP, COUPLING_SCHEDULE_MIN_WIDTH,
+       coupling_schedule_code, coupling_schedule_name, coupling_schedule_damping,
+       coupling_schedule_parameters, coupling_schedule_width_from_parameter
 
 # Neural belief propagation
 include("neuralbase.jl")
@@ -160,7 +163,8 @@ export NeuralBPBase, NeuralBP, add_soft_constraints_to_neuralbpbase, parse_cer_d
 
 # Nachmani Neural BP model
 include("nachmani.jl")
-export NachmaniNeuralBP, effective_coupling_scale
+export NachmaniNeuralBP, effective_coupling_scale, effective_coupling_schedule,
+       effective_coupling_scale_at_layer
 
 # Explicit-weight forward pass helpers
 include("forward_pass_weights.jl")
@@ -169,7 +173,7 @@ export forward_pass_with_weights, c2v_to_v2c_with_weights!, readout_with_weights
 # GPU-accelerated forward pass
 include("forward_gpu.jl")
 export forward_pass_gpu, release_gpu_state!, predict_recoveries_gpu, build_gpu_state,
-       update_gpu_state_syndromes!, GPUState
+       update_gpu_state_syndromes!, GPUState, coupling_scale_per_layer
 
 include("legacy.jl") # these are solely for debugging and testing, not intended for external use.
 export forward_pass, c2v_to_v2c, v2c_to_c2v, readout,

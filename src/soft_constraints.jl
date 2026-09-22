@@ -180,6 +180,136 @@ function check_node_name(check_node_kind::Int)::String
     return check_node_label
 end
 
+# =============================================================================
+#   A layer-dependent coupling scale: α_t = α · d(t)
+# =============================================================================
+# The enriched message is exact GIVEN its inputs, but on a graph with cycles the
+# coupling's influence leaks around a loop and returns as an incoming message,
+# so the factor is applied again on top of information that already contains
+# it. That compounds with iteration — the same overcounting Nachmani's per-layer
+# message weights exist to damp, applied to the coupling factor specifically.
+# The per-weight failure analysis (2026-09-22) shows where it bites: with a
+# constant α the couplings cut convergence failures ~70% at error weights 3–4,
+# but the decoder's late commits (median layer 8–16) land in the wrong coset
+# more often than the tanh rule's. Damping the couplings late is the lever.
+#
+# α_t is NOT ninety free parameters. Only ~2% of samples are still active past
+# layer 10, and `warmup_layers` hides the first layers from the loss entirely,
+# so ninety numbers would fit noise. The schedule is one smooth step,
+#
+#     d(t) = 1 / (1 + exp((t - T₀) / w)),        α_t = α · d(t)
+#
+# with TWO trainable parameters: the layer T₀ where the couplings are half
+# off, and the width w over which they roll off. Stored as [T₀, log w] — T₀ is
+# a layer index and may be any real (below 1: the couplings start mostly off;
+# far above n_layers: they never fade), and w must be positive, so it is
+# trained as its log the same way α is trained as its logit. Adam never has to
+# project either. The two roles stay separate: α is the closed-form unit
+# conversion between the rescaled priors and the raw couplings, d(t) is the
+# loop correction; only the latter has anything to learn.
+#
+# `COUPLING_SCHEDULE_CONSTANT` is d ≡ 1 and reproduces every earlier run
+# bit-for-bit; the schedule parameters are carried but never read, exactly as
+# `coupling_logit` is carried by a tanh model.
+
+const COUPLING_SCHEDULE_CONSTANT::Int = 0
+const COUPLING_SCHEDULE_STEP::Int = 1
+
+"Floor on the step width, in layers. Added to exp(log w) so the width can never
+reach 0: the step's derivative with respect to T₀ is d(1-d)/w, and a width
+collapsing toward 0 would send that gradient to infinity and NaN-skip the batch.
+Half a layer is already sharper than a layer-indexed schedule can resolve."
+const COUPLING_SCHEDULE_MIN_WIDTH::Float32 = 0.5f0
+
+function coupling_schedule_code(coupling_schedule_name::AbstractString)::Int
+    """
+    Resolve the `coupling_schedule` hyperparameter string to its integer code,
+    so an unknown name throws at configuration time rather than inside a
+    forward pass.
+    """
+    normalised_name::String = lowercase(strip(String(coupling_schedule_name)))
+    coupling_schedule_kind::Int = COUPLING_SCHEDULE_CONSTANT
+    if normalised_name == "constant"
+        coupling_schedule_kind = COUPLING_SCHEDULE_CONSTANT
+    elseif normalised_name == "step"
+        coupling_schedule_kind = COUPLING_SCHEDULE_STEP
+    else
+        throw(ArgumentError(
+            "Unknown coupling_schedule \"$(coupling_schedule_name)\". Supported: " *
+            "\"constant\" (one α for every layer) and \"step\" (α_t = α · d(t), a " *
+            "logistic step down in the layer index with trainable T₀ and width)."))
+    end
+    return coupling_schedule_kind
+end
+
+function coupling_schedule_name(coupling_schedule_kind::Int)::String
+    """
+    Inverse of `coupling_schedule_code`, for recording the schedule a model
+    was trained under in its weights file.
+    """
+    coupling_schedule_label::String = "constant"
+    if coupling_schedule_kind == COUPLING_SCHEDULE_STEP
+        coupling_schedule_label = "step"
+    elseif coupling_schedule_kind != COUPLING_SCHEDULE_CONSTANT
+        throw(ArgumentError("Unknown coupling schedule code $(coupling_schedule_kind)."))
+    end
+    return coupling_schedule_label
+end
+
+function coupling_schedule_width_from_parameter(log_width_parameter::Real)::Float32
+    """
+    w = W_MIN + exp(ρ): the width in layers from its stored parameter ρ.
+    Strictly positive for every finite ρ, and never below the floor.
+    """
+    width::Float32 = COUPLING_SCHEDULE_MIN_WIDTH + exp(Float32(log_width_parameter))
+    return width
+end
+
+function coupling_schedule_parameters(step_layer::Real, step_width::Real)::Vector{Float32}
+    """
+    The stored parameter vector [T₀, ρ] for a human-specified step layer T₀
+    and width w (both in layers). ρ = log(w - W_MIN), the inverse of
+    `coupling_schedule_width_from_parameter`; a width at or below the floor is
+    nudged just above it and warned about, since it asks for a step the
+    schedule cannot represent.
+    """
+    requested_width::Float32 = Float32(step_width)
+    if requested_width <= COUPLING_SCHEDULE_MIN_WIDTH
+        @warn "coupling_schedule_parameters: width $(requested_width) is at or below the " *
+              "floor $(COUPLING_SCHEDULE_MIN_WIDTH) layers and was raised to just above it. A " *
+              "step sharper than half a layer cannot be resolved by a layer index, and its " *
+              "gradient d(1-d)/w would be unbounded."
+        requested_width = COUPLING_SCHEDULE_MIN_WIDTH + 1.0f-3
+    end
+    log_width_parameter::Float32 = log(requested_width - COUPLING_SCHEDULE_MIN_WIDTH)
+    parameters::Vector{Float32} = Float32[Float32(step_layer), log_width_parameter]
+    return parameters
+end
+
+function coupling_schedule_damping(schedule_parameters::AbstractVector{Float32}, layer::Int)::Float32
+    """
+    d(t) = 1 / (1 + exp((t - T₀) / w)) at layer t, from the stored [T₀, ρ]:
+    1 for t ≪ T₀, 1/2 at t = T₀, 0 for t ≫ T₀.
+
+    COMPUTED AS (1 - tanh(u/2)) / 2, which is the same function exactly, and NOT
+    as 1/(1 + exp(u)). The difference is the reverse pass. With u = (t - T₀)/w,
+    a layer 88.7·w past the step overflows exp(u) to Inf in Float32; the VALUE
+    is then a clean 0, but Enzyme's chain rule multiplies dy/de = -1/(1+Inf)² =
+    -0 by de/du = exp(u) = Inf and returns NaN, which NaN-skips the batch. At
+    the width floor of 0.5 that is every layer past T₀ + 44 — i.e. a third of
+    a 90-layer network once training narrows the step. tanh saturates to ±1
+    with a derivative that goes to 0 rather than through Inf·0, so the same
+    layers give d = 0 exactly and a gradient of exactly 0. (The α link has the
+    same hazard in principle at θ < -88, but θ is one slowly-moving scalar; the
+    schedule's argument scales with the layer index and 1/w, and is reachable.)
+    """
+    step_layer::Float32 = schedule_parameters[1]
+    width::Float32 = coupling_schedule_width_from_parameter(schedule_parameters[2])
+    half_argument::Float32 = (Float32(layer) - step_layer) / (2.0f0 * width)
+    damping::Float32 = 0.5f0 * (1.0f0 - tanh(half_argument))
+    return damping
+end
+
 struct SoftCheckTables
     """
     Everything the enriched check-node kernels need, precomputed once.

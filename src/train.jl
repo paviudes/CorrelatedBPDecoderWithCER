@@ -3,6 +3,7 @@ function get_loss_value(
     weights_llrs, # learnable weights for m^t_(v→c) from the initial LLRs, and also for computing the posterior LLRs from m^t_(c→v).
     weights_c2v_readout, # learnable weights for computing the readout (posterior LLRs) from m^t_(c→v).
     coupling_logit, # learnable length-1 vector holding θ; the forward pass uses α = 1/(1+exp(-θ)) ∈ (0,1) (inert for the standard rule).
+    coupling_schedule, # learnable length-2 vector [T₀, log(w - W_MIN)] of the layer schedule on α (inert under the constant schedule).
     loss_layer_temperature, # temperature of the softmin over layers, annealed during training.
     warmup_loss_layers, # first number of layers to leave unconstrained in the loss.
     base, # constant parameters of the model: the parity-check matrices, the check node tables, etc.
@@ -25,6 +26,7 @@ function get_loss_value(
         weights_llrs,
         weights_c2v_readout,
         coupling_logit,
+        coupling_schedule,
         base,
         llrs_batch,
         syndromes_batch_matrix
@@ -44,6 +46,7 @@ function get_individual_loss_values(
     weights_llrs::Vector{Float32},
     weights_c2v_readout::Vector{Float32},
     coupling_logit::Vector{Float32},
+    coupling_schedule::Vector{Float32},
     loss_layer_temperature::Float32,
     warmup_loss_layers::Int,
     base::NeuralBPBase,
@@ -62,6 +65,7 @@ function get_individual_loss_values(
         weights_llrs,
         weights_c2v_readout,
         coupling_logit,
+        coupling_schedule,
         base,
         llrs_batch,
         syndromes_batch
@@ -131,7 +135,9 @@ function init_training_debug_logs(n_samples_to_log::Int)
         max_weight_c2v_readout = zeros(Float32, n_samples_to_log),
         median_weight_c2v_readout = zeros(Float32, n_samples_to_log),
         coupling_scale = zeros(Float32, n_samples_to_log),
-        coupling_logit = zeros(Float32, n_samples_to_log)
+        coupling_logit = zeros(Float32, n_samples_to_log),
+        coupling_schedule_layer = zeros(Float32, n_samples_to_log),
+        coupling_schedule_width = zeros(Float32, n_samples_to_log)
     )
     losses_log = DataFrame(
         :epoch => zeros(Int, n_samples_to_log),
@@ -175,6 +181,9 @@ function log_batch_debug!(
     hp_log[index, :median_weight_c2v_readout] = median(bpnn.weights_c2v_readout)
     hp_log[index, :coupling_scale] = effective_coupling_scale(bpnn)
     hp_log[index, :coupling_logit] = bpnn.coupling_logit[1]
+    (step_layer, step_width) = effective_coupling_schedule(bpnn)
+    hp_log[index, :coupling_schedule_layer] = step_layer
+    hp_log[index, :coupling_schedule_width] = step_width
 
     losses_log[index, :epoch] = epoch
     losses_log[index, :batch] = b
@@ -244,6 +253,11 @@ function train_neuralbp_enzyme!(
     coupling_scale_learnable::Bool =
         Bool(get(hyperparameters, "coupling_scale_learnable", true)) &&
         base.check_node_kind == CHECK_NODE_ENRICHED
+    # Same for the layer schedule's [T₀, ρ]: frozen unless the step schedule is
+    # active, so a constant-schedule run never moves parameters it never reads.
+    coupling_schedule_learnable::Bool =
+        Bool(get(hyperparameters, "coupling_schedule_learnable", true)) &&
+        base.coupling_schedule_kind == COUPLING_SCHEDULE_STEP
     # The softmin temperature is the only annealed hyperparameter.
     annealing_schedule = Dict("loss_layer_temperature" => hyperparameters["loss_layer_temperature"])
 
@@ -297,6 +311,9 @@ function train_neuralbp_enzyme!(
     if !coupling_scale_learnable
         Optimisers.freeze!(opt_state.coupling_logit)
     end
+    if !coupling_schedule_learnable
+        Optimisers.freeze!(opt_state.coupling_schedule)
+    end
     # A LEARNED α must not be weight-decayed either. Decay shrinks every
     # parameter toward 0; for the message weights that is the existing
     # regulariser, but for α it is a standing bias toward "no couplings" — a
@@ -310,17 +327,34 @@ function train_neuralbp_enzyme!(
         # leaf can be swapped by key without touching the others.
         opt_state = merge(opt_state, (coupling_logit = Optimisers.setup(coupling_scale_rule, bpnn.coupling_logit),))
     end
+    # The schedule's [T₀, ρ] must not be decayed for the same reason, and a
+    # worse one: decaying T₀ toward 0 drags the step to the FRONT of the network
+    # and switches the couplings off in every layer, which is the "no couplings"
+    # bias again, now dressed as a schedule.
+    if coupling_schedule_learnable && weight_decay > 0f0
+        coupling_schedule_rule::OptimiserChain = OptimiserChain(
+            ClipGrad(max_grad_norm), Adam(learning_rate, (0.9f0, 0.999f0), adam_eps))
+        opt_state = merge(opt_state, (coupling_schedule = Optimisers.setup(coupling_schedule_rule, bpnn.coupling_schedule),))
+    end
 
     if !is_quiet
         n_weights = length(bpnn.weights_c2v_v2c) + length(bpnn.weights_llrs) + length(bpnn.weights_c2v_readout)
         if coupling_scale_learnable
             n_weights += length(bpnn.coupling_logit)
         end
+        if coupling_schedule_learnable
+            n_weights += length(bpnn.coupling_schedule)
+        end
         print_info("Starting training on $(n_samples) samples, split into batches of $(batch_size), with $(n_weights) learnable parameters.")
         if base.check_node_kind == CHECK_NODE_ENRICHED
             print_info("Enriched check node: $(describe_soft_check_tables(base.soft_check_tables)); " *
                        "coupling scale α = $(effective_coupling_scale(bpnn)) (logit $(bpnn.coupling_logit[1])) " *
                        "($(coupling_scale_learnable ? "learnable" : "fixed")).")
+        end
+        if base.coupling_schedule_kind == COUPLING_SCHEDULE_STEP
+            (step_layer, step_width) = effective_coupling_schedule(bpnn)
+            print_info("Coupling schedule: step at layer T₀ = $(step_layer), width w = $(step_width) layers " *
+                       "($(coupling_schedule_learnable ? "learnable" : "fixed")).")
         end
     end
     # -------------------------
@@ -375,6 +409,7 @@ function train_neuralbp_enzyme!(
             # leaf decides whether the gradient is applied, and a fixed
             # signature keeps ONE compiled Enzyme thunk for every configuration.
             grad_coupling_scale::Vector{Float32} = zeros(Float32, length(bpnn.coupling_logit))
+            grad_coupling_schedule::Vector{Float32} = zeros(Float32, length(bpnn.coupling_schedule))
 
             # -------------------------
             # Enzyme autodiff
@@ -387,6 +422,7 @@ function train_neuralbp_enzyme!(
                 Enzyme.Duplicated(bpnn.weights_llrs, grad_w_llrs),
                 Enzyme.Duplicated(bpnn.weights_c2v_readout, grad_w_readout),
                 Enzyme.Duplicated(bpnn.coupling_logit, grad_coupling_scale),
+                Enzyme.Duplicated(bpnn.coupling_schedule, grad_coupling_schedule),
                 # Constant arguments (order MUST match get_loss_value's signature):
                 Enzyme.Const(hp[:loss_layer_temperature]),
                 Enzyme.Const(warmup_loss_layers),
@@ -405,7 +441,8 @@ function train_neuralbp_enzyme!(
                            all(isfinite, grad_w_c2v_v2c) &&
                            all(isfinite, grad_w_llrs)    &&
                            all(isfinite, grad_w_readout) &&
-                           all(isfinite, grad_coupling_scale)
+                           all(isfinite, grad_coupling_scale) &&
+                           all(isfinite, grad_coupling_schedule)
 
             if !grads_finite
                 nan_skip_count += 1
@@ -438,11 +475,13 @@ function train_neuralbp_enzyme!(
                 weights_c2v_v2c     = grad_w_c2v_v2c,
                 weights_llrs        = grad_w_llrs,
                 weights_c2v_readout = grad_w_readout,
-                coupling_logit      = grad_coupling_scale
+                coupling_logit      = grad_coupling_scale,
+                coupling_schedule   = grad_coupling_schedule
             )
-            # θ is unconstrained, so the Adam step needs no projection: the
-            # logistic link in `forward_pass_with_weights` keeps α in (0, 1)
-            # however far θ travels.
+            # θ and [T₀, ρ] are unconstrained, so the Adam step needs no
+            # projection: the logistic link in `forward_pass_with_weights` keeps
+            # α in (0, 1) however far θ travels, and the width is exp(ρ) plus a
+            # floor however far ρ travels.
             (opt_state, bpnn) = Optimisers.update!(opt_state, bpnn, grads)
             n_applied_updates += 1
             # -------------------------
@@ -462,6 +501,7 @@ function train_neuralbp_enzyme!(
                     bpnn.weights_llrs,
                     bpnn.weights_c2v_readout,
                     bpnn.coupling_logit,
+                    bpnn.coupling_schedule,
                     hp[:loss_layer_temperature],
                     warmup_loss_layers,
                     base,
@@ -497,6 +537,7 @@ function train_neuralbp_enzyme!(
             bpnn.weights_llrs        .= bpnn_checkpoint.weights_llrs
             bpnn.weights_c2v_readout .= bpnn_checkpoint.weights_c2v_readout
             bpnn.coupling_logit      .= bpnn_checkpoint.coupling_logit
+            bpnn.coupling_schedule   .= bpnn_checkpoint.coupling_schedule
             opt_state = deepcopy(opt_state_checkpoint)
             n_rolled_back_epochs += 1
             # NOT gated on is_quiet: a rolled-back epoch discards its work, and a
@@ -578,18 +619,38 @@ function train_Nachmani_neuralbp(
     if haskey(initial_conditions, "coupling_scale")
         initial_coupling_scale = Float32(initial_conditions["coupling_scale"][1])
     end
+    # The layer schedule starts at (`coupling_schedule_layer_init`,
+    # `coupling_schedule_width_init`) in layers, again unless the caller supplied
+    # them. Read even under the constant schedule, where they are inert, so the
+    # struct is always fully specified.
+    initial_step_layer::Float32 =
+        Float32(get(hyperparameters, "coupling_schedule_layer_init", Float32(base.n_layers)))
+    initial_step_width::Float32 =
+        Float32(get(hyperparameters, "coupling_schedule_width_init", 3.0f0))
+    if haskey(initial_conditions, "coupling_schedule_layer")
+        initial_step_layer = Float32(initial_conditions["coupling_schedule_layer"][1])
+    end
+    if haskey(initial_conditions, "coupling_schedule_width")
+        initial_step_width = Float32(initial_conditions["coupling_schedule_width"][1])
+    end
     bpnn = NachmaniNeuralBP(
         base,
         weights_c2v_v2c=initial_conditions["weights_c2v_v2c"],
         weights_llrs=initial_conditions["weights_llrs"],
         weights_c2v_readout=initial_conditions["weights_c2v_readout"],
-        coupling_scale=initial_coupling_scale
+        coupling_scale=initial_coupling_scale,
+        coupling_schedule_layer=initial_step_layer,
+        coupling_schedule_width=initial_step_width
     )
-    # Resuming from a checkpoint restores the TRAINED PARAMETER θ itself, not α.
-    # Rebuilding θ from α above costs one logit(logistic(θ)) round trip, exact
-    # only to Float32; a resumed run should continue from the θ it stopped at.
+    # Resuming from a checkpoint restores the TRAINED PARAMETERS themselves, not
+    # α or (T₀, w). Rebuilding θ from α above costs one logit(logistic(θ)) round
+    # trip, exact only to Float32, and the schedule's ρ likewise; a resumed run
+    # should continue from exactly where it stopped.
     if haskey(initial_conditions, "coupling_logit")
         bpnn.coupling_logit .= initial_conditions["coupling_logit"]
+    end
+    if haskey(initial_conditions, "coupling_schedule")
+        bpnn.coupling_schedule .= initial_conditions["coupling_schedule"]
     end
 
     # Extract the name of the training file name to include in the weights file name for clarity on what data the model was trained on.

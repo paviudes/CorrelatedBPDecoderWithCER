@@ -100,13 +100,16 @@ struct GPUState
     n_layers   :: Int
     n_samples  :: Int
 
-    # Enriched check node (soft_constraints.jl): the rule selector, the scalar
-    # α (already through the logistic link, so this is α itself and not θ), and
-    # the tables on the device. `soft_checks` is `nothing` for the
-    # standard rule, so the tanh path allocates and uploads nothing extra.
-    check_node_kind :: Int
-    coupling_scale  :: Float32
-    soft_checks     :: Union{GPUSoftCheckState, Nothing}
+    # Enriched check node (soft_constraints.jl): the rule selector, the α each
+    # layer uses (already through the logistic link AND the layer schedule, so
+    # entry t is α_t itself and not θ or [T₀, ρ]), and the tables on the device.
+    # A host-side Vector of length n_layers indexed by the layer loop: the kernel
+    # takes one Float32 per call and never needs the vector on the device.
+    # `soft_checks` is `nothing` for the standard rule, so the tanh path
+    # allocates and uploads nothing extra.
+    check_node_kind          :: Int
+    coupling_scale_per_layer :: Vector{Float32}
+    soft_checks              :: Union{GPUSoftCheckState, Nothing}
 end
 
 # Convert a sparse matrix to a dense Float32 GPU array: Sparse → dense → Float32 → GPU .
@@ -148,7 +151,7 @@ end
 
 """
     build_gpu_state(bpnn, syndromes_batch) -> GPUState
-    build_gpu_state(base, weights_c2v_v2c, weights_llrs, weights_c2v_readout, coupling_logit, syndromes_batch) -> GPUState
+    build_gpu_state(base, weights_c2v_v2c, weights_llrs, weights_c2v_readout, coupling_logit, coupling_schedule, syndromes_batch) -> GPUState
 
 Build GPUState by converting and uploading CPU data to GPU. Includes:
 - Adjacency matrices (densified and converted to Float32)
@@ -157,18 +160,38 @@ Build GPUState by converting and uploading CPU data to GPU. Includes:
 - Per-layer LLR weights, reshaped and converted to Float32
 - Syndromes, routed according to neuron_to_checks and converted to Float32
 - For the enriched check node: the coupling tables and the enriched checks'
-  syndromes (see soft_constraints.jl), plus the scalar α
+  syndromes (see soft_constraints.jl), plus α_t for every layer — α through
+  the logistic link, times the layer schedule's damping d(t)
 
 Overload 1: Extract weights and base from NachmaniNeuralBP struct
 Overload 2: Accept raw weights and base structure directly
 """
 function build_gpu_state(bpnn, syndromes_batch::BitMatrix)
     base = bpnn.base
-    gpustate = build_gpu_state(base, bpnn.weights_c2v_v2c, bpnn.weights_llrs, bpnn.weights_c2v_readout, bpnn.coupling_logit, syndromes_batch)
+    gpustate = build_gpu_state(base, bpnn.weights_c2v_v2c, bpnn.weights_llrs, bpnn.weights_c2v_readout,
+                               bpnn.coupling_logit, bpnn.coupling_schedule, syndromes_batch)
     return gpustate
 end
 
-function build_gpu_state(base, weights_c2v_v2c, weights_llrs, weights_c2v_readout, coupling_logit, syndromes_batch::BitMatrix)
+function coupling_scale_per_layer(coupling_logit, coupling_schedule, base)::Vector{Float32}
+    """
+    α_t for t = 1..n_layers: the logistic of θ, damped per layer by the step
+    schedule when `base.coupling_schedule_kind` selects it, undamped otherwise.
+    This is the GPU path's single definition of α_t and MUST agree with the CPU
+    path's per-layer `layer_coupling_scale` in `forward_pass_with_weights` and
+    with `effective_coupling_scale_at_layer`; the tests check all three.
+    """
+    linked_coupling_scale::Float32 = coupling_scale_from_logit(coupling_logit[1])
+    per_layer::Vector{Float32} = fill(linked_coupling_scale, base.n_layers)
+    if base.coupling_schedule_kind == COUPLING_SCHEDULE_STEP
+        for layer in 1:base.n_layers
+            per_layer[layer] = linked_coupling_scale * coupling_schedule_damping(coupling_schedule, layer)
+        end
+    end
+    return per_layer
+end
+
+function build_gpu_state(base, weights_c2v_v2c, weights_llrs, weights_c2v_readout, coupling_logit, coupling_schedule, syndromes_batch::BitMatrix)
 
     # Adjacency
     adj_V2C_C2V = _to_dense_gpu(base.adj_V2C_C2V)
@@ -234,7 +257,7 @@ function build_gpu_state(base, weights_c2v_v2c, weights_llrs, weights_c2v_readou
         base.n_layers,
         size(syndromes_batch, 2),
         base.check_node_kind,
-        coupling_scale_from_logit(coupling_logit[1]),
+        coupling_scale_per_layer(coupling_logit, coupling_schedule, base),
         soft_checks,
     )
 end
@@ -342,7 +365,7 @@ function _compute_layer_gpu(messages_c2v, initial_llrs_gpu, gs::GPUState, layer:
     # above, and this layer reads it in the readout below, both BEFORE the next
     # call happens. Do not hold a reference to it across layers.
     if gs.check_node_kind == CHECK_NODE_ENRICHED
-        messages_c2v_new = apply_enriched_checks_gpu(messages_c2v_new, m_v2c, gs.coupling_scale, gs.soft_checks)
+        messages_c2v_new = apply_enriched_checks_gpu(messages_c2v_new, m_v2c, gs.coupling_scale_per_layer[layer], gs.soft_checks)
     end
 
     # ---- Readout ----
@@ -370,9 +393,9 @@ end
     - `chunk_size`: If >0, process samples in slices of this size. If 0 (default),
     auto-estimate from device's maxBufferLength with headroom for intermediates
 
-    forward_pass_gpu(weights_c2v_v2c, weights_llrs, weights_c2v_readout, coupling_logit, base, llrs_batch, syndromes_batch) -> Array{Float32, 3}
+    forward_pass_gpu(weights_c2v_v2c, weights_llrs, weights_c2v_readout, coupling_logit, coupling_schedule, base, llrs_batch, syndromes_batch) -> Array{Float32, 3}
     Arguments (overload 2):
-    - Raw weight vectors (including the length-1 `coupling_logit`) and base structure, bypassing NachmaniNeuralBP struct
+    - Raw weight vectors (including the length-1 `coupling_logit` and length-2 `coupling_schedule`) and base structure, bypassing NachmaniNeuralBP struct
     - Useful for testing or scenarios requiring direct weight manipulation
 """
 function forward_pass_gpu(
@@ -437,8 +460,8 @@ function forward_pass_gpu(
     return posterior_3d_cpu
 end
 
-function forward_pass_gpu(weights_c2v_v2c, weights_llrs, weights_c2v_readout, coupling_logit, base, llrs_batch, syndromes_batch)
-    gpustate = build_gpu_state(base, weights_c2v_v2c, weights_llrs, weights_c2v_readout, coupling_logit, syndromes_batch)
+function forward_pass_gpu(weights_c2v_v2c, weights_llrs, weights_c2v_readout, coupling_logit, coupling_schedule, base, llrs_batch, syndromes_batch)
+    gpustate = build_gpu_state(base, weights_c2v_v2c, weights_llrs, weights_c2v_readout, coupling_logit, coupling_schedule, syndromes_batch)
     posterior_3d_gpu = _forward_pass_gpu_chunk(gpustate, llrs_batch)
     release_gpu_state!(gpustate)
     return posterior_3d_gpu

@@ -33,6 +33,14 @@ function load_trained_weights(weights_filename::String)::Dict{String, Any}
     if haskey(weights_data, "coupling_logit")
         formatted_weights["coupling_logit"] = Float32.(weights_data["coupling_logit"])
     end
+    # The layer schedule on α, [T₀, log(w - W_MIN)]. Absent from every file
+    # written before the schedule existed; `load_trained_neuralbp_model` then
+    # keeps the caller's defaults, which the constant schedule never reads.
+    if haskey(weights_data, "coupling_schedule")
+        formatted_weights["coupling_schedule"] = Float32.(weights_data["coupling_schedule"])
+    end
+    formatted_weights["coupling_schedule_kind"] =
+        String(get(weights_data, "coupling_schedule_kind", "constant"))
     # Which check-node rule the weights were trained under; files older than
     # the enriched rule were necessarily trained with the standard one.
     formatted_weights["check_node"] = String(get(weights_data, "check_node", "tanh"))

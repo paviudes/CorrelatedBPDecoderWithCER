@@ -256,6 +256,7 @@ function forward_pass_with_weights(
     weights_llrs,
     weights_c2v_readout,
     coupling_logit,
+    coupling_schedule,
     base,
     initial_llrs_batch,
     syndromes_batch
@@ -270,9 +271,16 @@ function forward_pass_with_weights(
     inside (0, 1) for free while leaving the kernel able to take any α — which
     is why `α = 0` is still expressible and still reproduces the tanh rule.
 
-    The conversion is inside the differentiated region, so Enzyme carries the
-    chain θ -> α -> messages -> loss and the reported gradient is with respect
-    to θ, which is the parameter Adam updates.
+    `coupling_schedule` is the length-2 vector [T₀, log(w - W_MIN)] of the layer
+    schedule. Under `COUPLING_SCHEDULE_STEP` each layer t receives
+    α_t = α · d(t) with d the logistic step of `coupling_schedule_damping`;
+    under `COUPLING_SCHEDULE_CONSTANT` every layer receives α and the vector is
+    never read. The damping is evaluated per layer inside the differentiated
+    region, so the gradient with respect to [T₀, ρ] is exact.
+
+    Both conversions are inside the differentiated region, so Enzyme carries the
+    chains θ -> α -> messages -> loss and [T₀, ρ] -> d(t) -> messages -> loss,
+    and the reported gradients are with respect to the parameters Adam updates.
     """
     n_samples = size(initial_llrs_batch, 2)
     neurons_per_layer = base.nb_neurons_per_layer
@@ -298,11 +306,20 @@ function forward_pass_with_weights(
 
     # θ -> α, once. Ignored by the standard check node, but computed
     # unconditionally so the differentiated code path does not branch on it.
-    linked_coupling_scale::Vector{Float32} =
-        Float32[coupling_scale_from_logit(coupling_logit[1])]
+    linked_coupling_scale::Float32 = coupling_scale_from_logit(coupling_logit[1])
 
     # Forward pass through layers
     for layer in 1:base.n_layers
+        # α_t for this layer. A fresh length-1 vector per layer rather than one
+        # buffer mutated in place: the kernel reads it after this point and the
+        # reverse pass needs each layer's value, and a new allocation gives
+        # Enzyme nothing to disambiguate. Ninety 4-byte allocations per forward
+        # pass is not a cost worth an aliasing question.
+        layer_damping::Float32 = 1.0f0
+        if base.coupling_schedule_kind == COUPLING_SCHEDULE_STEP
+            layer_damping = coupling_schedule_damping(coupling_schedule, layer)
+        end
+        layer_coupling_scale::Vector{Float32} = Float32[linked_coupling_scale * layer_damping]
         compute_layer_with_weights!(
             messages_c2v,
             activated_m_c2v_magnitudes,
@@ -317,7 +334,7 @@ function forward_pass_with_weights(
             weights_c2v_v2c,
             weights_llrs,
             weights_c2v_readout,
-            linked_coupling_scale,
+            layer_coupling_scale,
             base,
             layer,
             n_samples
@@ -340,6 +357,7 @@ function forward_pass_with_weights(
         bpnn.weights_llrs,
         bpnn.weights_c2v_readout,
         bpnn.coupling_logit,
+        bpnn.coupling_schedule,
         bpnn.base,
         initial_llrs_batch,
         syndromes_batch

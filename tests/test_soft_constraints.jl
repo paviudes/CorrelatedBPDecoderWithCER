@@ -25,10 +25,12 @@ using DelimitedFiles   # readdlm, for the LX file the coset-failure planting nee
 #   6. The standard ("tanh") path is unchanged: it equals the legacy forward
 #      pass, which knows nothing about the enriched node.
 #   7. The weights file round-trips alpha and stays readable without it.
+#   8-13. The layer schedule on alpha (alpha_t = alpha * d(t)); see the block
+#      at the end of the file for the list.
 # =============================================================================
 
 function debug_data_directory()::String
-    return "./../data/72q_BB_cycles_1_spread_comparison"
+    return "./../data/72q_BB_cycles_1_soft_constraints"
 end
 
 function debug_cer_file()::String
@@ -341,6 +343,7 @@ end
     grad_w_llrs::Vector{Float32} = zeros(Float32, length(bpnn.weights_llrs))
     grad_w_readout::Vector{Float32} = zeros(Float32, length(bpnn.weights_c2v_readout))
     grad_alpha::Vector{Float32} = zeros(Float32, 1)
+    grad_schedule::Vector{Float32} = zeros(Float32, 2)
     (_, loss_value) = Enzyme.autodiff(
         Enzyme.ReverseWithPrimal,
         CorrelatedBPDecoderWithCER.get_loss_value,
@@ -348,6 +351,7 @@ end
         Enzyme.Duplicated(bpnn.weights_llrs, grad_w_llrs),
         Enzyme.Duplicated(bpnn.weights_c2v_readout, grad_w_readout),
         Enzyme.Duplicated(bpnn.coupling_logit, grad_alpha),
+        Enzyme.Duplicated(bpnn.coupling_schedule, grad_schedule),
         Enzyme.Const(1.0f0),         # loss_layer_temperature
         Enzyme.Const(0),             # warmup_loss_layers
         Enzyme.Const(bb_base),
@@ -361,6 +365,9 @@ end
     @test all(isfinite, grad_w_readout)
     @test isfinite(grad_alpha[1])
     @test grad_alpha[1] != 0.0f0
+    # Under the CONSTANT schedule the two schedule parameters are never read,
+    # so their gradient is exactly zero -- not small, zero.
+    @test grad_schedule == zeros(Float32, 2)
 end
 
 @testset "Dense formulation equals the loop kernel; GPU forward pass equals CPU" begin
@@ -407,9 +414,10 @@ end
     legacy_posteriors::Array{Float32, 3} = bpnn(llrs_batch, syndromes)
     current_posteriors::Array{Float32, 3} = forward_pass_with_weights(bpnn, llrs_batch, syndromes)
     @test all(isapprox.(legacy_posteriors, current_posteriors; atol = 1e-5))
-    # ... and alpha is genuinely inert on this path.
+    # ... and alpha is genuinely inert on this path, as is the schedule vector.
     other_alpha::NachmaniNeuralBP = NachmaniNeuralBP(
-        base, bpnn.weights_c2v_v2c, bpnn.weights_llrs, bpnn.weights_c2v_readout, Float32[5.0])
+        base, bpnn.weights_c2v_v2c, bpnn.weights_llrs, bpnn.weights_c2v_readout,
+        Float32[5.0], Float32[-3.0, 2.0])
     @test forward_pass_with_weights(other_alpha, llrs_batch, syndromes) == current_posteriors
 end
 
@@ -659,4 +667,299 @@ end
         # An explicit request still wins outright.
         @test resolve_prediction_batch_size(enriched_model; batch_size = 65536) == 65536
     end
+end
+
+# =============================================================================
+# The layer schedule on alpha: alpha_t = alpha * d(t), d(t) = 1/(1+exp((t-T0)/w)),
+# with [T0, log(w - W_MIN)] as two trainable parameters (src/soft_constraints.jl,
+# `coupling_schedule_*`). What is checked:
+#   8.  The step itself: 1/2 at T0, monotone decreasing, saturates cleanly at
+#       both ends, the width floor holds, human units round-trip.
+#   9.  The CONSTANT schedule reproduces the schedule-free forward pass bit for
+#       bit, and the schedule parameters are inert under it.
+#  10.  A STEP schedule with T0 far past the last layer is bit-identical to the
+#       constant one; a step inside the network changes the posteriors and
+#       does so only from the layers the step touches.
+#  11.  The three definitions of alpha_t agree: `effective_coupling_scale_at_layer`,
+#       the GPU state's per-layer vector, and the CPU path (via 10).
+#  12.  Enzyme's gradient reaches [T0, rho] under the step schedule and is
+#       exactly zero under the constant one; finite differences agree.
+#  13.  The weights file round-trips the schedule and its kind, and a file
+#       without either loads with the caller's defaults.
+# =============================================================================
+
+function load_bb_base_with_schedule(check_node::String, coupling_schedule::String, n_layers::Int)::NeuralBPBase
+    """
+    `load_bb_base` with the layer schedule selected as well.
+    """
+    base::NeuralBPBase = load_base_BP_model(
+        "$(debug_data_directory())/code/HZ.txt",
+        "$(debug_data_directory())/code/LZ.txt",
+        n_layers;
+        cer_data_file = debug_cer_file(),
+        use_cer = true,
+        check_node = check_node,
+        coupling_schedule = coupling_schedule,
+    )
+    return base
+end
+
+@testset "The coupling schedule step: shape, floor, human-unit round trip" begin
+    # d(T0) = 1/2 exactly, whatever the width.
+    for (step_layer, step_width) in ((12.0f0, 3.0f0), (5.0f0, 1.0f0), (40.0f0, 8.0f0))
+        parameters::Vector{Float32} = coupling_schedule_parameters(step_layer, step_width)
+        @test length(parameters) == 2
+        @test parameters[1] == step_layer
+        @test isapprox(coupling_schedule_damping(parameters, round(Int, step_layer)), 0.5f0; atol = 1e-6)
+        # Human units come back out.
+        @test isapprox(coupling_schedule_width_from_parameter(parameters[2]), step_width; atol = 1e-5)
+    end
+    # Monotone decreasing in the layer, 1 at the front, 0 at the back. Strictly
+    # decreasing while unsaturated; once tanh reaches exactly 1 in Float32
+    # (around (t - T0)/2w > 9, i.e. layer ~66 here) consecutive layers tie at
+    # exactly 0, so the tail is tested non-strictly. Those exact zeros are the
+    # point of the tanh form: 1/(1 + exp(u)) reaches the same values through
+    # exp = Inf, whose reverse-mode derivative is Inf·0 = NaN.
+    parameters::Vector{Float32} = coupling_schedule_parameters(12.0f0, 3.0f0)
+    dampings::Vector{Float32} = [coupling_schedule_damping(parameters, layer) for layer in 1:90]
+    @test all(dampings[layer] > dampings[layer + 1] for layer in 1:50)
+    @test all(dampings[layer] >= dampings[layer + 1] for layer in 1:89)
+    @test dampings[1] > 0.97f0
+    @test dampings[90] == 0.0f0
+    @test all(0.0f0 .<= dampings .<= 1.0f0)
+    @test all(isfinite, dampings)
+    # Saturation is clean in Float32: T0 far off either end gives exactly 1 or 0,
+    # never NaN, for every layer.
+    far_future::Vector{Float32} = coupling_schedule_parameters(1.0f6, 3.0f0)
+    far_past::Vector{Float32} = coupling_schedule_parameters(-1.0f6, 3.0f0)
+    @test all(coupling_schedule_damping(far_future, layer) == 1.0f0 for layer in 1:90)
+    @test all(coupling_schedule_damping(far_past, layer) == 0.0f0 for layer in 1:90)
+    # ... and, at the width FLOOR with a step in the middle, the layers far past
+    # it are exactly 0 too. This is the configuration whose gradient would be
+    # NaN under the exp form; the test below on Enzyme covers the gradient, this
+    # one pins the value.
+    narrow::Vector{Float32} = coupling_schedule_parameters(12.0f0, 0.51f0)
+    @test coupling_schedule_damping(narrow, 90) == 0.0f0
+    @test coupling_schedule_damping(narrow, 1) == 1.0f0
+    # The width can never reach the floor, however far the stored parameter goes.
+    @test coupling_schedule_width_from_parameter(-50.0f0) >= COUPLING_SCHEDULE_MIN_WIDTH
+    @test coupling_schedule_width_from_parameter(-50.0f0) < COUPLING_SCHEDULE_MIN_WIDTH + 1.0f-6
+    @test isfinite(coupling_schedule_width_from_parameter(50.0f0))
+    # Asking for a width at or below the floor is nudged above it, with a warning.
+    @test_logs (:warn, r"at or below the floor") coupling_schedule_parameters(12.0f0, 0.5f0)
+    @test_logs (:warn, r"at or below the floor") coupling_schedule_parameters(12.0f0, 0.0f0)
+    nudged::Vector{Float32} = @test_logs (:warn, r"at or below") coupling_schedule_parameters(12.0f0, 0.1f0)
+    @test coupling_schedule_width_from_parameter(nudged[2]) > COUPLING_SCHEDULE_MIN_WIDTH
+    # A comfortable width is silent.
+    @test_logs coupling_schedule_parameters(12.0f0, 3.0f0)
+    # Names round-trip and unknown ones fail at configuration time.
+    @test coupling_schedule_code("constant") == COUPLING_SCHEDULE_CONSTANT
+    @test coupling_schedule_code("step") == COUPLING_SCHEDULE_STEP
+    @test coupling_schedule_code(" Step ") == COUPLING_SCHEDULE_STEP
+    @test coupling_schedule_name(COUPLING_SCHEDULE_CONSTANT) == "constant"
+    @test coupling_schedule_name(COUPLING_SCHEDULE_STEP) == "step"
+    @test_throws ArgumentError coupling_schedule_code("ramp")
+    @test_throws ArgumentError coupling_schedule_name(7)
+    # A schedule on the tanh rule would be silently inert; NeuralBPBase refuses.
+    @test_throws ArgumentError load_bb_base_with_schedule("tanh", "step", 2)
+end
+
+@testset "The constant schedule is the schedule-free forward pass, bit for bit" begin
+    Random.seed!(53)
+    base::NeuralBPBase = load_bb_base_with_schedule("enriched", "constant", 4)
+    @test base.coupling_schedule_kind == COUPLING_SCHEDULE_CONSTANT
+    bpnn::NachmaniNeuralBP = unit_weight_neuralbp(base; coupling_scale = 0.503f0)
+    n_samples::Int = 5
+    syndromes::BitMatrix = BitMatrix(rand(Bool, base.code_n_checks, n_samples))
+    llrs_batch::Matrix{Float32} = repeat(base.initial_llrs, 1, n_samples)
+    reference::Array{Float32, 3} = forward_pass_with_weights(bpnn, llrs_batch, syndromes)
+    # Whatever the schedule vector holds, the constant schedule never reads it.
+    for other_schedule in (Float32[-3.0, 2.0], Float32[2.0, -4.0], Float32[1.0f6, 0.0])
+        other::NachmaniNeuralBP = NachmaniNeuralBP(
+            base, bpnn.weights_c2v_v2c, bpnn.weights_llrs, bpnn.weights_c2v_readout,
+            bpnn.coupling_logit, other_schedule)
+        @test forward_pass_with_weights(other, llrs_batch, syndromes) == reference
+        @test all(effective_coupling_scale_at_layer(other, layer) == effective_coupling_scale(other) for layer in 1:4)
+    end
+    # The default schedule the keyword constructor writes is the last layer with
+    # width 3, so even a step schedule left at defaults barely differs.
+    (default_layer, default_width) = effective_coupling_schedule(bpnn)
+    @test default_layer == Float32(base.n_layers)
+    @test isapprox(default_width, 3.0f0; atol = 1e-5)
+end
+
+@testset "A step schedule far past the last layer equals constant; one inside the network does not" begin
+    Random.seed!(59)
+    n_layers::Int = 6
+    constant_base::NeuralBPBase = load_bb_base_with_schedule("enriched", "constant", n_layers)
+    step_base::NeuralBPBase = load_bb_base_with_schedule("enriched", "step", n_layers)
+    @test step_base.coupling_schedule_kind == COUPLING_SCHEDULE_STEP
+    n_samples::Int = 6
+    syndromes::BitMatrix = BitMatrix(rand(Bool, constant_base.code_n_checks, n_samples))
+    llrs_batch::Matrix{Float32} = repeat(constant_base.initial_llrs, 1, n_samples)
+
+    constant_model::NachmaniNeuralBP = unit_weight_neuralbp(constant_base; coupling_scale = 0.503f0)
+    constant_posteriors::Array{Float32, 3} = forward_pass_with_weights(constant_model, llrs_batch, syndromes)
+
+    # (a) T0 far beyond the last layer: d(t) == 1 exactly for every layer, so
+    #     the posteriors are bit-identical to the constant schedule's.
+    far_model::NachmaniNeuralBP = unit_weight_neuralbp(
+        step_base; coupling_scale = 0.503f0, coupling_schedule_layer = 1.0f6, coupling_schedule_width = 3.0f0)
+    @test all(effective_coupling_scale_at_layer(far_model, layer) == effective_coupling_scale(far_model) for layer in 1:n_layers)
+    @test forward_pass_with_weights(far_model, llrs_batch, syndromes) == constant_posteriors
+
+    # (b) T0 far BEFORE the first layer: alpha_t == 0 everywhere, which is the
+    #     tanh rule (checked elsewhere at alpha = 0), so it differs from (a).
+    off_model::NachmaniNeuralBP = unit_weight_neuralbp(
+        step_base; coupling_scale = 0.503f0, coupling_schedule_layer = -1.0f6, coupling_schedule_width = 3.0f0)
+    @test all(effective_coupling_scale_at_layer(off_model, layer) == 0.0f0 for layer in 1:n_layers)
+    off_posteriors::Array{Float32, 3} = forward_pass_with_weights(off_model, llrs_batch, syndromes)
+    @test off_posteriors != constant_posteriors
+
+    # (c) A step INSIDE the network. Layers before it see (nearly) full
+    #     couplings, so their posteriors agree with the constant schedule to
+    #     Float32 noise; layers at and after it differ.
+    step_layer::Float32 = 4.0f0
+    inside_model::NachmaniNeuralBP = unit_weight_neuralbp(
+        step_base; coupling_scale = 0.503f0, coupling_schedule_layer = step_layer, coupling_schedule_width = 0.6f0)
+    inside_posteriors::Array{Float32, 3} = forward_pass_with_weights(inside_model, llrs_batch, syndromes)
+    @test isapprox(effective_coupling_scale_at_layer(inside_model, 4), 0.503f0 / 2; atol = 1e-5)
+    @test effective_coupling_scale_at_layer(inside_model, 1) > 0.99f0 * 0.503f0
+    @test effective_coupling_scale_at_layer(inside_model, 6) < 0.05f0 * 0.503f0
+    @test all(isapprox.(inside_posteriors[:, :, 1], constant_posteriors[:, :, 1]; atol = 2e-3))
+    @test !all(isapprox.(inside_posteriors[:, :, 6], constant_posteriors[:, :, 6]; atol = 1e-3))
+    # ... and the differing late layers still produce finite LLRs.
+    @test all(isfinite, inside_posteriors)
+end
+
+@testset "alpha_t has one definition: struct, GPU state and CPU path agree" begin
+    step_base::NeuralBPBase = load_bb_base_with_schedule("enriched", "step", 8)
+    model::NachmaniNeuralBP = unit_weight_neuralbp(
+        step_base; coupling_scale = 0.503f0, coupling_schedule_layer = 4.5f0, coupling_schedule_width = 1.5f0)
+    # The GPU state's per-layer vector is the same function of the parameters as
+    # `effective_coupling_scale_at_layer`, computed by different code.
+    per_layer::Vector{Float32} = coupling_scale_per_layer(model.coupling_logit, model.coupling_schedule, step_base)
+    @test length(per_layer) == step_base.n_layers
+    for layer in 1:step_base.n_layers
+        @test per_layer[layer] == effective_coupling_scale_at_layer(model, layer)
+    end
+    # Decreasing, and both ends of the step are where they should be.
+    @test all(per_layer[layer] > per_layer[layer + 1] for layer in 1:(step_base.n_layers - 1))
+    @test per_layer[1] > 0.85f0 * 0.503f0
+    @test per_layer[8] < 0.15f0 * 0.503f0
+    # Under the constant schedule the vector is flat at alpha.
+    constant_base::NeuralBPBase = load_bb_base_with_schedule("enriched", "constant", 8)
+    constant_model::NachmaniNeuralBP = unit_weight_neuralbp(constant_base; coupling_scale = 0.503f0)
+    flat::Vector{Float32} = coupling_scale_per_layer(constant_model.coupling_logit, constant_model.coupling_schedule, constant_base)
+    @test all(flat .== effective_coupling_scale(constant_model))
+end
+
+@testset "Enzyme differentiates the training loss with respect to the step schedule" begin
+    Random.seed!(61)
+    step_base::NeuralBPBase = load_bb_base_with_schedule("enriched", "step", 6)
+    # A step in the middle of the network with a width that keeps d(t) away
+    # from both saturations at every scored layer, so the gradient has
+    # somewhere to be non-zero.
+    model::NachmaniNeuralBP = unit_weight_neuralbp(
+        step_base; coupling_scale = 0.503f0, coupling_schedule_layer = 3.5f0, coupling_schedule_width = 2.0f0)
+    n_samples::Int = 4
+    expected_recoveries::BitMatrix = falses(step_base.code_n_bits, n_samples)
+    for sample in 1:n_samples
+        expected_recoveries[rand(1:step_base.code_n_bits), sample] = true
+        expected_recoveries[rand(1:step_base.code_n_bits), sample] = true
+    end
+    syndromes::BitMatrix = BitMatrix(mod.(Matrix{Int}(step_base.parity_check_matrix) * Matrix{Int}(expected_recoveries), 2) .== 1)
+    llrs_batch::Matrix{Float32} = repeat(step_base.initial_llrs, 1, n_samples)
+
+    function schedule_loss(schedule_parameters::Vector{Float32})::Float32
+        loss::Float32 = CorrelatedBPDecoderWithCER.get_loss_value(
+            model.weights_c2v_v2c, model.weights_llrs, model.weights_c2v_readout,
+            model.coupling_logit, schedule_parameters,
+            1.0f0, 0, step_base, llrs_batch, syndromes, expected_recoveries)
+        return loss
+    end
+
+    grad_w_c2v_v2c::Vector{Float32} = zeros(Float32, length(model.weights_c2v_v2c))
+    grad_w_llrs::Vector{Float32} = zeros(Float32, length(model.weights_llrs))
+    grad_w_readout::Vector{Float32} = zeros(Float32, length(model.weights_c2v_readout))
+    grad_alpha::Vector{Float32} = zeros(Float32, 1)
+    grad_schedule::Vector{Float32} = zeros(Float32, 2)
+    (_, loss_value) = Enzyme.autodiff(
+        Enzyme.ReverseWithPrimal,
+        CorrelatedBPDecoderWithCER.get_loss_value,
+        Enzyme.Duplicated(model.weights_c2v_v2c, grad_w_c2v_v2c),
+        Enzyme.Duplicated(model.weights_llrs, grad_w_llrs),
+        Enzyme.Duplicated(model.weights_c2v_readout, grad_w_readout),
+        Enzyme.Duplicated(model.coupling_logit, grad_alpha),
+        Enzyme.Duplicated(model.coupling_schedule, grad_schedule),
+        Enzyme.Const(1.0f0),
+        Enzyme.Const(0),
+        Enzyme.Const(step_base),
+        Enzyme.Const(llrs_batch),
+        Enzyme.Const(syndromes),
+        Enzyme.Const(expected_recoveries)
+    )
+    @test isfinite(loss_value)
+    @test all(isfinite, grad_schedule)
+    @test all(isfinite, grad_alpha)
+    # Both schedule parameters receive gradient under the step schedule.
+    @test grad_schedule[1] != 0.0f0
+    @test grad_schedule[2] != 0.0f0
+    # ... and it agrees with central finite differences in each parameter.
+    for parameter_index in 1:2
+        step::Float32 = 2.0f-2
+        up::Vector{Float32} = copy(model.coupling_schedule); up[parameter_index] += step
+        down::Vector{Float32} = copy(model.coupling_schedule); down[parameter_index] -= step
+        finite_difference::Float32 = (schedule_loss(up) - schedule_loss(down)) / (2.0f0 * step)
+        @test isapprox(grad_schedule[parameter_index], finite_difference; atol = 5e-3, rtol = 5e-2)
+    end
+end
+
+@testset "Weights file round-trips the schedule and stays readable without it" begin
+    step_base::NeuralBPBase = load_bb_base_with_schedule("enriched", "step", 3)
+    model::NachmaniNeuralBP = unit_weight_neuralbp(
+        step_base; coupling_scale = 0.503f0, coupling_schedule_layer = 11.0f0, coupling_schedule_width = 2.5f0)
+    # Perturb the stored parameters so the round trip is not of the defaults.
+    model.coupling_schedule[1] = 13.25f0
+    model.coupling_schedule[2] = 0.7f0
+    weights_file::String = tempname() * ".json"
+    save_trained_neuralbp_model(weights_file, model; seed = 5)
+    loaded::NachmaniNeuralBP = load_trained_neuralbp_model(weights_file, model)
+    @test loaded.coupling_schedule == model.coupling_schedule          # exact parameter round trip
+    @test loaded.coupling_logit == model.coupling_logit
+    (loaded_layer, loaded_width) = effective_coupling_schedule(loaded)
+    @test loaded_layer == 13.25f0
+    @test isapprox(loaded_width, coupling_schedule_width_from_parameter(0.7f0); atol = 1e-6)
+    saved_contents::Dict{String, Any} = JSON.parsefile(weights_file)
+    @test saved_contents["coupling_schedule_kind"] == "step"
+    @test length(saved_contents["coupling_schedule"]) == 2
+    @test isapprox(saved_contents["coupling_schedule_layer"], 13.25; atol = 1e-6)
+    @test isapprox(saved_contents["coupling_schedule_width"], loaded_width; atol = 1e-5)
+    @test saved_contents["check_node"] == "enriched"
+
+    # A file that predates the schedule has none of the keys: it loads with the
+    # CALLER's schedule defaults, and warns that the kinds differ.
+    legacy_file::String = tempname() * ".json"
+    open(legacy_file, "w") do io
+        JSON.print(io, Dict(
+            "weights_c2v_v2c" => model.weights_c2v_v2c,
+            "weights_llrs" => model.weights_llrs,
+            "weights_c2v_readout" => model.weights_c2v_readout,
+            "coupling_logit" => model.coupling_logit,
+            "coupling_scale" => [effective_coupling_scale(model)],
+            "check_node" => "enriched",
+        ))
+    end
+    loaded_legacy::NachmaniNeuralBP = @test_logs (:warn, r"trained with coupling_schedule") load_trained_neuralbp_model(legacy_file, model)
+    (legacy_layer, legacy_width) = effective_coupling_schedule(loaded_legacy)
+    @test legacy_layer == 13.25f0                                        # the caller's, not a default
+    @test isapprox(legacy_width, coupling_schedule_width_from_parameter(0.7f0); atol = 1e-6)
+    @test loaded_legacy.weights_llrs == model.weights_llrs
+    # Loading the same legacy file into a CONSTANT-schedule model is silent
+    # about the schedule (both are "constant").
+    constant_base::NeuralBPBase = load_bb_base_with_schedule("enriched", "constant", 3)
+    constant_model::NachmaniNeuralBP = unit_weight_neuralbp(constant_base; coupling_scale = 0.503f0)
+    @test_logs load_trained_neuralbp_model(legacy_file, constant_model)
+    rm(weights_file)
+    rm(legacy_file)
 end

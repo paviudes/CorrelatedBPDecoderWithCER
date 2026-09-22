@@ -160,3 +160,34 @@ end
   and a fixed `coupling_scale_init` is the training-free α = 0 vs α = 1 comparison.
 - Tests: `tests/test_soft_constraints.jl` (tables, α = 0 ≡ tanh, brute-force posterior,
   Enzyme gradients, CPU ≡ GPU, tanh path unchanged, weights-file round trip).
+
+## Layer schedule on α (`coupling_schedule`, added 2026-09-22)
+
+- **α is a unit-consistency factor, not a fitted number.** `single_qubit_rescale` maps
+  the median single-qubit rate to 0.1 and leaves J untouched, so the pair term must be
+  softened by the same ratio: `α* = log(9) / log((1−m)/m)`, m the median raw rate.
+  That is 0.426 on `p_0.0005_sig_0.001` (where "0.42" came from) and **0.503 on
+  `p_0.0015_sig_0.0015`**. Every run on the new dataset before this date used 0.42.
+- `coupling_schedule = "constant" | "step"` in the TOML. "step" uses
+  `α_t = α · d(t)`, `d(t) = 1/(1 + exp((t − T₀)/w))`: full couplings early, rolled
+  off around layer T₀ over ~4w layers. Rationale: loopy overcounting compounds with
+  iteration, and the per-weight failure analysis showed the enriched decoder's late
+  commits (median layer 8–16) are the ones that land in the wrong coset.
+- **Two trainable parameters, not one per layer.** Stored as `coupling_schedule =
+  [T₀, log(w − 0.5)]` on `NachmaniNeuralBP`; init from `coupling_schedule_layer_init`
+  / `coupling_schedule_width_init` (layers), learned unless
+  `coupling_schedule_learnable = false`. Only ~2% of samples are active past layer 10
+  and `warmup_layers` hides the first layers from the loss, so 90 free α_t would fit
+  noise. The width has a 0.5-layer floor (its gradient is d(1−d)/w).
+- **d(t) is computed as `(1 − tanh(u/2))/2`, never `1/(1+exp(u))`.** Same function;
+  the exp form overflows to Inf at 88.7·w layers past T₀ and Enzyme's reverse pass
+  returns Inf·0 = NaN there, NaN-skipping the batch — reachable at the width floor.
+- Needs `check_node = "enriched"` (`NeuralBPBase` refuses it on tanh) and, like the
+  check node, **a non-empty `run_tag`** — no filename carries a schedule tag.
+- Sweep spec: `enriched:<α>:<fixed|learn>[:step:<T₀>:<w>:<fixed|learn>]`, tag
+  `_cnenr<α>F/L[_sch<T₀>w<w>F/L]`. `standard_bp_experiments.jl` honours the same keys
+  with everything fixed: that is the classical (T₀, w) scan.
+- `check_training_health.sh <codename> [tag]` reports completed epochs per arm (an
+  epoch with 6 non-finite gradients is **rolled back**, weights and Adam state) and
+  weight sd (~0.058 = never moved). Arm comparisons are only meaningful when
+  completed epochs are equal across arms.

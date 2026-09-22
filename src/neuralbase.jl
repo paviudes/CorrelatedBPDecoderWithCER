@@ -66,6 +66,12 @@ struct NeuralBPBase <: NeuralBP
     # soft_constraints.jl). The tables are empty for the standard rule.
     check_node_kind::Int
     soft_check_tables::SoftCheckTables
+    # How the coupling scale varies with the layer: COUPLING_SCHEDULE_CONSTANT
+    # (one α everywhere, every earlier run) or COUPLING_SCHEDULE_STEP
+    # (α_t = α · d(t), a logistic step down whose layer and width the model
+    # carries as trainable parameters; see soft_constraints.jl). Only meaningful
+    # with the enriched check node, since α is only read there.
+    coupling_schedule_kind::Int
 
     function NeuralBPBase(
         parity_check_matrix::Matrix{Int},
@@ -74,7 +80,8 @@ struct NeuralBPBase <: NeuralBP
         n_layers::Int;
         connectivity::Matrix{Int}=Matrix{Int}(undef, 0, 0),
         correlation_strengths::Vector{Float32}=Float32[],
-        check_node::String="tanh"
+        check_node::String="tanh",
+        coupling_schedule::String="constant"
     )
         """
         Construct the elements of a `NeuralBPLayer` from a given parity-check matrix.
@@ -226,6 +233,17 @@ struct NeuralBPBase <: NeuralBP
             )
         end
 
+        ## Layer schedule on α. A "step" schedule on the tanh rule would be
+        ## silently inert -- α is never read there -- which is the same kind of
+        ## quiet no-op the enriched-without-couplings check above refuses.
+        coupling_schedule_kind::Int = coupling_schedule_code(coupling_schedule)
+        if coupling_schedule_kind != COUPLING_SCHEDULE_CONSTANT && check_node_kind != CHECK_NODE_ENRICHED
+            throw(ArgumentError(
+                "NeuralBPBase: coupling_schedule = \"$(coupling_schedule)\" but " *
+                "check_node = \"$(check_node)\". The schedule scales α, which only " *
+                "the enriched check node reads; on the standard rule it would do nothing."))
+        end
+
         return new(
             parity_check_matrix,
             is_correlated,
@@ -254,7 +272,8 @@ struct NeuralBPBase <: NeuralBP
             initial_llrs,
             n_layers,
             check_node_kind,
-            soft_check_tables
+            soft_check_tables,
+            coupling_schedule_kind
         )
     end
 end

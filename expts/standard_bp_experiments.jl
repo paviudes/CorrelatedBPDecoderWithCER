@@ -91,6 +91,25 @@ if abspath(PROGRAM_FILE) == @__FILE__
                 "collides with the standard rule's."))
         end
     end
+    # The layer schedule on α, fixed at (T₀, w) from the TOML: this is the
+    # classical scan over the schedule, nothing trained. Same filename rule as
+    # the check node, so a step run needs its own `run_tag`.
+    coupling_schedule::String = String(get(hyperparameters, "coupling_schedule", "constant"))
+    coupling_schedule_code(coupling_schedule)
+    coupling_schedule_layer::Float32 =
+        Float32(get(hyperparameters, "coupling_schedule_layer_init", Float32(n_iterations_bp)))
+    coupling_schedule_width::Float32 =
+        Float32(get(hyperparameters, "coupling_schedule_width_init", 3.0f0))
+    if coupling_schedule == "step"
+        print_info("[coupling_schedule=step] α_t = α · d(t), fixed step at layer T₀ = $(coupling_schedule_layer), " *
+                   "width w = $(coupling_schedule_width) layers.")
+        if run_tag == ""
+            throw(ArgumentError(
+                "coupling_schedule = \"step\" needs a non-empty `run_tag` in the " *
+                "hyperparameters TOML (e.g. \"_sch12w3F\"), or its results file " *
+                "collides with the constant schedule's."))
+        end
+    end
     base::NeuralBPBase = load_base_BP_model(
         parity_check_matrix_file,
         logicals_file,
@@ -101,6 +120,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
         single_qubit_rescale = Float32(get(hyperparameters, "single_qubit_rescale", 0.0f0)),
         require_correlations = Bool(get(hyperparameters, "require_correlations", false)),
         check_node = check_node,
+        coupling_schedule = coupling_schedule,
     )
 
     results_directory::String = "$(prefix)/results"
@@ -128,6 +148,8 @@ if abspath(PROGRAM_FILE) == @__FILE__
         base,
         test_errors_file;
         coupling_scale = coupling_scale,
+        coupling_schedule_layer = coupling_schedule_layer,
+        coupling_schedule_width = coupling_schedule_width,
         batch_size = Int(get(hyperparameters, "prediction_batch_size", 0)),
         gpu_memory = String(get(hyperparameters, "gpu_memory", "")),
         diagnose = diagnose
@@ -179,6 +201,9 @@ if abspath(PROGRAM_FILE) == @__FILE__
     extra_result_columns::Vector{Pair{String, Any}} = Pair{String, Any}[]
     push!(extra_result_columns, "check_node" => check_node)
     push!(extra_result_columns, "coupling_scale" => coupling_scale)
+    push!(extra_result_columns, "coupling_schedule" => coupling_schedule)
+    push!(extra_result_columns, "coupling_schedule_layer" => coupling_schedule_layer)
+    push!(extra_result_columns, "coupling_schedule_width" => coupling_schedule_width)
     if diagnosis !== nothing
         push!(extra_result_columns, "num_syndrome_cleared" => diagnosis.n_syndrome_cleared)
         push!(extra_result_columns, "num_coset_failures" => diagnosis.n_coset_failures)
