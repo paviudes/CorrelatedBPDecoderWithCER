@@ -40,6 +40,9 @@ SETTINGS_FILE="$SCRIPTS_DIR/hp_sweep_settings_${TS}.toml"
 
 cat > "$SETTINGS_FILE" <<'EOF'
 workdir          = "./../data"
+# Reuses the trainable_alpha run directory: with more than one optimizer arm
+# every point is tagged `_opt<arm>`, including the baseline, so nothing here
+# collides with the results already in it.
 codename         = "72q_BB_cycles_1_trainable_alpha"
 
 # Dataset keys: train_<key>.txt, test_<key>.txt, correlated_weights_<key>.txt
@@ -51,8 +54,13 @@ codename         = "72q_BB_cycles_1_trainable_alpha"
 # zero loss from 87% to ~0. The cross-index probe (2026-09-21) showed the sample
 # index does not matter to the decoder, so one index per configuration suffices
 # for a scan; three are kept here because they are the replicate axis.
-datasets         = ["p_0.0015_sig_0.0015_s_1", "p_0.0015_sig_0.0015_s_2", "p_0.0015_sig_0.0015_s_3"]
-# These get only the CER tanh arm and the no-CER baseline, not the check-node arms.
+# ONE index here, not three: the cross-index probe (2026-09-21) found transfer
+# between sample indices free (penalty -0.4% to +4.0%, every CI straddling 0),
+# so the index is not a replicate axis worth paying for. Seed variance is
+# (sd ~10-15% of the mean), and that is what `seeds` covers.
+datasets         = ["p_0.0015_sig_0.0015_s_1"]
+# These get only the CER tanh arm and the no-CER baseline, not the check-node
+# arms, and always the BASELINE optimizer arm.
 ref_datasets     = []
 
 base_hyperparams = "hyperparams_baseline.toml"
@@ -113,7 +121,30 @@ single_qubit_rescale = 0.1
 # barely more than singles). alpha = 0.42 was 50% BETTER than tanh (1980 -> 989
 # failures, paired McNemar z = 21). Enriched arms are emitted for CER arms only
 # (the no-CER baseline has no couplings to enrich; NeuralBPBase refuses).
-check_node_arms  = ["tanh", "enriched:0.503:fixed", "enriched:0.503:fixed:step:12:3:learn"]
+check_node_arms  = ["tanh", "enriched:0.42:learn", "enriched:0.42:learn:step:12:3:learn"]
+
+# --- optimizer axis: a COORDINATE sweep around the base TOML -----------------
+# Each entry is  <tag>[:<key>=<value>[,<key>=<value>...]]. An entry with no
+# overrides uses whatever the base TOML says; the tag enters `run_tag` and every
+# filename, so two settings can never share a weights or results file. Only
+# adam_eps, weight_decay, initial_conditions_scale and learning_rate may be
+# overridden — anything else is a typo and the generator refuses it.
+#
+# WHY THIS AXIS. alpha and the step schedule are trainable and DO NOT MOVE:
+# alpha went 0.42 -> 0.4156 +- 0.008 and T0 went 12 -> 12.0006 +- 0.039 over
+# 2500 updates. At lr = 0.001 a parameter taking full steps travels 2.5, so
+# these moved by a factor ~1e-4 of nominal. Adam's step is
+# lr * m/(sqrt(v) + eps), and `adam_eps = 1e-4` is 10000x the 1e-8 default: for
+# a small-gradient parameter sqrt(v) ~ eps, the denominator is eps-dominated and
+# the step collapses. The message weights have large enough gradients that
+# sqrt(v) >> eps and they move normally — which is exactly the asymmetry seen.
+# So adam_eps is the primary suspect; weight_decay and initial_conditions_scale
+# are here because they also shape how far the message weights travel, and the
+# tanh control separates "alpha moved" from "the optimiser got better overall".
+#
+# Coordinate rather than factorial: 7 settings instead of 27, each isolating one
+# knob against a shared baseline.
+optimizer_arms   = ["base", "eps1em8:adam_eps=1e-8", "eps1em6:adam_eps=1e-6", "wd0:weight_decay=0.0", "wd1em3:weight_decay=1e-3", "ic0p05:initial_conditions_scale=0.05", "ic0p3:initial_conditions_scale=0.3"]
 
 # --- cluster ----------------------------------------------------------------
 # ACTIVE: NARVAL. Two profiles are kept here; switching is the six values marked
@@ -227,6 +258,25 @@ CHECK_NODE_ARMS=$(list check_node_arms)
 if [ -z "$CHECK_NODE_ARMS" ]; then
     CHECK_NODE_ARMS="tanh"
 fi
+OPTIMIZER_ARMS=$(list optimizer_arms)
+if [ -z "$OPTIMIZER_ARMS" ]; then
+    OPTIMIZER_ARMS="base"
+fi
+# Whether the optimizer tag enters filenames at all. With a single arm it does
+# not, so a sweep that ignores this axis produces exactly the filenames it
+# always did. With more than one, EVERY arm is tagged including "base" — an
+# untagged baseline would otherwise overwrite the results of whatever earlier
+# sweep ran in the same codename without this axis.
+N_OPTIMIZER_ARMS=$(echo "$OPTIMIZER_ARMS" | wc -w | tr -d ' ')
+
+# The base TOML's value for a key, so an optimizer arm that does not override it
+# still writes the value explicitly. Every swept key is emitted on every point:
+# a key that is sometimes stripped and sometimes inherited is how a sweep ends
+# up with two different meanings for the same filename.
+base_hyperparameter_value() {   # <key>
+    grep -E "^[[:space:]]*$1[[:space:]]*=" "$MODELS_DIR/$BASE_HP" | head -1 |
+        sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]*#.*$//; s/^"//; s/"$//; s/[[:space:]]*$//'
+}
 ACCOUNT_CPU=$(get account_cpu);      ACCOUNT_GPU=$(get account_gpu)
 EMAIL=$(get email);                  JULIA_MODULE=$(get julia_module)
 CUDA_MODULE=$(get cuda_module);      HEAP=$(get heap_size_hint)
@@ -347,8 +397,8 @@ SLURM_TEST="$CLUSTER_DIR/hp_sweep_test_${TS}.sh"
 tag_of() { echo "$1" | tr '.' 'p' | tr -d '-'; }
 
 # ------------------------------------------------------------ emit points ---
-emit_point() {   # <key> <seed> <use_cer> <check_node_spec>
-    local key="$1" seed="$2" use_cer="$3" check_node_spec="${4:-tanh}"
+emit_point() {   # <key> <seed> <use_cer> <check_node_spec> <optimizer_spec>
+    local key="$1" seed="$2" use_cer="$3" check_node_spec="${4:-tanh}" optimizer_spec="${5:-base}"
     local arm="cer" require="true"
     if [ "$use_cer" = "false" ]; then
         arm="nocer"
@@ -431,16 +481,66 @@ emit_point() {   # <key> <seed> <use_cer> <check_node_spec>
         exit 1
     fi
 
-    # The run tag is the arm plus the check node plus the schedule. It is also
-    # the start of the generated TOML's name, so one file per point.
-    local run_tag="_hp${arm}${check_node_tag}${schedule_tag}"
-    local hp="hyperparams_hp_${arm}${check_node_tag}${schedule_tag}_$(tag_of "$key")_seed${seed}.toml"
+    # Optimizer arm: "<tag>[:<key>=<value>,...]". Start from the base TOML's
+    # values and apply the overrides, so every point states all four explicitly
+    # whether or not it changed them.
+    local optimizer_tag="${optimizer_spec%%:*}"
+    local adam_eps_value="$(base_hyperparameter_value adam_eps)"
+    local weight_decay_value="$(base_hyperparameter_value weight_decay)"
+    local initial_conditions_scale_value="$(base_hyperparameter_value initial_conditions_scale)"
+    local learning_rate_value="$(base_hyperparameter_value learning_rate)"
+    if [ -z "$optimizer_tag" ]; then
+        echo "emit_point: optimizer spec '$optimizer_spec' has an empty tag; the tag enters every filename." >&2
+        exit 1
+    fi
+    if [ "$optimizer_spec" != "$optimizer_tag" ]; then
+        local override_list="${optimizer_spec#*:}"
+        local remaining_overrides="$override_list"
+        while [ -n "$remaining_overrides" ]; do
+            local one_override="${remaining_overrides%%,*}"
+            if [ "$remaining_overrides" = "$one_override" ]; then
+                remaining_overrides=""
+            else
+                remaining_overrides="${remaining_overrides#*,}"
+            fi
+            local override_key="${one_override%%=*}"
+            local override_value="${one_override#*=}"
+            if [ "$one_override" = "$override_key" ] || [ -z "$override_value" ]; then
+                echo "emit_point: optimizer spec '$optimizer_spec': '$one_override' is not <key>=<value>." >&2
+                exit 1
+            fi
+            # An unknown key would be written into the TOML and silently ignored
+            # by the Julia side, so the whole arm would be a duplicate of the
+            # baseline under a different name. Refuse instead.
+            case "$override_key" in
+                adam_eps)                 adam_eps_value="$override_value" ;;
+                weight_decay)             weight_decay_value="$override_value" ;;
+                initial_conditions_scale) initial_conditions_scale_value="$override_value" ;;
+                learning_rate)            learning_rate_value="$override_value" ;;
+                *)
+                    echo "emit_point: optimizer spec '$optimizer_spec': '$override_key' is not a sweepable key." >&2
+                    echo "  Allowed: adam_eps, weight_decay, initial_conditions_scale, learning_rate." >&2
+                    exit 1
+                    ;;
+            esac
+        done
+    fi
+    local optimizer_suffix=""
+    if [ "$N_OPTIMIZER_ARMS" -gt 1 ]; then
+        optimizer_suffix="_opt${optimizer_tag}"
+    fi
+
+    # The run tag is the arm plus the check node plus the schedule plus the
+    # optimizer setting. It is also the start of the generated TOML's name, so
+    # one file per point.
+    local run_tag="_hp${arm}${check_node_tag}${schedule_tag}${optimizer_suffix}"
+    local hp="hyperparams_hp_${arm}${check_node_tag}${schedule_tag}${optimizer_suffix}_$(tag_of "$key")_seed${seed}.toml"
 
     # Start from the base TOML minus every key this generator sets itself, so a
     # stale value in the base can never override a swept one. The removed loss
     # terms' keys are stripped too: they are ignored by the code now, but a
     # generated file should not carry dead settings.
-    grep -vE '^[[:space:]]*(retrain|run_tag|use_CER|seed|single_qubit_rescale|require_correlations|check_node|coupling_scale_init|coupling_scale_learnable|coupling_schedule|coupling_schedule_layer_init|coupling_schedule_width_init|coupling_schedule_learnable|sparsity_importance|syndrome_gate_threshold|correlation_certainty_threshold|correlation_weight|correlation_importance|certainty_penalty|certainty_hinge_width|certainty_syndrome_gate_threshold|syndrome_gate_mode|syndrome_gate_rate|correlation_form|correlation_agreement_floor|llr_certainty_importance)[[:space:]]*=' \
+    grep -vE '^[[:space:]]*(retrain|run_tag|use_CER|seed|single_qubit_rescale|require_correlations|check_node|coupling_scale_init|coupling_scale_learnable|coupling_schedule|coupling_schedule_layer_init|coupling_schedule_width_init|coupling_schedule_learnable|adam_eps|weight_decay|initial_conditions_scale|learning_rate|sparsity_importance|syndrome_gate_threshold|correlation_certainty_threshold|correlation_weight|correlation_importance|certainty_penalty|certainty_hinge_width|certainty_syndrome_gate_threshold|syndrome_gate_mode|syndrome_gate_rate|correlation_form|correlation_agreement_floor|llr_certainty_importance)[[:space:]]*=' \
         "$MODELS_DIR/$BASE_HP" > "$MODELS_DIR/$hp"
     {
         echo ""
@@ -458,6 +558,13 @@ emit_point() {   # <key> <seed> <use_cer> <check_node_spec>
         echo "coupling_schedule_layer_init = ${coupling_schedule_layer_init}"
         echo "coupling_schedule_width_init = ${coupling_schedule_width_init}"
         echo "coupling_schedule_learnable = ${coupling_schedule_learnable}"
+        echo ""
+        echo "# optimizer arm \"${optimizer_tag}\": stated explicitly on every point,"
+        echo "# overridden or not, so one filename never means two settings."
+        echo "learning_rate = ${learning_rate_value}"
+        echo "adam_eps = ${adam_eps_value}"
+        echo "weight_decay = ${weight_decay_value}"
+        echo "initial_conditions_scale = ${initial_conditions_scale_value}"
     } >> "$MODELS_DIR/$hp"
 
     local common="julia --project=\"./../\" --heap-size-hint=$HEAP neural_bp_experiments.jl \
@@ -472,19 +579,24 @@ emit_point() {   # <key> <seed> <use_cer> <check_node_spec>
 # standard rule. `ref_datasets` get the CER tanh arm and the baseline only.
 for key in $DATASETS; do
     for seed in $SEEDS; do
-        for cn in $CHECK_NODE_ARMS; do
-            emit_point "$key" "$seed" true "$cn"
+        for optimizer in $OPTIMIZER_ARMS; do
+            for cn in $CHECK_NODE_ARMS; do
+                emit_point "$key" "$seed" true "$cn" "$optimizer"
+            done
+            if [ "$INCLUDE_NOCER" = "true" ]; then
+                emit_point "$key" "$seed" false "tanh" "$optimizer"
+            fi
         done
-        if [ "$INCLUDE_NOCER" = "true" ]; then
-            emit_point "$key" "$seed" false "tanh"
-        fi
     done
 done
+# `ref_datasets` stay on the BASELINE optimizer arm: they exist as a reference
+# point against earlier sweeps, and crossing them with a new axis would change
+# what they are a reference to.
 for key in $REF_DATASETS; do
     for seed in $SEEDS; do
-        emit_point "$key" "$seed" true "tanh"
+        emit_point "$key" "$seed" true "tanh" "base"
         if [ "$INCLUDE_NOCER" = "true" ]; then
-            emit_point "$key" "$seed" false "tanh"
+            emit_point "$key" "$seed" false "tanh" "base"
         fi
     done
 done
@@ -770,6 +882,7 @@ echo "  datasets  -> $DATASETS"
 echo "  ref       -> $REF_DATASETS   (CER tanh and no-CER only)"
 echo "  seeds     -> $SEEDS"
 echo "  check node-> $CHECK_NODE_ARMS   (no-CER baseline: $INCLUDE_NOCER)"
+echo "  optimizer -> $OPTIMIZER_ARMS"
 echo "  cluster   -> $CLUSTER_NAME"
 echo "  train     -> $ACCOUNT_CPU: array 0-$((TRAIN_ARRAY-1)) ($TRAIN_ARRAY x $TRAIN_CPUS cpu x $TRAIN_MEM = $(( TRAIN_TOTAL_MB / 1024 ))G/node), $TRAIN_WALL"
 echo "  test      -> $ACCOUNT_GPU: array 0-$((TEST_ARRAY-1)) ($TEST_ARRAY tasks x ${N_GPUS}x $GPU_TYPE (${VRAM_PER_GPU}G vram), $TEST_CPUS cpu),"
