@@ -1,21 +1,23 @@
-[hp_sweep] wrote defaults to: /scratch/debankan/CorrelatedBPDecoderWithCER/expts/scripts/hp_sweep_settings_2026-09-22_07-51-27.toml
+[debankan@narval3 expts]$ bash sweep_hyperparams.sh --no-edit
+[hp_sweep] wrote defaults to: /scratch/debankan/CorrelatedBPDecoderWithCER/expts/scripts/hp_sweep_settings_2026-09-23_02-07-14.toml
 
-[hp_sweep] 60 point(s)
-  datasets  -> p_0.0015_sig_0.0015_s_1  p_0.0015_sig_0.0015_s_2  p_0.0015_sig_0.0015_s_3
+[hp_sweep] 140 point(s)
+  datasets  -> p_0.0015_sig_0.0015_s_1
   ref       ->    (CER tanh and no-CER only)
   seeds     -> 1  2  3  4  5
-  check node-> tanh  enriched:0.503:fixed  enriched:0.503:fixed:step:12:3:learn   (no-CER baseline: true)
+  check node-> tanh  enriched:0.42:learn  enriched:0.42:learn:step:12:3:learn   (no-CER baseline: true)
+  optimizer -> base  eps1em8:adam_eps=1e-8  eps1em6:adam_eps=1e-6  wd0:weight_decay=0.0  wd1em3:weight_decay=1e-3  ic0p05:initial_conditions_scale=0.05  ic0p3:initial_conditions_scale=0.3
   cluster   -> narval
   train     -> def-jemerson: array 0-4 (5 x 54 cpu x 6G = 324G/node), 4:00:00
   test      -> def-jemerson_gpu: array 0-7 (8 tasks x 1x a100 (40G vram), 12 cpu),
                --mem-per-gpu=32G host ram, GPU_MEMORY=34816M, 1 at a time
-  commands  -> ./../data/72q_BB_cycles_1_trainable_alpha/cluster/hp_sweep_train_2026-09-22_07-51-27.txt
-               ./../data/72q_BB_cycles_1_trainable_alpha/cluster/hp_sweep_test_2026-09-22_07-51-27.txt
+  commands  -> ./../data/72q_BB_cycles_1_trainable_alpha/cluster/hp_sweep_train_2026-09-23_02-07-14.txt
+               ./../data/72q_BB_cycles_1_trainable_alpha/cluster/hp_sweep_test_2026-09-23_02-07-14.txt
 
 submit — TRAIN first (CPU, def-jemerson), then TEST (GPU, def-jemerson_gpu):
 
   # 1. training
-  sbatch ./../data/72q_BB_cycles_1_trainable_alpha/cluster/hp_sweep_train_2026-09-22_07-51-27.sh
+  sbatch ./../data/72q_BB_cycles_1_trainable_alpha/cluster/hp_sweep_train_2026-09-23_02-07-14.sh
 
   # 2. when it finishes, CHECK THE MODELS TRAINED before spending a GPU:
   julia -e 'using JSON, Statistics; w=JSON.parsefile("./../data/72q_BB_cycles_1_trainable_alpha/models/neuralbp_weights_nlayers_90_epochs_5_trained_using_train_p_0.0015_sig_0.0015_s_1_hpcer_seed_1.json");
@@ -23,9 +25,9 @@ submit — TRAIN first (CPU, def-jemerson), then TEST (GPU, def-jemerson_gpu):
   # 0.058 => never trained (every batch NaN-skipped); larger => trained.
 
   # 3. testing
-  sbatch ./../data/72q_BB_cycles_1_trainable_alpha/cluster/hp_sweep_test_2026-09-22_07-51-27.sh
+  sbatch ./../data/72q_BB_cycles_1_trainable_alpha/cluster/hp_sweep_test_2026-09-23_02-07-14.sh
 
   To chain them without the check instead:
-    TRAIN=$(sbatch --parsable ./../data/72q_BB_cycles_1_trainable_alpha/cluster/hp_sweep_train_2026-09-22_07-51-27.sh)
-    sbatch --dependency=afterok:$TRAIN ./../data/72q_BB_cycles_1_trainable_alpha/cluster/hp_sweep_test_2026-09-22_07-51-27.sh
+    TRAIN=$(sbatch --parsable ./../data/72q_BB_cycles_1_trainable_alpha/cluster/hp_sweep_train_2026-09-23_02-07-14.sh)
+    sbatch --dependency=afterok:$TRAIN ./../data/72q_BB_cycles_1_trainable_alpha/cluster/hp_sweep_test_2026-09-23_02-07-14.sh
 [debankan@narval3 expts]$ 

@@ -130,21 +130,40 @@ check_node_arms  = ["tanh", "enriched:0.42:learn", "enriched:0.42:learn:step:12:
 # adam_eps, weight_decay, initial_conditions_scale and learning_rate may be
 # overridden — anything else is a typo and the generator refuses it.
 #
-# WHY THIS AXIS. alpha and the step schedule are trainable and DO NOT MOVE:
-# alpha went 0.42 -> 0.4156 +- 0.008 and T0 went 12 -> 12.0006 +- 0.039 over
-# 2500 updates. At lr = 0.001 a parameter taking full steps travels 2.5, so
-# these moved by a factor ~1e-4 of nominal. Adam's step is
-# lr * m/(sqrt(v) + eps), and `adam_eps = 1e-4` is 10000x the 1e-8 default: for
-# a small-gradient parameter sqrt(v) ~ eps, the denominator is eps-dominated and
-# the step collapses. The message weights have large enough gradients that
-# sqrt(v) >> eps and they move normally — which is exactly the asymmetry seen.
-# So adam_eps is the primary suspect; weight_decay and initial_conditions_scale
-# are here because they also shape how far the message weights travel, and the
-# tanh control separates "alpha moved" from "the optimiser got better overall".
+# WHAT THE 2026-09-24 COORDINATE SWEEP SETTLED (140 points, s_1, 5 seeds):
 #
-# Coordinate rather than factorial: 7 settings instead of 27, each isolating one
-# knob against a shared baseline.
-optimizer_arms   = ["base", "eps1em8:adam_eps=1e-8", "eps1em6:adam_eps=1e-6", "wd0:weight_decay=0.0", "wd1em3:weight_decay=1e-3", "ic0p05:initial_conditions_scale=0.05", "ic0p3:initial_conditions_scale=0.3"]
+#   adam_eps        INERT. The tanh arms were BIT-IDENTICAL across 1e-4, 1e-6
+#                   and 1e-8 — a 10000x change moving not one failure. So
+#                   sqrt(v) >> eps already and the eps-domination theory was
+#                   wrong. Held at the base value from here on.
+#   weight_decay    No consistent effect; wd = 0 and wd = 1e-3 both land inside
+#                   the seed noise. Held at the base value.
+#   init cond scale THE ONE THAT MATTERS. 0.3 took no-CER from 4692 to 3322
+#                   failures (-29%, 5/5 seeds, no overlap with the baseline's
+#                   range) and CER tanh from 2792 to 2664. It did NOT move the
+#                   enriched arms: those sit at ~2320-2360 at every setting, and
+#                   the apparent "base is worse" was one outlier seed (3134
+#                   against four in 2306-2411).
+#
+# Two things make this worth a proper scan. The weights barely move during
+# training (final sd 0.1785 against an untrained 0.1732 at scale 0.3), so this
+# is an INFERENCE-time effect of the random initialisation, not a training one —
+# the same pattern as the priors and the couplings. And 0.3 was the edge of the
+# grid, so the optimum may be past it.
+#
+# It also revises a headline: at the old scale of 0.1 the CER priors looked like
+# -40.5% against no-CER, but at 0.3 that falls to -19.8%. Half of the measured
+# advantage was the BASELINE being badly initialised. Whatever scale this scan
+# picks, the priors number has to be re-quoted there.
+#
+# `random_values_around_one` is uniform on 1 +- scale, so scale 0.8 means
+# weights in [0.2, 1.8]; at scale 1.0 they would reach 0 and flip sign, which is
+# why the scan stops at 0.8.
+#
+# Tags are `scale0pN`, not `ic0pN`: the 2026-09-24 sweep already wrote
+# `_optic0p05` and `_optic0p3` into this codename and those must not be
+# overwritten.
+optimizer_arms   = ["scale0p1:initial_conditions_scale=0.1", "scale0p2:initial_conditions_scale=0.2", "scale0p3:initial_conditions_scale=0.3", "scale0p4:initial_conditions_scale=0.4", "scale0p5:initial_conditions_scale=0.5", "scale0p6:initial_conditions_scale=0.6", "scale0p7:initial_conditions_scale=0.7", "scale0p8:initial_conditions_scale=0.8"]
 
 # --- cluster ----------------------------------------------------------------
 # ACTIVE: NARVAL. Two profiles are kept here; switching is the six values marked
