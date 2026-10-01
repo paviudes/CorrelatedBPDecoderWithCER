@@ -6,6 +6,7 @@ function get_loss_value(
     coupling_schedule, # learnable length-2 vector [T₀, log(w - W_MIN)] of the layer schedule on α (inert under the constant schedule).
     loss_layer_temperature, # temperature of the softmin over layers, annealed during training.
     warmup_loss_layers, # first number of layers to leave unconstrained in the loss.
+    loss_layer_selection, # how the scored layers combine: softmin | last | mean (see src/loss.jl).
     base, # constant parameters of the model: the parity-check matrices, the check node tables, etc.
     llrs_batch, # batch of initial LLRs for the bits, the input to the network
     syndromes_batch, # batch of syndromes, the input to the network
@@ -36,7 +37,8 @@ function get_loss_value(
         expected_recoveries,
         base.parity_check_matrix_dual,
         loss_layer_temperature,
-        warmup_loss_layers
+        warmup_loss_layers,
+        loss_layer_selection
     )
     return total_loss
 end
@@ -49,6 +51,7 @@ function get_individual_loss_values(
     coupling_schedule::Vector{Float32},
     loss_layer_temperature::Float32,
     warmup_loss_layers::Int,
+    loss_layer_selection::Int,
     base::NeuralBPBase,
     llrs_batch::Matrix{Float32},
     syndromes_batch::BitMatrix,
@@ -72,7 +75,7 @@ function get_individual_loss_values(
     )
     losses_per_layer::Vector{Float32} = base_loss_per_layer(
         posterior_llrs, expected_recoveries, base.parity_check_matrix_dual, warmup_loss_layers)
-    total_loss::Float32 = softmin_loss(losses_per_layer, loss_layer_temperature)
+    total_loss::Float32 = combine_layer_losses(losses_per_layer, loss_layer_temperature, loss_layer_selection)
     return (total_loss, losses_per_layer)
 end
 
@@ -246,6 +249,11 @@ function train_neuralbp_enzyme!(
     adam_eps = hyperparameters["adam_eps"]
     max_nan_skips_per_epoch = hyperparameters["nanskip"]
     warmup_loss_layers = hyperparameters["warmup_layers"]
+    # How the scored layers collapse to one number. "softmin" reproduces every
+    # earlier run; "last" scores only the final layer, which is the mode that
+    # matches `commit_layer_rule = "last"` at test time.
+    loss_layer_selection::Int =
+        loss_layer_selection_code(String(get(hyperparameters, "loss_layer_selection", "softmin")))
     # Whether α (the scale on the CER couplings inside the enriched check node)
     # is learned. Irrelevant for the standard rule, where α is never read; the
     # leaf is frozen there too so that a tanh run never moves it, and a later
@@ -426,6 +434,7 @@ function train_neuralbp_enzyme!(
                 # Constant arguments (order MUST match get_loss_value's signature):
                 Enzyme.Const(hp[:loss_layer_temperature]),
                 Enzyme.Const(warmup_loss_layers),
+                Enzyme.Const(loss_layer_selection),
                 Enzyme.Const(base),
                 Enzyme.Const(llrs_batch),
                 Enzyme.Const(syndromes_batch),
@@ -504,6 +513,7 @@ function train_neuralbp_enzyme!(
                     bpnn.coupling_schedule,
                     hp[:loss_layer_temperature],
                     warmup_loss_layers,
+                    loss_layer_selection,
                     base,
                     llrs_batch,
                     syndromes_batch,

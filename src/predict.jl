@@ -34,7 +34,59 @@ function predict_neuralbp(bpnn::NeuralBP, syndromes::BitMatrix; batch_size::Int 
     return predicted_recoveries
 end
 
-function check_bp_solutions(parity_check_matrix::Matrix{Int}, logicals::Matrix{Int}, errors::BitMatrix, proposed_recoveries::Array{Bool, 3})::BitVector
+# =============================================================================
+#   Which layer the decoder commits to
+# =============================================================================
+# FIRST  the first layer whose residual clears the syndrome. Adaptive — 2 layers
+#        on an easy sample, 20 on a hard one — and legal, because
+#        H(e ⊕ r) = He ⊕ Hr = s ⊕ Hr, so "cleared" is the syndrome-only test
+#        Hr = s. This is the historical rule and stays the default.
+# LAST   always the final layer. The rule that MATCHES a last-layer training
+#        loss (`loss_layer_selection = "last"`): training and testing then score
+#        the same layer and there is no train/test mismatch left.
+#
+# Measured 2026-10-01, with the softmin loss over layers 11-90 and FIRST:
+# 98.8% of successes commit in layers 1-10, which the loss never scored, while
+# the loss's own argmin sat at layer 11. The two rules below exist so that
+# choice is explicit rather than implied by two files that do not know about
+# each other.
+const COMMIT_LAYER_FIRST::Int = 0
+const COMMIT_LAYER_LAST::Int = 1
+
+function commit_layer_rule_code(rule_name::AbstractString)::Int
+    """
+    Resolve the `commit_layer_rule` hyperparameter to its integer code, so a
+    typo fails before a million samples are decoded.
+    """
+    normalised_name::String = lowercase(strip(String(rule_name)))
+    rule_code::Int = COMMIT_LAYER_FIRST
+    if normalised_name == "first"
+        rule_code = COMMIT_LAYER_FIRST
+    elseif normalised_name == "last"
+        rule_code = COMMIT_LAYER_LAST
+    else
+        throw(ArgumentError(
+            "Unknown commit_layer_rule \"$(rule_name)\". Supported: \"first\" " *
+            "(the first syndrome-clearing layer, the historical default) and " *
+            "\"last\" (always the final layer)."))
+    end
+    return rule_code
+end
+
+function commit_layer_rule_name(rule_code::Int)::String
+    """
+    Inverse of `commit_layer_rule_code`, for recording the rule a run used.
+    """
+    rule_label::String = "first"
+    if rule_code == COMMIT_LAYER_LAST
+        rule_label = "last"
+    elseif rule_code != COMMIT_LAYER_FIRST
+        throw(ArgumentError("Unknown commit layer rule code $(rule_code)."))
+    end
+    return rule_label
+end
+
+function check_bp_solutions(parity_check_matrix::Matrix{Int}, logicals::Matrix{Int}, errors::BitMatrix, proposed_recoveries::Array{Bool, 3}, commit_layer_rule::Int = COMMIT_LAYER_FIRST)::BitVector
     """
     Score each sample the way a real decoder is scored, in two steps:
 
@@ -66,15 +118,26 @@ function check_bp_solutions(parity_check_matrix::Matrix{Int}, logicals::Matrix{I
     - `is_correct::BitVector`: true for each correctly decoded sample.
     """
     n_samples = size(errors, 2)
+    n_layers = size(proposed_recoveries, 3)
     is_correct = falses(n_samples)
     for i in 1:n_samples
         # Residual e ⊕ r for every layer at once: (n_bits, n_layers).
         residuals = errors[:, i] .⊻ proposed_recoveries[:, i, :]
         # Per-layer syndrome weight; zero ⇔ that layer's residual clears the syndrome.
         layer_syndrome_weight = vec(sum(mod.(parity_check_matrix * residuals, 2), dims = 1))
-        committed_layer = findfirst(==(0), layer_syndrome_weight)
+        committed_layer::Union{Int, Nothing} = nothing
+        if commit_layer_rule == COMMIT_LAYER_LAST
+            # The final layer is the commitment whatever its syndrome weight; a
+            # non-zero weight there is a convergence failure, exactly as a
+            # never-clearing sample is under the FIRST rule.
+            if layer_syndrome_weight[n_layers] == 0
+                committed_layer = n_layers
+            end
+        else
+            committed_layer = findfirst(==(0), layer_syndrome_weight)
+        end
         if committed_layer === nothing
-            continue  # no layer produced a syndrome-valid correction -> failure
+            continue  # no syndrome-valid correction at the committed layer -> failure
         end
         # Score ONLY the committed layer: success iff it is also logically trivial.
         committed_residual = residuals[:, committed_layer]
@@ -126,7 +189,8 @@ function count_syndrome_satisfactions(
     parity_check_matrix::Matrix{Int},
     logicals::Matrix{Int},
     errors::BitMatrix,
-    proposed_recoveries::Array{Bool, 3}
+    proposed_recoveries::Array{Bool, 3},
+    commit_layer_rule::Int = COMMIT_LAYER_FIRST
 )::NamedTuple
     n_bits::Int = size(errors, 1)
     n_samples::Int = size(errors, 2)
@@ -176,10 +240,21 @@ function count_syndrome_satisfactions(
             if layer_syndrome_weight < min_syndrome_weights[sample]
                 min_syndrome_weights[sample] = layer_syndrome_weight
             end
-            # FIRST clearing layer only, exactly as `findfirst(==(0), ...)` did.
-            if layer_syndrome_weight == 0 && committed_layers[sample] == 0
-                committed_layers[sample] = layer
-                syndrome_cleared[sample] = true
+            # Which layer commits. FIRST keeps the earliest clearing layer,
+            # exactly as `findfirst(==(0), ...)` did; LAST only ever accepts the
+            # final layer, so a sample that cleared at layer 3 and drifted back
+            # out by layer 90 is a convergence failure here — which is the whole
+            # point of the rule, since the final layer is what training scored.
+            if commit_layer_rule == COMMIT_LAYER_LAST
+                if layer == n_layers && layer_syndrome_weight == 0
+                    committed_layers[sample] = layer
+                    syndrome_cleared[sample] = true
+                end
+            else
+                if layer_syndrome_weight == 0 && committed_layers[sample] == 0
+                    committed_layers[sample] = layer
+                    syndrome_cleared[sample] = true
+                end
             end
         end
     end
@@ -295,6 +370,7 @@ function predict_and_check_neuralbp(
     syndromes::BitMatrix,
     errors::BitMatrix;
     batch_size::Int = 1024,
+    commit_layer_rule::Int = COMMIT_LAYER_FIRST,
 )::BitVector
     """
     Predict the recoveries for the given syndromes using the trained NeuralBP model.
@@ -357,8 +433,8 @@ function predict_and_check_neuralbp(
             chunk_recoveries = Array(chunk_posterior_llrs .< 0) # (n_bits, batch, n_layers)
         end
 
-        # Commit to the first syndrome-clearing layer, then score its logical coset.
-        @views is_correct[start:stop] .= check_bp_solutions(parity_check_matrix, logicals, chunk_errors, chunk_recoveries)
+        # Commit by `commit_layer_rule`, then score that layer's logical coset.
+        @views is_correct[start:stop] .= check_bp_solutions(parity_check_matrix, logicals, chunk_errors, chunk_recoveries, commit_layer_rule)
     end
     if gpu_state !== nothing
         release_gpu_state!(gpu_state)
@@ -417,6 +493,7 @@ function predict_and_diagnose_neuralbp(
     syndromes::BitMatrix,
     errors::BitMatrix;
     batch_size::Int = 1024,
+    commit_layer_rule::Int = COMMIT_LAYER_FIRST,
 )::NamedTuple
     n_samples::Int = size(syndromes, 2)
 
@@ -466,7 +543,7 @@ function predict_and_diagnose_neuralbp(
         end
 
         push!(chunk_diagnoses,
-              count_syndrome_satisfactions(parity_check_matrix, logicals, chunk_errors, chunk_recoveries))
+              count_syndrome_satisfactions(parity_check_matrix, logicals, chunk_errors, chunk_recoveries, commit_layer_rule))
     end
     if gpu_state !== nothing
         release_gpu_state!(gpu_state)
@@ -584,6 +661,7 @@ function neuralbp_test_predictions(
     batch_size::Int = 0,
     gpu_memory::AbstractString = "",
     diagnose::Bool = false,
+    commit_layer_rule::Int = COMMIT_LAYER_FIRST,
 )::Union{BitVector, NamedTuple}
     """
     Predict the recoveries for the given test syndromes using the trained Neural BP model.
@@ -612,13 +690,15 @@ function neuralbp_test_predictions(
 
     if diagnose
         diagnosis::NamedTuple = predict_and_diagnose_neuralbp(
-            bpnn, test_syndromes, test_errors; batch_size = resolved_batch_size
+            bpnn, test_syndromes, test_errors; batch_size = resolved_batch_size,
+            commit_layer_rule = commit_layer_rule
         )
         return diagnosis
     end
 
     is_correct::BitVector = predict_and_check_neuralbp(
-        bpnn, test_syndromes, test_errors; batch_size = resolved_batch_size
+        bpnn, test_syndromes, test_errors; batch_size = resolved_batch_size,
+        commit_layer_rule = commit_layer_rule
     )
     return is_correct
 end

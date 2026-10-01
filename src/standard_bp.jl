@@ -54,6 +54,7 @@ function standard_bp_test_predictions(
     batch_size::Int = 0,
     gpu_memory::AbstractString = "",
     diagnose::Bool = false,
+    commit_layer_rule::Int = COMMIT_LAYER_FIRST,
 )::Union{BitVector, NamedTuple}
     """
     Decode the test set with standard BP and score the predictions.
@@ -83,7 +84,8 @@ function standard_bp_test_predictions(
         test_errors_file;
         batch_size = batch_size,
         gpu_memory = gpu_memory,
-        diagnose = diagnose
+        diagnose = diagnose,
+        commit_layer_rule = commit_layer_rule
     )
     return prediction_outcome
 end

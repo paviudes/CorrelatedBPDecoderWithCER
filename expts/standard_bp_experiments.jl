@@ -142,6 +142,9 @@ if abspath(PROGRAM_FILE) == @__FILE__
         exit(0)
     end
 
+    commit_layer_rule::Int =
+        commit_layer_rule_code(String(get(hyperparameters, "commit_layer_rule", "first")))
+
     diagnose::Bool = arguments["diagnose"]
     start_time::Float64 = time()
     prediction_outcome::Union{BitVector, NamedTuple} = standard_bp_test_predictions(
@@ -150,6 +153,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
         coupling_scale = coupling_scale,
         coupling_schedule_layer = coupling_schedule_layer,
         coupling_schedule_width = coupling_schedule_width,
+        commit_layer_rule = commit_layer_rule,
         batch_size = Int(get(hyperparameters, "prediction_batch_size", 0)),
         gpu_memory = String(get(hyperparameters, "gpu_memory", "")),
         diagnose = diagnose
@@ -199,6 +203,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     )
 
     extra_result_columns::Vector{Pair{String, Any}} = Pair{String, Any}[]
+    push!(extra_result_columns, "commit_layer_rule" => commit_layer_rule_name(commit_layer_rule))
     push!(extra_result_columns, "check_node" => check_node)
     push!(extra_result_columns, "coupling_scale" => coupling_scale)
     push!(extra_result_columns, "coupling_schedule" => coupling_schedule)

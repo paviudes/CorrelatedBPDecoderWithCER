@@ -215,11 +215,16 @@ if abspath(PROGRAM_FILE) == @__FILE__
     # the normal scoring path rather than adding to it, so there is still exactly
     # one forward pass.
     diagnose = args_dict["diagnose"]
+    # Which layer the decoder commits to. Pair "last" with
+    # `loss_layer_selection = "last"`; see src/predict.jl.
+    commit_layer_rule::Int =
+        commit_layer_rule_code(String(get(hyperparams, "commit_layer_rule", "first")))
     prediction_outcome = neuralbp_test_predictions(
         bpnn, test_errors_file;
         batch_size = Int(get(hyperparams, "prediction_batch_size", 0)),
         gpu_memory = String(get(hyperparams, "gpu_memory", "")),
-        diagnose = diagnose
+        diagnose = diagnose,
+        commit_layer_rule = commit_layer_rule
     )
 
     diagnosis = nothing
@@ -280,6 +285,11 @@ if abspath(PROGRAM_FILE) == @__FILE__
     # Which check-node rule decoded this, and the α it ended with (the learned
     # value when α was trainable, the fixed one otherwise). Recorded always, so
     # the collector can separate enriched from tanh arms without parsing names.
+    # How training combined the layers, and which layer testing committed to.
+    # Both belong in the results so a row is self-describing: the same weights
+    # scored under two commit rules are two different numbers.
+    push!(extra_result_columns, "loss_layer_selection" => String(get(hyperparams, "loss_layer_selection", "softmin")))
+    push!(extra_result_columns, "commit_layer_rule" => commit_layer_rule_name(commit_layer_rule))
     push!(extra_result_columns, "check_node" => check_node)
     push!(extra_result_columns, "coupling_scale" => effective_coupling_scale(bpnn))
     push!(extra_result_columns, "coupling_logit" => bpnn.coupling_logit[1])

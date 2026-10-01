@@ -63,6 +63,14 @@ datasets         = ["p_0.0015_sig_0.0015_s_1"]
 # arms, and always the BASELINE optimizer arm.
 ref_datasets     = []
 
+# TEST sets. Empty = test each model on the set matching its training key (the
+# historical 1:1 behaviour). Non-empty = score EVERY trained model on EVERY set
+# listed, which is how "train at one rate, test across the range" is run. The
+# results filename carries both the test and the training source, so nothing
+# collides. Note this multiplies the TEST point count by the list length while
+# leaving the training count alone, so narrow `optimizer_arms` first.
+test_keys        = ["p_0.0015_sig_0.0015_s_1", "p_0.0015_sig_0.0015_s_2", "p_0.0015_sig_0.0015_s_3", "p_0.0015_sig_0.0_s_1", "p_0.0007_sig_0.001_s_1", "p_0.0007_sig_0.001_s_2", "p_0.0007_sig_0.001_s_3", "p_0.0005_sig_0.001_s_1", "p_0.0005_sig_0.001_s_2", "p_0.0005_sig_0.001_s_3", "p_0.0005_sig_0.0005_s_1", "p_0.0005_sig_0.0005_s_2", "p_0.0005_sig_0.0005_s_3", "p_0.0005_sig_0.0_s_1"]
+
 base_hyperparams = "hyperparams_baseline.toml"
 n_hidden_layers  = 90
 # Network seeds, on EVERY cell. Seed variance has been the binding error bar
@@ -84,6 +92,23 @@ seeds            = [1, 2, 3, 4, 5]
 # classical failure rate in half with nothing trained.
 include_nocer    = true              # emit the no-CER baseline arm
 single_qubit_rescale = 0.1
+
+# --- how layers are scored, and which layer the decoder commits to -----------
+# These two must agree, or the objective and the metric look at different
+# layers. Measured 2026-10-01 under the historical pair (softmin, first):
+# 98.8% of test commits land in layers 1-10, which the loss never scored
+# (warmup_layers = 10), while the loss's own argmin sat at layer 11 in 87% of
+# error-free batches. The three coherent pairings:
+#
+#   "last"    + "last"     design A: training and testing score the SAME layer
+#   "mean"    + "first"    design B: every layer trained, so first-to-clear is safe
+#   "softmin" + "first"    the historical pair, which cannot work: softmin asks
+#                          for ONE good layer, first-to-clear needs them all
+#
+# Under "last" the warmup_layers value is irrelevant to TRAINING (only the final
+# layer is read); it still shapes the per-layer diagnostic log.
+loss_layer_selection = "last"
+commit_layer_rule    = "last"
 
 # --- check node: the FORWARD-PASS rule --------------------------------------
 # "tanh" is the standard check-to-variable rule (untagged; every historical
@@ -163,7 +188,25 @@ check_node_arms  = ["tanh", "enriched:0.42:learn", "enriched:0.42:learn:step:12:
 # Tags are `scale0pN`, not `ic0pN`: the 2026-09-24 sweep already wrote
 # `_optic0p05` and `_optic0p3` into this codename and those must not be
 # overwritten.
-optimizer_arms   = ["scale0p1:initial_conditions_scale=0.1", "scale0p2:initial_conditions_scale=0.2", "scale0p3:initial_conditions_scale=0.3", "scale0p4:initial_conditions_scale=0.4", "scale0p5:initial_conditions_scale=0.5", "scale0p6:initial_conditions_scale=0.6", "scale0p7:initial_conditions_scale=0.7", "scale0p8:initial_conditions_scale=0.8"]
+# THE SCAN IS DONE (2026-10-01, 140 of 160 tested before the walltime cut).
+# Clean U-shape with the minimum at 0.3-0.4 and sharply worse by 0.8:
+#   no-CER   4692 (0.1) -> 3157 (0.4) -> 4330 (0.8)
+#   enr a-L  2507 (0.1) -> 2323 (0.3) -> 4060 (0.8)
+# Seed-paired, 0.3 beats 0.4 on both enriched arms (t = -2.6, -3.0), so 0.3 it
+# is. Also measured: training's own fixed point for the weight spread is at
+# scale ~0.55 (where final sd / untrained sd crosses 1), i.e. the optimiser
+# drives the spread PAST the value that decodes best — one more case of the
+# loss and the failure rate disagreeing.
+#
+# Narrowed to the winner so the cross-rate test list below stays affordable.
+optimizer_arms   = ["scale0p3:initial_conditions_scale=0.3"]
+
+# `warmup_layers` is swept through the same mechanism (it is just another TOML
+# key), so these are four optimizer arms differing only in it. Under
+# loss_layer_selection = "last" it does NOT affect training -- only the final
+# layer is read -- so run this axis with "mean" or "softmin" if you want it to
+# bite. Left here as a one-line change:
+#   optimizer_arms = ["wu0:warmup_layers=0", "wu2:warmup_layers=2", "wu5:warmup_layers=5", "wu10:warmup_layers=10"]
 
 # --- cluster ----------------------------------------------------------------
 # ACTIVE: NARVAL. Two profiles are kept here; switching is the six values marked
@@ -269,10 +312,19 @@ list() { get "$1" | tr -d '[]"' | tr ',' ' '; }
 
 WORKDIR=$(get workdir);              CODENAME=$(get codename)
 DATASETS=$(list datasets);           REF_DATASETS=$(list ref_datasets)
+TEST_KEYS=$(list test_keys)
 BASE_HP=$(get base_hyperparams);     NLAYERS=$(get n_hidden_layers)
 SEEDS=$(list seeds)
 INCLUDE_NOCER=$(get include_nocer)
 RESCALE=$(get single_qubit_rescale)
+LOSS_LAYER_SELECTION=$(get loss_layer_selection)
+COMMIT_LAYER_RULE=$(get commit_layer_rule)
+if [ -z "$LOSS_LAYER_SELECTION" ]; then
+    LOSS_LAYER_SELECTION="softmin"
+fi
+if [ -z "$COMMIT_LAYER_RULE" ]; then
+    COMMIT_LAYER_RULE="first"
+fi
 CHECK_NODE_ARMS=$(list check_node_arms)
 if [ -z "$CHECK_NODE_ARMS" ]; then
     CHECK_NODE_ARMS="tanh"
@@ -379,6 +431,17 @@ MISSING_INPUTS=""
 for key in $DATASETS $REF_DATASETS; do
     for required in "training_data/train_${key}.txt" \
                     "testing_data/test_${key}.txt" \
+                    "correlated_weights/correlated_weights_${key}.txt"; do
+        if [ ! -f "$WORKDIR/$CODENAME/$required" ]; then
+            MISSING_INPUTS="${MISSING_INPUTS}\n    $required"
+        fi
+    done
+done
+# A `test_keys` entry needs only the two files the test step reads. Checked
+# here for the same reason as the training inputs: a missing one surfaces
+# otherwise as N identical "exit 1" lines after the queue wait.
+for key in $TEST_KEYS; do
+    for required in "testing_data/test_${key}.txt" \
                     "correlated_weights/correlated_weights_${key}.txt"; do
         if [ ! -f "$WORKDIR/$CODENAME/$required" ]; then
             MISSING_INPUTS="${MISSING_INPUTS}\n    $required"
@@ -508,6 +571,7 @@ emit_point() {   # <key> <seed> <use_cer> <check_node_spec> <optimizer_spec>
     local weight_decay_value="$(base_hyperparameter_value weight_decay)"
     local initial_conditions_scale_value="$(base_hyperparameter_value initial_conditions_scale)"
     local learning_rate_value="$(base_hyperparameter_value learning_rate)"
+    local warmup_layers_value="$(base_hyperparameter_value warmup_layers)"
     if [ -z "$optimizer_tag" ]; then
         echo "emit_point: optimizer spec '$optimizer_spec' has an empty tag; the tag enters every filename." >&2
         exit 1
@@ -536,17 +600,26 @@ emit_point() {   # <key> <seed> <use_cer> <check_node_spec> <optimizer_spec>
                 weight_decay)             weight_decay_value="$override_value" ;;
                 initial_conditions_scale) initial_conditions_scale_value="$override_value" ;;
                 learning_rate)            learning_rate_value="$override_value" ;;
+                warmup_layers)            warmup_layers_value="$override_value" ;;
                 *)
                     echo "emit_point: optimizer spec '$optimizer_spec': '$override_key' is not a sweepable key." >&2
-                    echo "  Allowed: adam_eps, weight_decay, initial_conditions_scale, learning_rate." >&2
+                    echo "  Allowed: adam_eps, weight_decay, initial_conditions_scale," >&2
+                    echo "           learning_rate, warmup_layers." >&2
                     exit 1
                     ;;
             esac
         done
     fi
-    local optimizer_suffix=""
-    if [ "$N_OPTIMIZER_ARMS" -gt 1 ]; then
-        optimizer_suffix="_opt${optimizer_tag}"
+    # The suffix is dropped ONLY for a lone, literal `base` arm with no
+    # overrides — the configuration that means "this sweep does not use the
+    # axis", so its filenames stay what they always were. Any named setting is
+    # tagged even when it is the only one: a sweep NARROWED to one winning
+    # setting would otherwise write untagged names and silently overwrite an
+    # earlier un-axised sweep in the same codename. That happened on
+    # 2026-10-01 while verifying the cross-rate test list.
+    local optimizer_suffix="_opt${optimizer_tag}"
+    if [ "$N_OPTIMIZER_ARMS" -eq 1 ] && [ "$optimizer_spec" = "base" ]; then
+        optimizer_suffix=""
     fi
 
     # The run tag is the arm plus the check node plus the schedule plus the
@@ -559,7 +632,7 @@ emit_point() {   # <key> <seed> <use_cer> <check_node_spec> <optimizer_spec>
     # stale value in the base can never override a swept one. The removed loss
     # terms' keys are stripped too: they are ignored by the code now, but a
     # generated file should not carry dead settings.
-    grep -vE '^[[:space:]]*(retrain|run_tag|use_CER|seed|single_qubit_rescale|require_correlations|check_node|coupling_scale_init|coupling_scale_learnable|coupling_schedule|coupling_schedule_layer_init|coupling_schedule_width_init|coupling_schedule_learnable|adam_eps|weight_decay|initial_conditions_scale|learning_rate|sparsity_importance|syndrome_gate_threshold|correlation_certainty_threshold|correlation_weight|correlation_importance|certainty_penalty|certainty_hinge_width|certainty_syndrome_gate_threshold|syndrome_gate_mode|syndrome_gate_rate|correlation_form|correlation_agreement_floor|llr_certainty_importance)[[:space:]]*=' \
+    grep -vE '^[[:space:]]*(retrain|run_tag|use_CER|seed|single_qubit_rescale|require_correlations|check_node|coupling_scale_init|coupling_scale_learnable|coupling_schedule|coupling_schedule_layer_init|coupling_schedule_width_init|coupling_schedule_learnable|loss_layer_selection|commit_layer_rule|warmup_layers|adam_eps|weight_decay|initial_conditions_scale|learning_rate|sparsity_importance|syndrome_gate_threshold|correlation_certainty_threshold|correlation_weight|correlation_importance|certainty_penalty|certainty_hinge_width|certainty_syndrome_gate_threshold|syndrome_gate_mode|syndrome_gate_rate|correlation_form|correlation_agreement_floor|llr_certainty_importance)[[:space:]]*=' \
         "$MODELS_DIR/$BASE_HP" > "$MODELS_DIR/$hp"
     {
         echo ""
@@ -577,6 +650,8 @@ emit_point() {   # <key> <seed> <use_cer> <check_node_spec> <optimizer_spec>
         echo "coupling_schedule_layer_init = ${coupling_schedule_layer_init}"
         echo "coupling_schedule_width_init = ${coupling_schedule_width_init}"
         echo "coupling_schedule_learnable = ${coupling_schedule_learnable}"
+        echo "loss_layer_selection = \"${LOSS_LAYER_SELECTION}\""
+        echo "commit_layer_rule = \"${COMMIT_LAYER_RULE}\""
         echo ""
         echo "# optimizer arm \"${optimizer_tag}\": stated explicitly on every point,"
         echo "# overridden or not, so one filename never means two settings."
@@ -584,13 +659,31 @@ emit_point() {   # <key> <seed> <use_cer> <check_node_spec> <optimizer_spec>
         echo "adam_eps = ${adam_eps_value}"
         echo "weight_decay = ${weight_decay_value}"
         echo "initial_conditions_scale = ${initial_conditions_scale_value}"
+        echo "warmup_layers = ${warmup_layers_value}"
     } >> "$MODELS_DIR/$hp"
 
     local common="julia --project=\"./../\" --heap-size-hint=$HEAP neural_bp_experiments.jl \
 --workdir \$WORKDIR_RUNTIME --codename $CODENAME --n_hidden_layers $NLAYERS \
 --hyperparams $hp --cer_data correlated_weights_${key}.txt --quiet true"
     echo "$common --isdebug true --train train_${key}.txt" >> "$TRAIN_CMDS"
-    echo "$common --diagnose true --train train_${key}.txt --test test_${key}.txt" >> "$TEST_CMDS"
+    # Testing. By default 1:1 with training — the model is scored on the test
+    # set matching its training key. With `test_keys` set, the SAME model is
+    # scored on every listed set instead: `--train` stays at the training key
+    # (that is what names the weights file `retrain = false` re-loads) while
+    # `--test` and `--cer_data` move together, so the decoder is always handed
+    # the priors belonging to the data in front of it. The results filename
+    # carries both sources, so none of these collide.
+    if [ -z "$TEST_KEYS" ]; then
+        echo "$common --diagnose true --train train_${key}.txt --test test_${key}.txt" >> "$TEST_CMDS"
+    else
+        local test_key=""
+        for test_key in $TEST_KEYS; do
+            echo "julia --project=\"./../\" --heap-size-hint=$HEAP neural_bp_experiments.jl \
+--workdir \$WORKDIR_RUNTIME --codename $CODENAME --n_hidden_layers $NLAYERS \
+--hyperparams $hp --cer_data correlated_weights_${test_key}.txt --quiet true \
+--diagnose true --train train_${key}.txt --test test_${test_key}.txt" >> "$TEST_CMDS"
+        done
+    fi
 }
 
 # The check node is a forward-pass axis, so it crosses every CER cell; the
@@ -636,6 +729,10 @@ if [ "$N_DUPLICATES" -gt 0 ]; then
 fi
 
 N_POINTS=$(wc -l < "$TRAIN_CMDS")
+# With `test_keys` the two files have DIFFERENT lengths: one training run is
+# scored on several test sets. The test job's array must be sized against its
+# own file, and the staged-model count it checks is still the TRAINING count.
+N_TEST_POINTS=$(wc -l < "$TEST_CMDS")
 
 # SELF-CHECK OF THIS FILE. The two SLURM scripts below are built from UNQUOTED
 # heredocs, so bash expands their contents at generation time -- inside comments
@@ -814,7 +911,7 @@ if ! julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using Pkg; Pkg.precompile()'; the
 fi
 export JULIA_PKG_PRECOMPILE_AUTO=0
 
-# Hard gate. Without it the job proceeds and all $N_POINTS tests die one by one at
+# Hard gate. Without it the job proceeds and all $N_TEST_POINTS tests die one by one at
 # _to_dense_gpu, each burning its own startup, and the stage-out returns nothing.
 if ! julia --project=\$SLURM_SUBMIT_DIR/.. -e '
     using CUDA
@@ -836,7 +933,7 @@ sed "s|\\\$WORKDIR_RUNTIME|\$SLURM_TMPDIR|g" "$TEST_CMDS" \\
     | awk -v k=$TEST_ARRAY -v t="\$TASK" '(NR - 1) % k == t' > "\$SLURM_TMPDIR/test.txt"
 N_TASK=\$(wc -l < "\$SLURM_TMPDIR/test.txt")
 if [ "\$N_TASK" -eq 0 ]; then
-    echo "[test task \$TASK] no points in this slice ($TEST_ARRAY tasks > $N_POINTS points); nothing to do."
+    echo "[test task \$TASK] no points in this slice ($TEST_ARRAY tasks > $N_TEST_POINTS points); nothing to do."
     exit 0
 fi
 
@@ -865,7 +962,7 @@ trap 'stage_out; exit 0' TERM
 trap stage_out EXIT
 
 export GPU_MEMORY=${GPU_MEMORY_MB}M
-echo "[test task \$TASK] \$N_TASK of $N_POINTS point(s), $TEST_JOBS at a time on \${SLURM_GPUS_ON_NODE:-1} GPU(s): \$(date)"
+echo "[test task \$TASK] \$N_TASK of $N_TEST_POINTS point(s), $TEST_JOBS at a time on \${SLURM_GPUS_ON_NODE:-1} GPU(s): \$(date)"
 export SLURM_CUDA_VISIBLE_DEVICES=\${CUDA_VISIBLE_DEVICES:-0}
 JOBLOG="\$LOCAL/cluster/logs/hp_${TS}_test_task\${TASK}.joblog"
 RESULTS_ROOT="\$LOCAL/cluster/logs/hp_${TS}_test_task\${TASK}"
@@ -896,12 +993,16 @@ chmod +x "$SLURM_TEST"
 
 # ------------------------------------------------------------------ report ---
 echo
-echo "[hp_sweep] $N_POINTS point(s)"
+echo "[hp_sweep] $N_POINTS training point(s), $N_TEST_POINTS test point(s)"
+if [ -n "$TEST_KEYS" ]; then
+    echo "  test sets -> $(echo $TEST_KEYS | wc -w | tr -d ' ') key(s), every model scored on every one"
+fi
 echo "  datasets  -> $DATASETS"
 echo "  ref       -> $REF_DATASETS   (CER tanh and no-CER only)"
 echo "  seeds     -> $SEEDS"
 echo "  check node-> $CHECK_NODE_ARMS   (no-CER baseline: $INCLUDE_NOCER)"
 echo "  optimizer -> $OPTIMIZER_ARMS"
+echo "  layers    -> loss_layer_selection=$LOSS_LAYER_SELECTION  commit_layer_rule=$COMMIT_LAYER_RULE"
 echo "  cluster   -> $CLUSTER_NAME"
 echo "  train     -> $ACCOUNT_CPU: array 0-$((TRAIN_ARRAY-1)) ($TRAIN_ARRAY x $TRAIN_CPUS cpu x $TRAIN_MEM = $(( TRAIN_TOTAL_MB / 1024 ))G/node), $TRAIN_WALL"
 echo "  test      -> $ACCOUNT_GPU: array 0-$((TEST_ARRAY-1)) ($TEST_ARRAY tasks x ${N_GPUS}x $GPU_TYPE (${VRAM_PER_GPU}G vram), $TEST_CPUS cpu),"

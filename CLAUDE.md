@@ -191,6 +191,42 @@ end
   epoch with 6 non-finite gradients is **rolled back**, weights and Adam state) and
   weight sd (~0.058 = never moved). Arm comparisons are only meaningful when
   completed epochs are equal across arms.
+## Which layer is scored vs which layer commits (added 2026-10-01)
+
+- The training loss and the test-time readout were looking at **different layers**.
+  Measured on the best config (α = 0.42 learned, `initial_conditions_scale = 0.3`):
+  98.8% of test-time commits land in **layers 1–10**, which `warmup_layers = 10`
+  excluded from the loss entirely, while the loss's own per-batch argmin sat at
+  **layer 11** — the first layer it was allowed to see — in 87% of error-free
+  batches, and at a late layer (median 20) in the ones carrying gradient.
+- Worse, `softmin` is **anti-aligned** with first-to-clear testing: it is satisfied
+  as soon as ONE layer is good, while first-to-clear needs EVERY layer to be
+  trustworthy because any of them might commit. A layer that clears `H` in the
+  wrong coset has base loss ≈ 1; `argmin` skips it, testing commits to it. That is
+  the mechanism behind 1745 coset failures under a base loss of 0.046.
+- Two new TOML keys make the pairing explicit. **They must agree:**
+
+  | `loss_layer_selection` | `commit_layer_rule` | |
+  |---|---|---|
+  | `"last"` | `"last"` | design A — same layer both sides, no mismatch; gives up early stopping |
+  | `"mean"` | `"first"` | design B — all layers trained, so first-to-clear is safe |
+  | `"softmin"` | `"first"` | the historical pair, which cannot work |
+
+  Both default to the historical values (`softmin`, `first`), so every earlier run
+  reproduces. Under `"last"` the `warmup_layers` value is irrelevant to training.
+- `commit_layer_rule = "last"` reclassifies samples that cleared early and drifted
+  back out as **convergence** failures, not coset failures. Recorded in the
+  results CSV alongside `loss_layer_selection`.
+- Also measured: only **3.8%** of the base loss is coset signal
+  (1745/10⁶ × ≥1 per violated logical row); the other 96.2% is `σ(μ)` saturation on
+  already-correct decodes. Weighting the 12 logical rows up is the lever for that,
+  and is not yet implemented.
+- Separately: **coset and convergence failures trade off almost perfectly** along
+  every axis swept so far. Nothing in the training budget reduces coset failures —
+  more layers *increase* them (a coset failure has already cleared `H`, so later
+  layers can only create more), and more epochs do too (904 → ~1100 from 1 to 5
+  effective epochs). Which column to minimise depends on whether OSD is downstream.
+
 - `python3 misc/cleanup.py --workdir <codename> [--dry-run|--yes]` resets a run dir
   to its inputs. Rules are one table (`RULES`): logs/ cluster/ results/ emptied;
   models/ loses `*.json` and sweep TOMLs (`hyperparams_hp_*`, `hyperparams_xf_*`),

@@ -203,7 +203,9 @@ export save_trained_weights, extract_weights_for_BP, save_extracted_weights_for_
 
 # Loss functions
 include("loss.jl")
-export compute_loss, base_loss_per_layer, compute_smooth_loss_from_llrs, softmin_loss, smooth_loss
+export compute_loss, base_loss_per_layer, compute_smooth_loss_from_llrs, softmin_loss, smooth_loss,
+       combine_layer_losses, loss_layer_selection_code, loss_layer_selection_name,
+       LOSS_LAYERS_SOFTMIN, LOSS_LAYERS_LAST, LOSS_LAYERS_MEAN
 
 # Training routines
 include("train.jl")
@@ -214,6 +216,7 @@ include("predict.jl")
 export predict_neuralbp, check_bp_solutions, predict_and_check_neuralbp, neuralbp_test_predictions,
        resolve_prediction_batch_size, reusable_gpu_state,
        count_syndrome_satisfactions, predict_and_diagnose_neuralbp, concatenate_diagnoses,
+       commit_layer_rule_code, commit_layer_rule_name, COMMIT_LAYER_FIRST, COMMIT_LAYER_LAST,
        mean_committed_layer
 
 # Standard BP as the unit-weight case of the neural forward pass. AFTER predict.jl,

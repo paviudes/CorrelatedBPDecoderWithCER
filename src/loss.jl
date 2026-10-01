@@ -127,23 +127,121 @@ function base_loss_per_layer(
     return losses
 end
 
+# =============================================================================
+#   How the scored layers are combined into one number
+# =============================================================================
+# The three options differ in what they ask of the decoder, and only one of them
+# is consistent with a given TEST-TIME readout rule.
+#
+#   SOFTMIN  min over layers (as T -> 0). Asks for ONE good layer and lets the
+#            rest be arbitrary. Measured 2026-10-01: with `warmup_layers = 10`
+#            the per-batch argmin sits at layer 11 — the first layer it is
+#            allowed to see — in 87% of batches that contain no error, and at a
+#            late layer (median 20) in the ones that do. Meanwhile 98.8% of
+#            test-time commits happen in layers 1-10. So the layer being
+#            optimised and the layer being scored were nearly disjoint sets.
+#            This is ANTI-aligned with first-to-clear testing, which needs EVERY
+#            layer to be trustworthy because any of them might be the one that
+#            commits.
+#   LAST     the final layer alone. Consistent with committing at the final
+#            layer (`commit_layer_rule = "last"` in predict.jl) — training and
+#            testing then score the same layer, and there is no mismatch left to
+#            reason about. Gives up early stopping.
+#   MEAN     every scored layer, equally. The alignment for first-to-clear
+#            testing: pushing all layers toward a correct decode makes whichever
+#            one clears first a layer that has been trained.
+#
+# `softmin` stays the default so every earlier run reproduces exactly.
+
+const LOSS_LAYERS_SOFTMIN::Int = 0
+const LOSS_LAYERS_LAST::Int = 1
+const LOSS_LAYERS_MEAN::Int = 2
+
+function loss_layer_selection_code(selection_name::AbstractString)::Int
+    """
+    Resolve the `loss_layer_selection` hyperparameter to its integer code, so a
+    typo fails at configuration time rather than inside a training loop.
+    """
+    normalised_name::String = lowercase(strip(String(selection_name)))
+    selection_code::Int = LOSS_LAYERS_SOFTMIN
+    if normalised_name == "softmin"
+        selection_code = LOSS_LAYERS_SOFTMIN
+    elseif normalised_name == "last"
+        selection_code = LOSS_LAYERS_LAST
+    elseif normalised_name == "mean"
+        selection_code = LOSS_LAYERS_MEAN
+    else
+        throw(ArgumentError(
+            "Unknown loss_layer_selection \"$(selection_name)\". Supported: " *
+            "\"softmin\" (the historical default, min over layers as T -> 0), " *
+            "\"last\" (the final layer alone) and \"mean\" (every scored layer, equally)."))
+    end
+    return selection_code
+end
+
+function loss_layer_selection_name(selection_code::Int)::String
+    """
+    Inverse of `loss_layer_selection_code`, for recording the mode a run used.
+    """
+    selection_label::String = "softmin"
+    if selection_code == LOSS_LAYERS_LAST
+        selection_label = "last"
+    elseif selection_code == LOSS_LAYERS_MEAN
+        selection_label = "mean"
+    elseif selection_code != LOSS_LAYERS_SOFTMIN
+        throw(ArgumentError("Unknown loss layer selection code $(selection_code)."))
+    end
+    return selection_label
+end
+
+function combine_layer_losses(
+    losses_per_layer::AbstractVector{Float32},
+    loss_layer_temperature::Float32,
+    loss_layer_selection::Int
+)::Float32
+    """
+    Reduce the per-layer losses to the one number the optimiser sees, by the
+    rule `loss_layer_selection` names. The temperature is read only by
+    `softmin`; the other two ignore it.
+    """
+    combined::Float32 = 0.0f0
+    if loss_layer_selection == LOSS_LAYERS_SOFTMIN
+        combined = softmin_loss(losses_per_layer, loss_layer_temperature)
+    elseif loss_layer_selection == LOSS_LAYERS_LAST
+        combined = losses_per_layer[end]
+    elseif loss_layer_selection == LOSS_LAYERS_MEAN
+        combined = sum(losses_per_layer) / Float32(length(losses_per_layer))
+    else
+        throw(ArgumentError("Unknown loss layer selection code $(loss_layer_selection)."))
+    end
+    return combined
+end
+
 function compute_loss(
     posterior_llrs::Array{Float32, 3},
     expected_recoveries::BitMatrix,
     parity_check_matrix_dual::BitMatrix,
     loss_layer_temperature::Float32,
-    warmup_loss_layers::Int
+    warmup_loss_layers::Int,
+    loss_layer_selection::Int = LOSS_LAYERS_SOFTMIN
 )::Float32
     """
-    Total per-batch loss: the softmin over scored layers of the base loss.
+    Total per-batch loss: the scored layers' base losses, combined by
+    `loss_layer_selection` (see `combine_layer_losses`).
 
-        total = softmin_T( base_(warmup+1), ..., base_(n_layers) )
+        softmin:  total = softmin_T( base_(warmup+1), ..., base_(n_layers) )
+        last:     total = base_(n_layers)
+        mean:     total = mean( base_(warmup+1), ..., base_(n_layers) )
 
     `posterior_llrs` is (n_bits × n_samples × n_layers), the readout of every
     layer of the unrolled decoder.
+
+    NOTE on `last`: `warmup_loss_layers` becomes irrelevant, because only the
+    final layer is read. It is still honoured for the vector the diagnostics
+    log, so a `last` run's per-layer log looks like every other run's.
     """
     losses::Vector{Float32} = base_loss_per_layer(
         posterior_llrs, expected_recoveries, parity_check_matrix_dual, warmup_loss_layers)
-    total::Float32 = softmin_loss(losses, loss_layer_temperature)
+    total::Float32 = combine_layer_losses(losses, loss_layer_temperature, loss_layer_selection)
     return total
 end

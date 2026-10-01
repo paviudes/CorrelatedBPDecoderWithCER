@@ -963,3 +963,107 @@ end
     rm(weights_file)
     rm(legacy_file)
 end
+
+# =============================================================================
+#  14. The commit rule (src/predict.jl). FIRST takes the earliest
+#      syndrome-clearing layer, LAST always takes the final one. The second is
+#      the rule that matches `loss_layer_selection = "last"`.
+# =============================================================================
+
+@testset "commit_layer_rule: first vs last" begin
+    # Names round-trip; unknown ones fail at configuration time.
+    @test commit_layer_rule_code("first") == COMMIT_LAYER_FIRST
+    @test commit_layer_rule_code(" Last ") == COMMIT_LAYER_LAST
+    @test commit_layer_rule_name(COMMIT_LAYER_FIRST) == "first"
+    @test commit_layer_rule_name(COMMIT_LAYER_LAST) == "last"
+    @test_throws ArgumentError commit_layer_rule_code("earliest")
+    @test_throws ArgumentError commit_layer_rule_name(7)
+
+    # Four bits, two checks, three logical rows; one sample per scenario, built so
+    # the two rules MUST disagree.
+    parity_check_matrix::Matrix{Int} = [1 1 0 0; 0 0 1 1]
+    logicals::Matrix{Int} = [1 0 1 0]
+    n_layers::Int = 3
+    # With e = 0 the residual IS the recovery. Enumerating all 4-bit residuals
+    # against this H and L:
+    #   [0,0,0,0] and [1,1,1,1]  clear the syndrome and are logically trivial
+    #   [1,1,0,0] and [0,0,1,1]  clear the syndrome and FLIP the logical
+    #   everything else          does not clear
+    #
+    # Sample 1: layer 1 clean, layer 3 clears-but-flips. FIRST succeeds, LAST fails.
+    # Sample 2: the reverse. FIRST fails, LAST succeeds.
+    # Sample 3: layer 1 clean, layer 3 does not clear at all. FIRST succeeds,
+    #           LAST is a CONVERGENCE failure -- the reclassification that is the
+    #           substance of the rule.
+    errors::BitMatrix = falses(4, 3)
+    recoveries::Array{Bool, 3} = falses(4, 3, n_layers)
+    # sample 1: r = 0 at layers 1-2; r = [1,1,0,0] at layer 3.
+    recoveries[1, 1, 3] = true; recoveries[2, 1, 3] = true
+    # sample 2: r = [1,1,0,0] at layer 1; r = 0 at layers 2-3.
+    recoveries[1, 2, 1] = true; recoveries[2, 2, 1] = true
+    # sample 3: r = 0 at layers 1-2; r = [1,0,0,0] at layer 3 (breaks check 1).
+    recoveries[1, 3, 3] = true
+
+    first_correct::BitVector = check_bp_solutions(parity_check_matrix, logicals, errors, recoveries, COMMIT_LAYER_FIRST)
+    last_correct::BitVector = check_bp_solutions(parity_check_matrix, logicals, errors, recoveries, COMMIT_LAYER_LAST)
+    @test first_correct == BitVector([true, false, true])
+    @test last_correct == BitVector([false, true, false])
+    # The default argument is FIRST, so every historical call is unchanged.
+    @test check_bp_solutions(parity_check_matrix, logicals, errors, recoveries) == first_correct
+
+    # The diagnostic path must agree with the scoring path under BOTH rules --
+    # that agreement is the only thing keeping the two implementations honest.
+    for (rule, reference) in ((COMMIT_LAYER_FIRST, first_correct), (COMMIT_LAYER_LAST, last_correct))
+        diagnosis::NamedTuple = count_syndrome_satisfactions(
+            parity_check_matrix, logicals, errors, recoveries, rule)
+        @test diagnosis.is_correct == reference
+        @test diagnosis.n_correct == count(reference)
+        # Every sample is a success, a coset failure or a convergence failure.
+        @test diagnosis.n_correct + diagnosis.n_coset_failures + diagnosis.n_convergence_failures == 3
+    end
+
+    # Under LAST, sample 3 never clears at the final layer, so it is a
+    # CONVERGENCE failure -- not a coset failure -- even though it cleared at
+    # layer 1. That reclassification is the substance of the rule.
+    last_diagnosis::NamedTuple = count_syndrome_satisfactions(
+        parity_check_matrix, logicals, errors, recoveries, COMMIT_LAYER_LAST)
+    @test last_diagnosis.n_convergence_failures == 1
+    @test last_diagnosis.n_coset_failures == 1
+    first_diagnosis::NamedTuple = count_syndrome_satisfactions(
+        parity_check_matrix, logicals, errors, recoveries, COMMIT_LAYER_FIRST)
+    @test first_diagnosis.n_convergence_failures == 0
+    @test first_diagnosis.n_coset_failures == 1
+
+    # Under LAST every committed layer is the final one, by construction.
+    @test all(layer -> layer == n_layers || layer == 0, last_diagnosis.committed_layer)
+
+    # On the BB code with a real model, LAST must equal scoring layer n_layers
+    # directly -- same decode, two code paths.
+    base::NeuralBPBase = load_bb_base("enriched", 4)
+    model::NachmaniNeuralBP = unit_weight_neuralbp(base; coupling_scale = 0.42f0)
+    n_samples::Int = 40
+    bb_errors::BitMatrix = falses(base.code_n_bits, n_samples)
+    Random.seed!(71)
+    for sample in 1:n_samples
+        for _ in 1:3
+            bb_errors[rand(1:base.code_n_bits), sample] = true
+        end
+    end
+    bb_syndromes::BitMatrix = BitMatrix(mod.(Matrix{Int}(base.parity_check_matrix) * Matrix{Int}(bb_errors), 2) .== 1)
+    llrs_batch::Matrix{Float32} = repeat(base.initial_llrs, 1, n_samples)
+    posteriors::Array{Float32, 3} = forward_pass_with_weights(model, llrs_batch, bb_syndromes)
+    bb_recoveries::Array{Bool, 3} = Array(posteriors .< 0)
+    parity_int::Matrix{Int} = Matrix{Int}(base.parity_check_matrix)
+    logicals_int::Matrix{Int} = Matrix{Int}(base.parity_check_matrix_dual[(base.code_n_checks + 1):end, :])
+
+    bb_last::BitVector = check_bp_solutions(parity_int, logicals_int, bb_errors, bb_recoveries, COMMIT_LAYER_LAST)
+    # Independent reference: score ONLY the final layer, by hand.
+    reference_last::BitVector = falses(n_samples)
+    for sample in 1:n_samples
+        residual::Vector{Int} = Int.(bb_errors[:, sample] .⊻ bb_recoveries[:, sample, base.n_layers])
+        if all(mod.(parity_int * residual, 2) .== 0) && all(mod.(logicals_int * residual, 2) .== 0)
+            reference_last[sample] = true
+        end
+    end
+    @test bb_last == reference_last
+end
