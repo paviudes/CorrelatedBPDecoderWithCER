@@ -125,6 +125,25 @@ end
   workers each balloon to their high-water mark and collapse the page cache.
 - `--mem-per-cpu` is a **pooled** cgroup limit (`mem_per_cpu × cpus_per_task`) shared
   by every process in the task — not a per-process cap.
+- **Run `parallel` in the BACKGROUND and `wait` on it.** Bash runs a trap only
+  between *foreground* commands, so with `parallel` in the foreground the TERM that
+  `--signal=B:TERM@600` promises sits queued behind it, the wall's hard kill arrives
+  first, the handler never runs and **every completed point in the slice is lost**.
+  Measured: foreground staged out 0/8 points, background + `wait` staged out 3/8.
+  `sweep_{train,test,h2_checks}.sh` always did this; `sweep_{hyperparams,transfer}.sh`
+  had regressed to foreground and were fixed on 2026-10-05.
+- **Serialise the `CUDA_Runtime_jll` rebuild across array tasks.** Tasks that lose the
+  race read a half-written `.ji` and die with `ArgumentError: No value arguments
+  present` after "CUDA Being precompiled by another machine". That, not walltime, is
+  what cost 105 of 280 results on 2026-10-01 (3 of 8 tasks died at the gate; the 5
+  survivors each did 35 tests in 75 min, 37% of a 4 h budget). The test job now takes
+  an `mkdir` lock, one task rebuilds and touches a `.done` sentinel, the rest poll for
+  it (1800 s), and `CUDA.functional()` is re-checked once after 60 s.
+- `sweep_hyperparams.sh` **refuses to write a job that cannot finish**: a preflight
+  multiplies `seconds_per_test` / `seconds_per_train_point` / `job_startup_seconds`
+  (measured, in the settings file) against the array width and exits 1 with the
+  minimum `*_array_tasks` that would fit. Raise those constants if the code or the
+  sample count grows.
 
 ---
 

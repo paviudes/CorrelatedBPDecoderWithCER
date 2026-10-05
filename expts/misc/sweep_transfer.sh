@@ -608,14 +608,30 @@ stage_out() {
     tar -cf - --exclude='hyperparams_xf_*.toml' -C "\$LOCAL" models logs cluster/logs \\
         2>/dev/null | tar -xf - -C "$WORKDIR/$CODENAME"
 }
-trap 'stage_out; exit 0' TERM
+# Background + wait so the TERM trap fires immediately. Bash runs a trap only
+# between FOREGROUND commands, so with parallel in the foreground the handler
+# sits queued behind it, the wall's hard kill arrives first, and every completed
+# point in this slice is lost. \`wait\` is interruptible; parallel is not.
+on_walltime_signal() {
+    trap - EXIT   # we stage out here; don't let the EXIT trap copy it all twice
+    echo "[train task \$TASK] TERM (600s before the wall): staging out completed points" >&2
+    if [ -n "\${PARALLEL_PID:-}" ]; then
+        kill -TERM "\$PARALLEL_PID" 2>/dev/null
+        wait "\$PARALLEL_PID" 2>/dev/null
+    fi
+    stage_out
+    exit 0
+}
+trap on_walltime_signal TERM
 trap stage_out EXIT
 
 echo "[train task \$TASK/$TRAIN_ARRAY] \$N_TASK of $N_TRAIN_POINTS model(s), \$SLURM_CPUS_PER_TASK at a time: \$(date)"
 JOBLOG="\$LOCAL/cluster/logs/xf_${TS}_train_task\${TASK}.joblog"
 RESULTS_ROOT="\$LOCAL/cluster/logs/xf_${TS}_train_task\${TASK}"
 parallel --jobs \$SLURM_CPUS_PER_TASK --joblog "\$JOBLOG" \\
-    --results "\$RESULTS_ROOT" < "\$SLURM_TMPDIR/train.txt"
+    --results "\$RESULTS_ROOT" < "\$SLURM_TMPDIR/train.txt" &
+PARALLEL_PID=\$!
+wait "\$PARALLEL_PID"
 if [ -f "\$JOBLOG" ]; then
     # Print the Command column in full. It contains spaces, so awk field nine on
     # its own yields only the first token -- which is how a whole failed sweep
@@ -735,7 +751,18 @@ stage_out() {
     tar -cf - --exclude='hyperparams_xf_*.toml' -C "\$LOCAL" results logs cluster/logs \\
         2>/dev/null | tar -xf - -C "$WORKDIR/$CODENAME"
 }
-trap 'stage_out; exit 0' TERM
+# Background + wait: see the matching comment in the training job above.
+on_walltime_signal() {
+    trap - EXIT   # we stage out here; don't let the EXIT trap copy it all twice
+    echo "[test task \$TASK] TERM (600s before the wall): staging out partial results" >&2
+    if [ -n "\${PARALLEL_PID:-}" ]; then
+        kill -TERM "\$PARALLEL_PID" 2>/dev/null
+        wait "\$PARALLEL_PID" 2>/dev/null
+    fi
+    stage_out
+    exit 0
+}
+trap on_walltime_signal TERM
 trap stage_out EXIT
 
 export GPU_MEMORY=${GPU_MEMORY_MB}M
@@ -745,7 +772,9 @@ JOBLOG="\$LOCAL/cluster/logs/xf_${TS}_test_task\${TASK}.joblog"
 RESULTS_ROOT="\$LOCAL/cluster/logs/xf_${TS}_test_task\${TASK}"
 parallel --jobs $TEST_JOBS --joblog "\$JOBLOG" --results "\$RESULTS_ROOT" \\
     'card=\$(( ({%} - 1) % \${SLURM_GPUS_ON_NODE:-1} + 1 )); export CUDA_VISIBLE_DEVICES=\$(echo \$SLURM_CUDA_VISIBLE_DEVICES | cut -d, -f\$card); bash -c {}' \\
-    < "\$SLURM_TMPDIR/test.txt"
+    < "\$SLURM_TMPDIR/test.txt" &
+PARALLEL_PID=\$!
+wait "\$PARALLEL_PID"
 if [ -f "\$JOBLOG" ]; then
     awk 'NR>1 && \$7 != 0 {print "  FAILED (exit " \$7 "): " substr(\$0, index(\$0, \$9))}' "\$JOBLOG"
 fi

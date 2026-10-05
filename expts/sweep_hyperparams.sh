@@ -69,7 +69,11 @@ ref_datasets     = []
 # results filename carries both the test and the training source, so nothing
 # collides. Note this multiplies the TEST point count by the list length while
 # leaving the training count alone, so narrow `optimizer_arms` first.
-test_keys        = ["p_0.0015_sig_0.0015_s_1", "p_0.0015_sig_0.0015_s_2", "p_0.0015_sig_0.0015_s_3", "p_0.0015_sig_0.0_s_1", "p_0.0007_sig_0.001_s_1", "p_0.0007_sig_0.001_s_2", "p_0.0007_sig_0.001_s_3", "p_0.0005_sig_0.001_s_1", "p_0.0005_sig_0.001_s_2", "p_0.0005_sig_0.001_s_3", "p_0.0005_sig_0.0005_s_1", "p_0.0005_sig_0.0005_s_2", "p_0.0005_sig_0.0005_s_3", "p_0.0005_sig_0.0_s_1"]
+# Four rungs, not fourteen: the head-to-head needs the in-distribution point
+# plus enough of the ladder to see whether the designs rank differently off
+# distribution. 2 designs x 4 arms x 5 seeds x 4 test sets = 160 tests, which
+# fits the 5 h wall that 280 did not.
+test_keys        = ["p_0.0015_sig_0.0015_s_1", "p_0.0007_sig_0.001_s_1", "p_0.0005_sig_0.001_s_1", "p_0.0005_sig_0.0005_s_1"]
 
 base_hyperparams = "hyperparams_baseline.toml"
 n_hidden_layers  = 90
@@ -188,18 +192,32 @@ check_node_arms  = ["tanh", "enriched:0.42:learn", "enriched:0.42:learn:step:12:
 # Tags are `scale0pN`, not `ic0pN`: the 2026-09-24 sweep already wrote
 # `_optic0p05` and `_optic0p3` into this codename and those must not be
 # overwritten.
-# THE SCAN IS DONE (2026-10-01, 140 of 160 tested before the walltime cut).
-# Clean U-shape with the minimum at 0.3-0.4 and sharply worse by 0.8:
-#   no-CER   4692 (0.1) -> 3157 (0.4) -> 4330 (0.8)
-#   enr a-L  2507 (0.1) -> 2323 (0.3) -> 4060 (0.8)
-# Seed-paired, 0.3 beats 0.4 on both enriched arms (t = -2.6, -3.0), so 0.3 it
-# is. Also measured: training's own fixed point for the weight spread is at
-# scale ~0.55 (where final sd / untrained sd crosses 1), i.e. the optimiser
-# drives the spread PAST the value that decodes best — one more case of the
-# loss and the failure rate disagreeing.
+# --- the axis: the two LAYER DESIGNS, trained head to head -------------------
+# 2026-10-05. Design A has never actually been trained. The 2026-10-01 attempt
+# wrote its TOMLs at 19:46, AFTER the models were trained at 02:00 from softmin
+# TOMLs, and reused the same `_optscale0p3` filenames -- so it loaded
+# softmin-trained weights and only changed the READOUT. The filenames now carry
+# `_lsl<sel>_clr<rule>`, which is what makes this run a real comparison.
 #
-# Narrowed to the winner so the cross-rate test list below stays affordable.
-optimizer_arms   = ["scale0p3:initial_conditions_scale=0.3"]
+# Both arms here are trained from scratch under their own objective, same
+# seeds, same data, same initial-conditions scale, in ONE job:
+#
+#   designA   loss at the final layer   + commit at the final layer
+#   histpair  softmin over layers 11-90 + commit at the first clearing layer
+#
+# initial_conditions_scale is pinned at 0.3 for both: the 8-point scan found the
+# optimum at 0.3-0.4 (U-shaped, 75% worse by 0.8) and 0.3 won the seed-paired
+# comparison against 0.4 on both enriched arms. That scan was run under the
+# historical pair, so if design A wins here the scale should be re-scanned under
+# it before the number is quoted.
+#
+# WHAT THE SCAN ALSO ESTABLISHED, and why expectations should be low: the loss
+# tracks the failure count well (r = +0.98 within an arm) but with elasticity
+# ~0.38 (failures ~ loss^0.38), and five epochs move the loss only 2-13%. So
+# training buys ~1-5% in failures either way. The layer design changes WHICH
+# layer gets that small reduction; it does not change its size. The binding
+# constraint is that the weights barely move (sd 0.173 -> 0.179).
+optimizer_arms   = ["designA:loss_layer_selection=last,commit_layer_rule=last,initial_conditions_scale=0.3", "histpair:loss_layer_selection=softmin,commit_layer_rule=first,initial_conditions_scale=0.3"]
 
 # `warmup_layers` is swept through the same mechanism (it is just another TOML
 # key), so these are four optimizer arms differing only in it. Under
@@ -274,6 +292,20 @@ mem_per_gpu      = "32G"             # SLURM HOST ram per GPU (not VRAM)
 vram_per_gpu     = ""                # VRAM in GB for the batch sizer; "" => infer from gpu_type
 test_cpus        = 12   # 48 cores / 4 GPUs on a Narval GPU node
 test_wall_time   = "4:00:00"
+
+# --- walltime preflight ------------------------------------------------------
+# MEASURED on this code and this code size (2026-10-01 run, a100, 1e6 samples):
+#   per test      129 s  (task 0 did 35 tests in 75m12s; that INCLUDES the fresh
+#                         julia+CUDA load GNU parallel pays for every point)
+#   per train pt  ~6600 s (tasks ran 4 points concurrently in 100-120 min)
+#   startup       up to 370 s of precompile, plus stage-in and three julia
+#                 invocations -> 900 s is a safe allowance
+# The generator multiplies these out against the array width and refuses to
+# write a job that cannot finish. Raise them if the code or the sample count
+# grows; they are estimates, not promises.
+seconds_per_test = 129
+seconds_per_train_point = 6600
+job_startup_seconds = 900
 EOF
 
 echo "[hp_sweep] wrote defaults to: $SETTINGS_FILE"
@@ -309,6 +341,13 @@ fi
 get()  { grep -E "^[[:space:]]*$1[[:space:]]*=" "$SETTINGS_FILE" | head -1 |
          sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]*#.*$//; s/^"//; s/"$//; s/[[:space:]]*$//'; }
 list() { get "$1" | tr -d '[]"' | tr ',' ' '; }
+# `list` turns EVERY comma into a separator, which shreds an element that
+# contains commas of its own -- `optimizer_arms` entries like
+# "designA:loss_layer_selection=last,commit_layer_rule=last" became three arms.
+# `quoted_list` splits only on the quotes that delimit elements, so commas
+# inside one survive. Elements must contain no whitespace (none do: they are
+# tag:key=value,key=value).
+quoted_list() { get "$1" | grep -o '"[^"]*"' | tr -d '"'; }
 
 WORKDIR=$(get workdir);              CODENAME=$(get codename)
 DATASETS=$(list datasets);           REF_DATASETS=$(list ref_datasets)
@@ -325,11 +364,19 @@ fi
 if [ -z "$COMMIT_LAYER_RULE" ]; then
     COMMIT_LAYER_RULE="first"
 fi
+case "$LOSS_LAYER_SELECTION" in
+    softmin|last|mean) ;;
+    *) echo "unknown loss_layer_selection '$LOSS_LAYER_SELECTION': use softmin, last or mean." >&2; exit 1 ;;
+esac
+case "$COMMIT_LAYER_RULE" in
+    first|last) ;;
+    *) echo "unknown commit_layer_rule '$COMMIT_LAYER_RULE': use first or last." >&2; exit 1 ;;
+esac
 CHECK_NODE_ARMS=$(list check_node_arms)
 if [ -z "$CHECK_NODE_ARMS" ]; then
     CHECK_NODE_ARMS="tanh"
 fi
-OPTIMIZER_ARMS=$(list optimizer_arms)
+OPTIMIZER_ARMS=$(quoted_list optimizer_arms)
 if [ -z "$OPTIMIZER_ARMS" ]; then
     OPTIMIZER_ARMS="base"
 fi
@@ -572,6 +619,10 @@ emit_point() {   # <key> <seed> <use_cer> <check_node_spec> <optimizer_spec>
     local initial_conditions_scale_value="$(base_hyperparameter_value initial_conditions_scale)"
     local learning_rate_value="$(base_hyperparameter_value learning_rate)"
     local warmup_layers_value="$(base_hyperparameter_value warmup_layers)"
+    # The layer pair: the scalar settings are the default, an optimizer arm may
+    # override either one per point.
+    local loss_layer_selection_value="$LOSS_LAYER_SELECTION"
+    local commit_layer_rule_value="$COMMIT_LAYER_RULE"
     if [ -z "$optimizer_tag" ]; then
         echo "emit_point: optimizer spec '$optimizer_spec' has an empty tag; the tag enters every filename." >&2
         exit 1
@@ -601,10 +652,13 @@ emit_point() {   # <key> <seed> <use_cer> <check_node_spec> <optimizer_spec>
                 initial_conditions_scale) initial_conditions_scale_value="$override_value" ;;
                 learning_rate)            learning_rate_value="$override_value" ;;
                 warmup_layers)            warmup_layers_value="$override_value" ;;
+                loss_layer_selection)     loss_layer_selection_value="$override_value" ;;
+                commit_layer_rule)        commit_layer_rule_value="$override_value" ;;
                 *)
                     echo "emit_point: optimizer spec '$optimizer_spec': '$override_key' is not a sweepable key." >&2
                     echo "  Allowed: adam_eps, weight_decay, initial_conditions_scale," >&2
-                    echo "           learning_rate, warmup_layers." >&2
+                    echo "           learning_rate, warmup_layers," >&2
+                    echo "           loss_layer_selection, commit_layer_rule." >&2
                     exit 1
                     ;;
             esac
@@ -625,8 +679,39 @@ emit_point() {   # <key> <seed> <use_cer> <check_node_spec> <optimizer_spec>
     # The run tag is the arm plus the check node plus the schedule plus the
     # optimizer setting. It is also the start of the generated TOML's name, so
     # one file per point.
-    local run_tag="_hp${arm}${check_node_tag}${schedule_tag}${optimizer_suffix}"
-    local hp="hyperparams_hp_${arm}${check_node_tag}${schedule_tag}${optimizer_suffix}_$(tag_of "$key")_seed${seed}.toml"
+    # The layer pair MUST reach the filename. Both keys change the weights and
+    # the score, and neither the weights nor the results name carried them
+    # before: on 2026-10-01 a design-A sweep ("last"/"last") reused the
+    # `_optscale0p3` names of a softmin run, so `retrain = false` on the staged
+    # copy loaded the SOFTMIN-trained weights and the results overwrote the
+    # earlier scoring. Both result sets then sat in one directory
+    # indistinguishable except by a column that one of them lacked.
+    #
+    # The historical pair stays untagged, so every filename written before these
+    # keys existed is still reproduced exactly.
+    case "$loss_layer_selection_value" in
+        softmin|last|mean) ;;
+        *) echo "emit_point: loss_layer_selection '$loss_layer_selection_value' must be softmin, last or mean." >&2; exit 1 ;;
+    esac
+    case "$commit_layer_rule_value" in
+        first|last) ;;
+        *) echo "emit_point: commit_layer_rule '$commit_layer_rule_value' must be first or last." >&2; exit 1 ;;
+    esac
+    # A pairing that trains one layer and scores another is almost always a
+    # mistake; warn rather than refuse, since someone may want it deliberately.
+    if [ "$loss_layer_selection_value" = "last" ] && [ "$commit_layer_rule_value" = "first" ]; then
+        echo "[hp_sweep] WARNING: loss_layer_selection=last with commit_layer_rule=first trains" >&2
+        echo "           the final layer and commits to the first clearing one -- the mismatch" >&2
+        echo "           these keys exist to remove." >&2
+    fi
+
+    local layer_tag=""
+    if [ "$loss_layer_selection_value" != "softmin" ] || [ "$commit_layer_rule_value" != "first" ]; then
+        layer_tag="_lsl${loss_layer_selection_value}_clr${commit_layer_rule_value}"
+    fi
+
+    local run_tag="_hp${arm}${check_node_tag}${schedule_tag}${optimizer_suffix}${layer_tag}"
+    local hp="hyperparams_hp_${arm}${check_node_tag}${schedule_tag}${optimizer_suffix}${layer_tag}_$(tag_of "$key")_seed${seed}.toml"
 
     # Start from the base TOML minus every key this generator sets itself, so a
     # stale value in the base can never override a swept one. The removed loss
@@ -650,8 +735,8 @@ emit_point() {   # <key> <seed> <use_cer> <check_node_spec> <optimizer_spec>
         echo "coupling_schedule_layer_init = ${coupling_schedule_layer_init}"
         echo "coupling_schedule_width_init = ${coupling_schedule_width_init}"
         echo "coupling_schedule_learnable = ${coupling_schedule_learnable}"
-        echo "loss_layer_selection = \"${LOSS_LAYER_SELECTION}\""
-        echo "commit_layer_rule = \"${COMMIT_LAYER_RULE}\""
+        echo "loss_layer_selection = \"${loss_layer_selection_value}\""
+        echo "commit_layer_rule = \"${commit_layer_rule_value}\""
         echo ""
         echo "# optimizer arm \"${optimizer_tag}\": stated explicitly on every point,"
         echo "# overridden or not, so one filename never means two settings."
@@ -733,6 +818,74 @@ N_POINTS=$(wc -l < "$TRAIN_CMDS")
 # scored on several test sets. The test job's array must be sized against its
 # own file, and the staged-model count it checks is still the TRAINING count.
 N_TEST_POINTS=$(wc -l < "$TEST_CMDS")
+
+# ------------------------------------------------------ walltime preflight ---
+# A job that runs out of walltime loses whatever it had not staged out, and the
+# loss is SILENT: the 2026-10-01 test job returned 175 of 280 results and the
+# tasks that never ran left .out files with one line in them. Estimate here, and
+# refuse to write a job that cannot finish.
+SECONDS_PER_TEST=$(get seconds_per_test)
+SECONDS_PER_TRAIN_POINT=$(get seconds_per_train_point)
+JOB_STARTUP_SECONDS=$(get job_startup_seconds)
+if [ -z "$SECONDS_PER_TEST" ]; then SECONDS_PER_TEST=129; fi
+if [ -z "$SECONDS_PER_TRAIN_POINT" ]; then SECONDS_PER_TRAIN_POINT=6600; fi
+if [ -z "$JOB_STARTUP_SECONDS" ]; then JOB_STARTUP_SECONDS=900; fi
+
+walltime_to_seconds() {   # <[[D-]HH:]MM:SS
+    echo "$1" | awk -F: '{
+        if (NF == 3) { split($1, dayhour, "-");
+                       if (length(dayhour) == 2) { print ((dayhour[1]*24 + dayhour[2])*60 + $2)*60 + $3 }
+                       else                      { print ($1*60 + $2)*60 + $3 } }
+        else if (NF == 2) { print $1*60 + $2 }
+        else { print $1 }
+    }'
+}
+
+# TRAINING: a task runs its slice through GNU parallel with
+# `--jobs $SLURM_CPUS_PER_TASK`, so points go in concurrent waves.
+TRAIN_POINTS_PER_TASK=$(( (N_POINTS + TRAIN_ARRAY - 1) / TRAIN_ARRAY ))
+TRAIN_WAVES=$(( (TRAIN_POINTS_PER_TASK + TRAIN_CPUS - 1) / TRAIN_CPUS ))
+TRAIN_ESTIMATE=$(( JOB_STARTUP_SECONDS + TRAIN_WAVES * SECONDS_PER_TRAIN_POINT ))
+TRAIN_BUDGET=$(walltime_to_seconds "$TRAIN_WALL")
+# TESTING: strictly sequential within a task (test_jobs = 1, one process per card).
+TEST_POINTS_PER_TASK=$(( (N_TEST_POINTS + TEST_ARRAY - 1) / TEST_ARRAY ))
+TEST_ESTIMATE=$(( JOB_STARTUP_SECONDS + TEST_POINTS_PER_TASK * SECONDS_PER_TEST ))
+TEST_BUDGET=$(walltime_to_seconds "$TEST_WALL")
+
+print_walltime_line() {   # <label> <per-task> <estimate> <budget> <wall>
+    local label="$1" per_task="$2" estimate="$3" budget="$4" wall="$5"
+    local percent=$(( 100 * estimate / budget ))
+    printf "  %-6s %4s per task   est %dh%02dm of %-9s (%d%% of budget)" \
+        "$label" "$per_task" $(( estimate / 3600 )) $(( (estimate % 3600) / 60 )) "$wall" "$percent"
+    if [ "$percent" -ge 100 ]; then
+        printf "   <-- WILL NOT FINISH\n"
+    elif [ "$percent" -ge 70 ]; then
+        printf "   <-- tight\n"
+    else
+        printf "\n"
+    fi
+}
+
+echo
+echo "[hp_sweep] walltime preflight (${SECONDS_PER_TEST}s/test, ${SECONDS_PER_TRAIN_POINT}s/train point, ${JOB_STARTUP_SECONDS}s startup)"
+print_walltime_line "train" "$TRAIN_POINTS_PER_TASK" "$TRAIN_ESTIMATE" "$TRAIN_BUDGET" "$TRAIN_WALL"
+print_walltime_line "test"  "$TEST_POINTS_PER_TASK"  "$TEST_ESTIMATE"  "$TEST_BUDGET"  "$TEST_WALL"
+
+WALLTIME_OVERRUN=0
+if [ "$TRAIN_ESTIMATE" -ge "$TRAIN_BUDGET" ]; then
+    echo "  training cannot finish: raise train_wall_time, or train_array_tasks." >&2
+    WALLTIME_OVERRUN=1
+fi
+if [ "$TEST_ESTIMATE" -ge "$TEST_BUDGET" ]; then
+    MIN_TEST_TASKS=$(( (N_TEST_POINTS * SECONDS_PER_TEST) / (TEST_BUDGET - JOB_STARTUP_SECONDS) + 1 ))
+    echo "  testing cannot finish: raise test_wall_time, or test_array_tasks to ${MIN_TEST_TASKS}+." >&2
+    WALLTIME_OVERRUN=1
+fi
+if [ "$WALLTIME_OVERRUN" -eq 1 ]; then
+    echo "  Nothing was written. Adjust $SETTINGS_FILE and re-run with --no-edit." >&2
+    exit 1
+fi
+
 
 # SELF-CHECK OF THIS FILE. The two SLURM scripts below are built from UNQUOTED
 # heredocs, so bash expands their contents at generation time -- inside comments
@@ -823,7 +976,28 @@ stage_out() {
     tar -cf - --exclude='hyperparams_hp_*.toml' -C "\$LOCAL" models logs cluster/logs \\
         2>/dev/null | tar -xf - -C "$WORKDIR/$CODENAME"
 }
-trap 'stage_out; exit 0' TERM
+# See the matching comment in the test job: bash defers a trap until the current
+# FOREGROUND command returns, so \`parallel\` is backgrounded and we block in
+# \`wait\` -- otherwise the TERM that --signal=B:TERM@600 promises us arrives while
+# bash is stuck on parallel, never runs, and the wall takes the whole slice.
+# A training point that is killed mid-epoch leaves no weights file, so what this
+# saves is the points that COMPLETED: they will not be retrained on resubmission.
+on_walltime_signal() {
+    trap - EXIT   # we stage out here; don't let the EXIT trap copy it all twice
+    echo "[train task \$TASK] TERM (600s before the wall): stopping and staging out completed points" >&2
+    if [ -n "\${PARALLEL_PID:-}" ]; then
+        kill -TERM "\$PARALLEL_PID" 2>/dev/null
+        wait "\$PARALLEL_PID" 2>/dev/null
+    fi
+    N_DONE=0
+    if [ -f "\${JOBLOG:-}" ]; then
+        N_DONE=\$(awk 'NR>1 && \$7 == 0' "\$JOBLOG" | wc -l)
+    fi
+    echo "[train task \$TASK] staging out \$N_DONE completed point(s) of \$N_TASK" >&2
+    stage_out
+    exit 0
+}
+trap on_walltime_signal TERM
 trap stage_out EXIT
 
 echo "[train task \$TASK/$TRAIN_ARRAY] \$N_TASK of $N_POINTS point(s), \$SLURM_CPUS_PER_TASK at a time: \$(date)"
@@ -833,7 +1007,9 @@ echo "[train task \$TASK/$TRAIN_ARRAY] \$N_TASK of $N_POINTS point(s), \$SLURM_C
 JOBLOG="\$LOCAL/cluster/logs/hp_${TS}_train_task\${TASK}.joblog"
 RESULTS_ROOT="\$LOCAL/cluster/logs/hp_${TS}_train_task\${TASK}"
 parallel --jobs \$SLURM_CPUS_PER_TASK --joblog "\$JOBLOG" \\
-    --results "\$RESULTS_ROOT" < "\$SLURM_TMPDIR/train.txt"
+    --results "\$RESULTS_ROOT" < "\$SLURM_TMPDIR/train.txt" &
+PARALLEL_PID=\$!
+wait "\$PARALLEL_PID"
 if [ -f "\$JOBLOG" ]; then
     # Print the Command column in full. It contains spaces, so awk field nine on
     # its own yields only the first token -- which is how a whole failed sweep
@@ -896,28 +1072,75 @@ cd \$SLURM_SUBMIT_DIR
 # CUDA_Runtime_jll bakes in whether a driver was visible AT PRECOMPILE TIME. The
 # CPU training job has no driver, so its Pkg.precompile() poisons the shared depot
 # with "no CUDA runtime found"; this job's precompile then finds everything up to
-# date and leaves the bad cache in place. Force a rebuild of that one JLL here,
-# where the driver IS present, in its own process so the next one loads it fresh.
-if ! julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using Pkg; Pkg.instantiate()'; then
-    exit 1
-fi
-if ! julia --project=\$SLURM_SUBMIT_DIR/.. -e '
-    pkg = Base.PkgId(Base.UUID("76a88914-d11a-5bdc-97e0-2f5a05c973a2"), "CUDA_Runtime_jll")
-    Base.compilecache(pkg)'; then
-    exit 1
-fi
-if ! julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using Pkg; Pkg.precompile()'; then
-    exit 1
+# date and leaves the bad cache in place. So the JLL must be rebuilt here, where
+# the driver IS present.
+#
+# BUT ONLY ONE TASK MAY DO IT. On 2026-10-01 all 8 array tasks ran this block at
+# once against the one Lustre depot. Five waited for a sibling ("CUDA Being
+# precompiled by another machine (hostname: ng30707 ...)") and recovered; three
+# read a half-written .ji and died with
+#     ERROR: ArgumentError: No value arguments present
+#     _include_from_serialized ... loading.jl:1288
+# at the CUDA gate below, losing 105 of 280 tests. The gate did its job — the
+# alternative was 105 silent garbage results — but the race is the bug.
+#
+# One task wins the mkdir (atomic enough on Lustre for this), rebuilds, and
+# touches a sentinel. The others wait for it. The lock name carries the sweep
+# timestamp, so a re-submission of a NEW generation is never blocked by a stale
+# lock; re-running the SAME generation reuses the already-warm depot, which is
+# what we want.
+REBUILD_LOCK="$CLUSTER_DIR/hp_${TS}_cuda_rebuild.lock"
+REBUILD_DONE="$CLUSTER_DIR/hp_${TS}_cuda_rebuild.done"
+REBUILD_WAIT_SECONDS=1800
+if mkdir "\$REBUILD_LOCK" 2>/dev/null; then
+    echo "[test task \$TASK] rebuilding CUDA_Runtime_jll (this task owns the depot lock)"
+    if ! julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using Pkg; Pkg.instantiate()'; then
+        exit 1
+    fi
+    if ! julia --project=\$SLURM_SUBMIT_DIR/.. -e '
+        pkg = Base.PkgId(Base.UUID("76a88914-d11a-5bdc-97e0-2f5a05c973a2"), "CUDA_Runtime_jll")
+        Base.compilecache(pkg)'; then
+        exit 1
+    fi
+    if ! julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using Pkg; Pkg.precompile()'; then
+        exit 1
+    fi
+    touch "\$REBUILD_DONE"
+    echo "[test task \$TASK] depot rebuild done; siblings released"
+else
+    echo "[test task \$TASK] another task owns the depot lock; waiting for the rebuild"
+    WAITED=0
+    while [ ! -f "\$REBUILD_DONE" ] && [ "\$WAITED" -lt "\$REBUILD_WAIT_SECONDS" ]; do
+        sleep 15
+        WAITED=\$(( WAITED + 15 ))
+    done
+    if [ -f "\$REBUILD_DONE" ]; then
+        echo "[test task \$TASK] rebuild signalled after \${WAITED}s"
+    else
+        # The owner died before signalling. Proceeding is still the right move:
+        # the depot may well be fine, and the gate below is what decides.
+        echo "[test task \$TASK] WARNING: no rebuild sentinel after \${WAITED}s; proceeding to the gate anyway" >&2
+    fi
 fi
 export JULIA_PKG_PRECOMPILE_AUTO=0
 
 # Hard gate. Without it the job proceeds and all $N_TEST_POINTS tests die one by one at
 # _to_dense_gpu, each burning its own startup, and the stage-out returns nothing.
-if ! julia --project=\$SLURM_SUBMIT_DIR/.. -e '
-    using CUDA
-    if !CUDA.functional()
-        exit(1)
-    end'; then
+cuda_is_functional() {
+    julia --project=\$SLURM_SUBMIT_DIR/.. -e '
+        using CUDA
+        if !CUDA.functional()
+            exit(1)
+        end'
+}
+if ! cuda_is_functional; then
+    # One retry. The 2026-10-01 failures were torn reads of a .ji another node
+    # was still writing; by now the owner has finished, and a fresh process
+    # usually loads it cleanly. If it fails twice the depot really is bad.
+    echo "[test task \$TASK] CUDA check failed once; re-checking in 60s" >&2
+    sleep 60
+fi
+if ! cuda_is_functional; then
     echo "ERROR: CUDA is not functional on this node after forcing a JLL rebuild." >&2
     echo "  Check that 'module load $CUDA_MODULE' succeeded and that" >&2
     echo "  LocalPreferences.toml still has [CUDA_Runtime_jll] local_toolkit = true." >&2
@@ -958,7 +1181,29 @@ stage_out() {
     tar -cf - --exclude='hyperparams_hp_*.toml' -C "\$LOCAL" results logs cluster/logs \\
         2>/dev/null | tar -xf - -C "$WORKDIR/$CODENAME"
 }
-trap 'stage_out; exit 0' TERM
+# --signal=B:TERM@600 above gives us ten minutes' notice of the wall. Bash runs a
+# trap only between foreground commands, so with \`parallel\` in the FOREGROUND the
+# handler would sit queued behind it and SLURM's hard kill at the wall would take
+# the job with nothing staged out -- every completed point in this slice lost.
+# So \`parallel\` runs in the BACKGROUND and we block in \`wait\`, which a trapped
+# signal does interrupt. On TERM: stop parallel, let the in-flight point die, and
+# copy back the points that did finish.
+on_walltime_signal() {
+    trap - EXIT   # we stage out here; don't let the EXIT trap copy it all twice
+    echo "[test task \$TASK] TERM (600s before the wall): stopping and staging out partial results" >&2
+    if [ -n "\${PARALLEL_PID:-}" ]; then
+        kill -TERM "\$PARALLEL_PID" 2>/dev/null
+        wait "\$PARALLEL_PID" 2>/dev/null
+    fi
+    N_DONE=0
+    if [ -f "\${JOBLOG:-}" ]; then
+        N_DONE=\$(awk 'NR>1 && \$7 == 0' "\$JOBLOG" | wc -l)
+    fi
+    echo "[test task \$TASK] staging out \$N_DONE completed point(s) of \$N_TASK" >&2
+    stage_out
+    exit 0
+}
+trap on_walltime_signal TERM
 trap stage_out EXIT
 
 export GPU_MEMORY=${GPU_MEMORY_MB}M
@@ -968,7 +1213,9 @@ JOBLOG="\$LOCAL/cluster/logs/hp_${TS}_test_task\${TASK}.joblog"
 RESULTS_ROOT="\$LOCAL/cluster/logs/hp_${TS}_test_task\${TASK}"
 parallel --jobs $TEST_JOBS --joblog "\$JOBLOG" --results "\$RESULTS_ROOT" \\
     'card=\$(( ({%} - 1) % \${SLURM_GPUS_ON_NODE:-1} + 1 )); export CUDA_VISIBLE_DEVICES=\$(echo \$SLURM_CUDA_VISIBLE_DEVICES | cut -d, -f\$card); bash -c {}' \\
-    < "\$SLURM_TMPDIR/test.txt"
+    < "\$SLURM_TMPDIR/test.txt" &
+PARALLEL_PID=\$!
+wait "\$PARALLEL_PID"
 if [ -f "\$JOBLOG" ]; then
     # Print the Command column in full. It contains spaces, so awk field nine on
     # its own yields only the first token -- which is how a whole failed sweep
