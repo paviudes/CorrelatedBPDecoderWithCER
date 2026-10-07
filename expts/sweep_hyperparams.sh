@@ -266,7 +266,10 @@ train_array_tasks = 5
 train_cpus       = 54   # points per task per wave; a Narval CPU node has 64
 train_mem_per_cpu = "6G"
 cpu_node_memory_mb = 510000   # 498G, for the overcommit check
-train_wall_time  = "4:00:00"
+# 3h, not 4: measured 1h47m for an 8-point slice on 2026-10-05 (task 0, 10:47:54
+# -> 12:35:15), plus ~210s of precompile and stage-in. The preflight below puts
+# the 8-point estimate at 2h05m = 69% of this, and a shorter wall schedules sooner.
+train_wall_time  = "3:00:00"
 
 # Measured: 3.7 min per test per process. ONE CARD PER ARRAY TASK, one process
 # on it: a 1-GPU request schedules far sooner than a whole 4-GPU node, and the
@@ -1069,6 +1072,14 @@ echo "[\${SLURM_JOB_NAME:-job}] depot: \$JULIA_DEPOT_PATH"
 export JULIA_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 JULIA_PKG_OFFLINE=true
 export GPU_BACKEND=cuda USE_GPU=1
 cd \$SLURM_SUBMIT_DIR
+# Assigned HERE, above the depot block, because that block echoes "[test task
+# \$TASK]" and this script runs under \`set -u\`. It used to be assigned after the
+# CUDA gate: on 2026-10-05 all 8 tasks died in under a second with
+#     slurm_script: line 75: TASK: unbound variable
+# and the sweep recorded nothing. \`bash -n\` does not catch this -- an unbound
+# variable under \`set -u\` is a RUNTIME error -- which is why the generated-script
+# smoke test now actually executes the preamble with stub binaries.
+TASK=\${SLURM_ARRAY_TASK_ID:-0}
 # CUDA_Runtime_jll bakes in whether a driver was visible AT PRECOMPILE TIME. The
 # CPU training job has no driver, so its Pkg.precompile() poisons the shared depot
 # with "no CUDA runtime found"; this job's precompile then finds everything up to
@@ -1148,7 +1159,6 @@ if ! cuda_is_functional; then
 fi
 echo "[test] CUDA functional."
 
-TASK=\${SLURM_ARRAY_TASK_ID:-0}
 LOCAL="\$SLURM_TMPDIR/$CODENAME"
 tar -chf - -C "$WORKDIR" "$CODENAME" | tar -xf - -C "\$SLURM_TMPDIR"
 mkdir -p "\$LOCAL"/{models,results,logs} "\$LOCAL/cluster/logs/hp_${TS}_test_task\${TASK}"

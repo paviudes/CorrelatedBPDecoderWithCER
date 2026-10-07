@@ -144,6 +144,14 @@ end
   (measured, in the settings file) against the array width and exits 1 with the
   minimum `*_array_tasks` that would fit. Raise those constants if the code or the
   sample count grows.
+- **`bash -n` on a generated job script proves nothing about `set -u`.** On
+  2026-10-05 all 8 test tasks died in under a second — `line 75: TASK: unbound
+  variable` — because the depot-lock block echoes `[test task $TASK]` and sat *above*
+  `TASK=${SLURM_ARRAY_TASK_ID:-0}`. 0 of 160 results, 4 h of training wasted, and it
+  looked exactly like a walltime kill. An unbound variable is a RUNTIME error, so the
+  verification is: generate, then **execute** the job script with stub `julia` /
+  `parallel` on `PATH` and fake `SLURM_*` env vars, and check it exits 0. That
+  reproduces the failure on the old script and passes on the fixed one.
 
 ---
 
@@ -210,6 +218,27 @@ end
   epoch with 6 non-finite gradients is **rolled back**, weights and Adam state) and
   weight sd (~0.058 = never moved). Arm comparisons are only meaningful when
   completed epochs are equal across arms.
+- **The NaN gradients are the enriched check node, not the layer design** (measured
+  2026-10-05, 40 points, `initial_conditions_scale = 0.3`, lr 0.001):
+
+  | split | damaged points |
+  |---|---|
+  | `check_node = "enriched"` | **8/20** |
+  | `check_node = "tanh"` | **0/20** |
+  | `loss/commit = last/last` (design A) | 4/20 |
+  | `loss/commit = softmin/first` | 4/20 |
+
+  Two of five seeds in *every* enriched arm, none in any tanh arm, and dead even
+  across the layer designs. 6 of the 8 lost **5 of 5** epochs, 2 lost 4 of 5 — those
+  models are the initialisation with a few hundred surviving updates on top.
+  The schedule (`_sch12w3L`) neither causes nor prevents it.
+- **Reading rollbacks out of the logs.** `logs/debugging_*.csv` is the reliable
+  source: a damaged point has `max(nan_skip_count) = 5` (the 6th breaks out before
+  the row is written) and carries an extra `epoch 0` block. The `.out` files show
+  only the *first* failing point's stderr, so their rollback count is a floor, and
+  `cluster/logs/<task>/<slot>/<cmd>/stderr` cannot be joined to an arm — GNU
+  `parallel --results` keys on **argument slot, not seq** (everything lands under
+  `1/`) and truncates the command-derived directory name mid-tag, dropping the seed.
 ## Which layer is scored vs which layer commits (added 2026-10-01)
 
 - The training loss and the test-time readout were looking at **different layers**.
