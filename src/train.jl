@@ -6,7 +6,9 @@ function get_loss_value(
     coupling_schedule, # learnable length-2 vector [T₀, log(w - W_MIN)] of the layer schedule on α (inert under the constant schedule).
     loss_layer_temperature, # temperature of the softmin over layers, annealed during training.
     warmup_loss_layers, # first number of layers to leave unconstrained in the loss.
-    loss_layer_selection, # how the scored layers combine: softmin | last | mean (see src/loss.jl).
+    loss_layer_selection, # how the scored layers combine: softmin | last | mean | ramp (see src/loss.jl).
+    loss_layer_ramp_sharpness, # k of the ramp weighting; read only under `ramp`.
+    base_loss_selection, # which per-check residue: sin_residue | smooth_loss (see src/loss.jl).
     base, # constant parameters of the model: the parity-check matrices, the check node tables, etc.
     llrs_batch, # batch of initial LLRs for the bits, the input to the network
     syndromes_batch, # batch of syndromes, the input to the network
@@ -38,7 +40,9 @@ function get_loss_value(
         base.parity_check_matrix_dual,
         loss_layer_temperature,
         warmup_loss_layers,
-        loss_layer_selection
+        loss_layer_selection,
+        loss_layer_ramp_sharpness,
+        base_loss_selection
     )
     return total_loss
 end
@@ -52,6 +56,8 @@ function get_individual_loss_values(
     loss_layer_temperature::Float32,
     warmup_loss_layers::Int,
     loss_layer_selection::Int,
+    loss_layer_ramp_sharpness::Float32,
+    base_loss_selection::Int,
     base::NeuralBPBase,
     llrs_batch::Matrix{Float32},
     syndromes_batch::BitMatrix,
@@ -74,8 +80,10 @@ function get_individual_loss_values(
         syndromes_batch
     )
     losses_per_layer::Vector{Float32} = base_loss_per_layer(
-        posterior_llrs, expected_recoveries, base.parity_check_matrix_dual, warmup_loss_layers)
-    total_loss::Float32 = combine_layer_losses(losses_per_layer, loss_layer_temperature, loss_layer_selection)
+        posterior_llrs, expected_recoveries, base.parity_check_matrix_dual, warmup_loss_layers,
+        base_loss_selection)
+    total_loss::Float32 = combine_layer_losses(
+        losses_per_layer, loss_layer_temperature, loss_layer_selection, loss_layer_ramp_sharpness)
     return (total_loss, losses_per_layer)
 end
 
@@ -254,6 +262,27 @@ function train_neuralbp_enzyme!(
     # matches `commit_layer_rule = "last"` at test time.
     loss_layer_selection::Int =
         loss_layer_selection_code(String(get(hyperparameters, "loss_layer_selection", "softmin")))
+    # Sharpness k of the ramp weighting (read only under "ramp"). Validated here
+    # so a bad TOML fails before the first forward pass, not inside Enzyme.
+    loss_layer_ramp_sharpness::Float32 =
+        Float32(get(hyperparameters, "loss_layer_ramp_sharpness", DEFAULT_LOSS_LAYER_RAMP_SHARPNESS))
+    if loss_layer_selection == LOSS_LAYERS_RAMP
+        if loss_layer_ramp_sharpness <= 0.0f0
+            throw(ArgumentError(
+                "loss_layer_ramp_sharpness = $(loss_layer_ramp_sharpness) must be positive " *
+                "under loss_layer_selection = \"ramp\"."))
+        end
+        if warmup_loss_layers >= bpnn.base.n_layers
+            throw(ArgumentError(
+                "warmup_layers = $(warmup_loss_layers) leaves no scored layer for the ramp " *
+                "(n_layers = $(bpnn.base.n_layers))."))
+        end
+    end
+    # Which per-check residue. "sin_residue" reproduces every earlier run;
+    # "smooth_loss" keeps a ±2 subgradient at a violated check, where the sine's
+    # gradient is exactly zero (see the block at the top of src/loss.jl).
+    base_loss_selection::Int =
+        base_loss_code(String(get(hyperparameters, "base_loss", "sin_residue")))
     # Whether α (the scale on the CER couplings inside the enriched check node)
     # is learned. Irrelevant for the standard rule, where α is never read; the
     # leaf is frozen there too so that a tanh run never moves it, and a later
@@ -435,6 +464,8 @@ function train_neuralbp_enzyme!(
                 Enzyme.Const(hp[:loss_layer_temperature]),
                 Enzyme.Const(warmup_loss_layers),
                 Enzyme.Const(loss_layer_selection),
+                Enzyme.Const(loss_layer_ramp_sharpness),
+                Enzyme.Const(base_loss_selection),
                 Enzyme.Const(base),
                 Enzyme.Const(llrs_batch),
                 Enzyme.Const(syndromes_batch),
@@ -514,6 +545,8 @@ function train_neuralbp_enzyme!(
                     hp[:loss_layer_temperature],
                     warmup_loss_layers,
                     loss_layer_selection,
+                    loss_layer_ramp_sharpness,
+                    base_loss_selection,
                     base,
                     llrs_batch,
                     syndromes_batch,
@@ -701,6 +734,24 @@ function train_Nachmani_neuralbp(
         end
         # Read errors from the training errors file
         expected_recoveries = convert.(Bool, readdlm(training_errors_file, Int))
+        # Which of them to train on (src/sample_selection.jl): the whole file
+        # unless `training_samples` / `failure_weight_boundary` say otherwise.
+        # Drawn from the seeded RNG AFTER the model is initialised, so at one
+        # seed every arm sees the same initial weights and the same set.
+        training_samples::Int = Int(get(hyperparameters, "training_samples", 0))
+        failure_weight_boundary::Float64 = Float64(get(hyperparameters, "failure_weight_boundary", 0.0))
+        selected_columns::Vector{Int} =
+            filter_training_samples(expected_recoveries, training_samples, failure_weight_boundary)
+        if training_samples > 0 || failure_weight_boundary > 0.0
+            pool_weights::Vector{Int} = error_weights(expected_recoveries)
+            print_info(describe_training_selection(selected_columns, pool_weights))
+            if is_debug
+                write_training_selection(
+                    "$(prefix)/logs/training_selection_$(training_source)$(cer_tag)$(run_tag)$(seed_tag).csv",
+                    selected_columns, pool_weights)
+            end
+            expected_recoveries = expected_recoveries[:, selected_columns]
+        end
         # Compute the syndromes for the training errors
         training_syndromes = convert.(Bool, mod.(base.parity_check_matrix * expected_recoveries, 2))
         

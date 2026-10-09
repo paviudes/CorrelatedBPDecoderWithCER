@@ -205,7 +205,16 @@ export save_trained_weights, extract_weights_for_BP, save_extracted_weights_for_
 include("loss.jl")
 export compute_loss, base_loss_per_layer, compute_smooth_loss_from_llrs, softmin_loss, smooth_loss,
        combine_layer_losses, loss_layer_selection_code, loss_layer_selection_name,
-       LOSS_LAYERS_SOFTMIN, LOSS_LAYERS_LAST, LOSS_LAYERS_MEAN
+       ramp_layer_weight, ramp_loss, sine_residue_loss,
+       LOSS_LAYERS_SOFTMIN, LOSS_LAYERS_LAST, LOSS_LAYERS_MEAN, LOSS_LAYERS_RAMP,
+       DEFAULT_LOSS_LAYER_RAMP_SHARPNESS,
+       base_loss_code, base_loss_name, BASE_LOSS_SIN_RESIDUE, BASE_LOSS_SMOOTH
+
+# Which samples of the training pool to train on. BEFORE train.jl, which calls it.
+include("sample_selection.jl")
+export filter_training_samples, error_weights, log_poisson_probability,
+       poisson_over_present_weights, describe_training_selection, write_training_selection,
+       FAILURE_BAND_MINIMUM_WEIGHT
 
 # Training routines
 include("train.jl")

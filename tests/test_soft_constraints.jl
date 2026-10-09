@@ -354,6 +354,9 @@ end
         Enzyme.Duplicated(bpnn.coupling_schedule, grad_schedule),
         Enzyme.Const(1.0f0),         # loss_layer_temperature
         Enzyme.Const(0),             # warmup_loss_layers
+        Enzyme.Const(LOSS_LAYERS_SOFTMIN),              # loss_layer_selection
+        Enzyme.Const(DEFAULT_LOSS_LAYER_RAMP_SHARPNESS), # loss_layer_ramp_sharpness (unused)
+        Enzyme.Const(BASE_LOSS_SIN_RESIDUE),            # base_loss_selection
         Enzyme.Const(bb_base),
         Enzyme.Const(llrs_batch),
         Enzyme.Const(syndromes),
@@ -875,7 +878,8 @@ end
         loss::Float32 = CorrelatedBPDecoderWithCER.get_loss_value(
             model.weights_c2v_v2c, model.weights_llrs, model.weights_c2v_readout,
             model.coupling_logit, schedule_parameters,
-            1.0f0, 0, step_base, llrs_batch, syndromes, expected_recoveries)
+            1.0f0, 0, LOSS_LAYERS_SOFTMIN, DEFAULT_LOSS_LAYER_RAMP_SHARPNESS, BASE_LOSS_SIN_RESIDUE,
+            step_base, llrs_batch, syndromes, expected_recoveries)
         return loss
     end
 
@@ -892,8 +896,11 @@ end
         Enzyme.Duplicated(model.weights_c2v_readout, grad_w_readout),
         Enzyme.Duplicated(model.coupling_logit, grad_alpha),
         Enzyme.Duplicated(model.coupling_schedule, grad_schedule),
-        Enzyme.Const(1.0f0),
-        Enzyme.Const(0),
+        Enzyme.Const(1.0f0),                            # loss_layer_temperature
+        Enzyme.Const(0),                                # warmup_loss_layers
+        Enzyme.Const(LOSS_LAYERS_SOFTMIN),              # loss_layer_selection
+        Enzyme.Const(DEFAULT_LOSS_LAYER_RAMP_SHARPNESS), # loss_layer_ramp_sharpness (unused)
+        Enzyme.Const(BASE_LOSS_SIN_RESIDUE),            # base_loss_selection
         Enzyme.Const(step_base),
         Enzyme.Const(llrs_batch),
         Enzyme.Const(syndromes),

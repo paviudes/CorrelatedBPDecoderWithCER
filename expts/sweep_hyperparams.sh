@@ -15,21 +15,32 @@
 #   bash sweep_hyperparams.sh --no-edit    use the defaults as written
 #   bash sweep_hyperparams.sh --local      also emit a 1-point local test command
 #   bash sweep_hyperparams.sh --collect    summarise the results of a finished sweep
+#   bash sweep_hyperparams.sh --settings <file> --no-edit
+#                                          drive it from an EXISTING settings TOML
+#                                          instead of writing the defaults below.
+#                                          This is how misc/run_local.sh narrows the
+#                                          sweep (fewer arms, fewer seeds, smaller
+#                                          test sets) without editing this file and
+#                                          without disturbing the cluster config.
 set -eu
 
 NO_EDIT=0
 LOCAL=0
 COLLECT=0
 SMOKE_N=5000
-for arg in "$@"; do
-    case "$arg" in
+SETTINGS_IN=""
+while [ $# -gt 0 ]; do
+    case "$1" in
         --no-edit) NO_EDIT=1 ;;
         --collect) COLLECT=1 ;;
         --local)   LOCAL=1 ;;
-        --local=*) LOCAL=1; SMOKE_N="${arg#*=}" ;;
+        --local=*) LOCAL=1; SMOKE_N="${1#*=}" ;;
+        --settings)   SETTINGS_IN="${2:-}"; shift ;;
+        --settings=*) SETTINGS_IN="${1#*=}" ;;
         --help|-h) awk 'NR==1 {next} /^#/ {print; next} {exit}' "$0"; exit 0 ;;
-        *) echo "Unknown option: $arg" >&2; exit 2 ;;
+        *) echo "Unknown option: $1" >&2; exit 2 ;;
     esac
+    shift
 done
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -38,6 +49,28 @@ mkdir -p "$SCRIPTS_DIR"
 TS="$(date +%Y-%m-%d_%H-%M-%S)"
 SETTINGS_FILE="$SCRIPTS_DIR/hp_sweep_settings_${TS}.toml"
 
+# A supplied settings file is COPIED to this run's timestamped name rather than
+# read in place: everything downstream reads $SETTINGS_FILE, and keeping one file
+# per generation means the settings that produced a given set of job scripts are
+# still on disk next to them.
+if [ -n "$SETTINGS_IN" ]; then
+    if [ ! -f "$SETTINGS_IN" ]; then
+        echo "no such settings file: $SETTINGS_IN" >&2
+        exit 1
+    fi
+    # Re-running within the same second on the file this script itself wrote
+    # makes source and destination the same path, and `cp` refuses. Use it in
+    # place in that case rather than failing under set -e.
+    if [ "$(cd "$(dirname "$SETTINGS_IN")" && pwd)/$(basename "$SETTINGS_IN")" = "$SETTINGS_FILE" ]; then
+        echo "[hp_sweep] settings from: $SETTINGS_IN (used in place)"
+    else
+        cp "$SETTINGS_IN" "$SETTINGS_FILE"
+        echo "[hp_sweep] settings from: $SETTINGS_IN"
+        echo "[hp_sweep]   copied to:   $SETTINGS_FILE"
+    fi
+fi
+
+if [ -z "$SETTINGS_IN" ]; then
 cat > "$SETTINGS_FILE" <<'EOF'
 workdir          = "./../data"
 # Reuses the trainable_alpha run directory: with more than one optimizer arm
@@ -104,13 +137,32 @@ single_qubit_rescale = 0.1
 # (warmup_layers = 10), while the loss's own argmin sat at layer 11 in 87% of
 # error-free batches. The three coherent pairings:
 #
-#   "last"    + "last"     design A: training and testing score the SAME layer
-#   "mean"    + "first"    design B: every layer trained, so first-to-clear is safe
+#   "last"    + "last"     design A: training and testing score the SAME layer.
+#                          Measured: ties the per-layer minimum on 94-98% of
+#                          batches, but the last layer's gradient reaching layer
+#                          t decays like rho^(n_layers - t) past convergence, so
+#                          early weights go effectively unconstrained and it
+#                          discards 70-279 cleared decodes per 800k to drift.
+#   "ramp"    + "last"     every scored layer weighted by tanh(k u)/tanh(k),
+#                          u = (t - warmup)/(n_layers - warmup): zero through
+#                          warmup_layers, exactly 1 at the last layer. Each layer
+#                          gets its own un-attenuated gradient and the rise after
+#                          the minimum is penalised. NEEDS warmup_layers ~ 5 to
+#                          exclude the BP transient (layers 1-5 are 35 / 7.5 /
+#                          1.1 / 0.24 / 0.12 on SOLVED batches; let in, they
+#                          dominate). k is loss_layer_ramp_sharpness, swept as
+#                          `loss_layer_ramp_sharpness=<k>` in an optimizer arm;
+#                          tag _lslramp<k>.
+#   "mean"    + "first"    every layer equally. MEASURED to be a bad loss:
+#                          separates solved from unsolved batches by only 2x
+#                          because the BP transient is 100% of a solved batch's
+#                          mean. Kept for comparison only.
 #   "softmin" + "first"    the historical pair, which cannot work: softmin asks
 #                          for ONE good layer, first-to-clear needs them all
 #
 # Under "last" the warmup_layers value is irrelevant to TRAINING (only the final
-# layer is read); it still shapes the per-layer diagnostic log.
+# layer is read); it still shapes the per-layer diagnostic log. Under "ramp" it
+# is where the ramp starts and matters a great deal.
 loss_layer_selection = "last"
 commit_layer_rule    = "last"
 
@@ -156,8 +208,16 @@ check_node_arms  = ["tanh", "enriched:0.42:learn", "enriched:0.42:learn:step:12:
 # Each entry is  <tag>[:<key>=<value>[,<key>=<value>...]]. An entry with no
 # overrides uses whatever the base TOML says; the tag enters `run_tag` and every
 # filename, so two settings can never share a weights or results file. Only
-# adam_eps, weight_decay, initial_conditions_scale and learning_rate may be
-# overridden — anything else is a typo and the generator refuses it.
+# adam_eps, weight_decay, initial_conditions_scale, learning_rate,
+# warmup_layers, loss_layer_selection, commit_layer_rule,
+# loss_layer_ramp_sharpness, base_loss, training_samples and
+# failure_weight_boundary may be overridden — anything else is a typo and the
+# generator refuses it.
+#
+# training_samples=<N> trains on a set of N samples drawn from the training file
+# (0 = the whole file); failure_weight_boundary=<lambda> draws that set so its
+# error weights follow Poisson(lambda) instead of the file's own distribution
+# (src/sample_selection.jl). Tags _ts<N> and _fwb<lambda>, only when non-zero.
 #
 # WHAT THE 2026-09-24 COORDINATE SWEEP SETTLED (140 points, s_1, 5 seeds):
 #
@@ -310,8 +370,8 @@ seconds_per_test = 129
 seconds_per_train_point = 6600
 job_startup_seconds = 900
 EOF
-
 echo "[hp_sweep] wrote defaults to: $SETTINGS_FILE"
+fi
 
 open_editor() {
     local editor_cmd=""
@@ -368,8 +428,8 @@ if [ -z "$COMMIT_LAYER_RULE" ]; then
     COMMIT_LAYER_RULE="first"
 fi
 case "$LOSS_LAYER_SELECTION" in
-    softmin|last|mean) ;;
-    *) echo "unknown loss_layer_selection '$LOSS_LAYER_SELECTION': use softmin, last or mean." >&2; exit 1 ;;
+    softmin|last|mean|ramp) ;;
+    *) echo "unknown loss_layer_selection '$LOSS_LAYER_SELECTION': use softmin, last, mean or ramp." >&2; exit 1 ;;
 esac
 case "$COMMIT_LAYER_RULE" in
     first|last) ;;
@@ -389,6 +449,10 @@ fi
 # untagged baseline would otherwise overwrite the results of whatever earlier
 # sweep ran in the same codename without this axis.
 N_OPTIMIZER_ARMS=$(echo "$OPTIMIZER_ARMS" | wc -w | tr -d ' ')
+
+# Every TOML name emitted so far, so two points can never share one.
+EMITTED_TOML_NAMES=$(mktemp)
+RAMP_WARMUP_WARNED=0
 
 # The base TOML's value for a key, so an optimizer arm that does not override it
 # still writes the value explicitly. Every swept key is emitted on every point:
@@ -514,7 +578,7 @@ if [ "$COLLECT" -eq 1 ]; then
         echo "no results dir: $RESULTS_DIR" >&2
         exit 1
     fi
-    n_found=$(ls "$RESULTS_DIR"/simulation_results_*_hp*_seed_*.csv 2>/dev/null | wc -l)
+    n_found=$(ls "$RESULTS_DIR"/simulation_results_*_seed_*.csv 2>/dev/null | wc -l)
     echo "[hp_sweep] collecting $n_found result file(s) from $RESULTS_DIR"
     rm -f "$SETTINGS_FILE"
     exec julia --project="$SCRIPT_DIR/../" "$SCRIPT_DIR/misc/collect_correlation_weight.jl" "$RESULTS_DIR"
@@ -536,28 +600,20 @@ emit_point() {   # <key> <seed> <use_cer> <check_node_spec> <optimizer_spec>
         arm="nocer"
         require="false"
     fi
-    # Check node. "tanh" is untagged. "enriched:<alpha>:<fixed|learn>" ->
-    # check_node enriched, coupling_scale_init alpha, learnable per the third
-    # field, tag _cnenr<alpha>F or _cnenr<alpha>L. The alpha AND the F/L must be
-    # in the tag: two alphas, or fixed vs learned, would otherwise share one
-    # weights file and one results file.
-    #
-    # An optional layer schedule follows as ":step:<T0>:<w>:<fixed|learn>" and
-    # tags _sch<T0>w<w>F or _sch<T0>w<w>L, for the same reason: a step run and
-    # the constant run it is compared against write different files only if the
-    # tag says so. Fields are split on ":" one at a time with ${var%%:*} /
-    # ${var#*:}, so a spec with too few fields leaves the remainder EQUAL to the
-    # last field rather than empty -- every branch below therefore tests the
-    # field it expects and fails on anything else.
+    # Check node. "enriched:<alpha>:<fixed|learn>" -> check_node enriched,
+    # coupling_scale_init alpha, learnable per the third field. An optional layer
+    # schedule follows as ":step:<T0>:<w>:<fixed|learn>". Fields are split on
+    # ":" one at a time with ${var%%:*} / ${var#*:}, so a spec with too few
+    # fields leaves the remainder EQUAL to the last field rather than empty --
+    # every branch below therefore tests the field it expects and fails on
+    # anything else.
     local check_node="${check_node_spec%%:*}"
     local coupling_scale_init="1.0"
     local coupling_scale_learnable="false"
-    local check_node_tag=""
     local coupling_schedule="constant"
     local coupling_schedule_layer_init="90"
     local coupling_schedule_width_init="3"
     local coupling_schedule_learnable="false"
-    local schedule_tag=""
     if [ "$check_node" = "enriched" ]; then
         if [ "$use_cer" = "false" ]; then
             echo "emit_point: an enriched check node needs couplings; refusing to emit it on the no-CER arm." >&2
@@ -569,10 +625,7 @@ emit_point() {   # <key> <seed> <use_cer> <check_node_spec> <optimizer_spec>
         local learn_spec="${after_alpha%%:*}"
         if [ "$learn_spec" = "learn" ]; then
             coupling_scale_learnable="true"
-            check_node_tag="_cnenr$(tag_of "$coupling_scale_init")L"
-        elif [ "$learn_spec" = "fixed" ]; then
-            check_node_tag="_cnenr$(tag_of "$coupling_scale_init")F"
-        else
+        elif [ "$learn_spec" != "fixed" ]; then
             echo "emit_point: check node spec '$check_node_spec' must have :fixed or :learn as its third field." >&2
             exit 1
         fi
@@ -600,10 +653,7 @@ emit_point() {   # <key> <seed> <use_cer> <check_node_spec> <optimizer_spec>
             fi
             if [ "$schedule_learn_spec" = "learn" ]; then
                 coupling_schedule_learnable="true"
-                schedule_tag="_sch$(tag_of "$coupling_schedule_layer_init")w$(tag_of "$coupling_schedule_width_init")L"
-            elif [ "$schedule_learn_spec" = "fixed" ]; then
-                schedule_tag="_sch$(tag_of "$coupling_schedule_layer_init")w$(tag_of "$coupling_schedule_width_init")F"
-            else
+            elif [ "$schedule_learn_spec" != "fixed" ]; then
                 echo "emit_point: check node spec '$check_node_spec': the schedule must end in :fixed or :learn, got '$schedule_learn_spec'." >&2
                 exit 1
             fi
@@ -626,6 +676,30 @@ emit_point() {   # <key> <seed> <use_cer> <check_node_spec> <optimizer_spec>
     # override either one per point.
     local loss_layer_selection_value="$LOSS_LAYER_SELECTION"
     local commit_layer_rule_value="$COMMIT_LAYER_RULE"
+    # k of the "ramp" weighting; read by the Julia side only under ramp. 3.0 is
+    # the Julia default (DEFAULT_LOSS_LAYER_RAMP_SHARPNESS); kept in step here so
+    # a base TOML without the key still emits the same number the code would use.
+    local loss_layer_ramp_sharpness_value="$(base_hyperparameter_value loss_layer_ramp_sharpness)"
+    if [ -z "$loss_layer_ramp_sharpness_value" ]; then
+        loss_layer_ramp_sharpness_value="3.0"
+    fi
+    # Which per-check residue. sin_residue is the Julia default (every earlier run);
+    # smooth_loss keeps a +-2 subgradient at a violated check where the sine's is 0.
+    local base_loss_value="$(base_hyperparameter_value base_loss)"
+    if [ -z "$base_loss_value" ]; then
+        base_loss_value="sin_residue"
+    fi
+    # Which samples of the training file to train on (src/sample_selection.jl):
+    # the set size (0 = the whole file) and the Poisson centre of its error-weight
+    # distribution (0 = the file's own). Both are the Julia defaults when absent.
+    local training_samples_value="$(base_hyperparameter_value training_samples)"
+    if [ -z "$training_samples_value" ]; then
+        training_samples_value="0"
+    fi
+    local failure_weight_boundary_value="$(base_hyperparameter_value failure_weight_boundary)"
+    if [ -z "$failure_weight_boundary_value" ]; then
+        failure_weight_boundary_value="0"
+    fi
     if [ -z "$optimizer_tag" ]; then
         echo "emit_point: optimizer spec '$optimizer_spec' has an empty tag; the tag enters every filename." >&2
         exit 1
@@ -657,49 +731,61 @@ emit_point() {   # <key> <seed> <use_cer> <check_node_spec> <optimizer_spec>
                 warmup_layers)            warmup_layers_value="$override_value" ;;
                 loss_layer_selection)     loss_layer_selection_value="$override_value" ;;
                 commit_layer_rule)        commit_layer_rule_value="$override_value" ;;
+                loss_layer_ramp_sharpness) loss_layer_ramp_sharpness_value="$override_value" ;;
+                base_loss)                base_loss_value="$override_value" ;;
+                training_samples)         training_samples_value="$override_value" ;;
+                failure_weight_boundary)  failure_weight_boundary_value="$override_value" ;;
                 *)
                     echo "emit_point: optimizer spec '$optimizer_spec': '$override_key' is not a sweepable key." >&2
                     echo "  Allowed: adam_eps, weight_decay, initial_conditions_scale," >&2
                     echo "           learning_rate, warmup_layers," >&2
-                    echo "           loss_layer_selection, commit_layer_rule." >&2
+                    echo "           loss_layer_selection, commit_layer_rule, loss_layer_ramp_sharpness," >&2
+                    echo "           base_loss, training_samples, failure_weight_boundary." >&2
                     exit 1
                     ;;
             esac
         done
     fi
-    # The suffix is dropped ONLY for a lone, literal `base` arm with no
-    # overrides — the configuration that means "this sweep does not use the
-    # axis", so its filenames stay what they always were. Any named setting is
-    # tagged even when it is the only one: a sweep NARROWED to one winning
-    # setting would otherwise write untagged names and silently overwrite an
-    # earlier un-axised sweep in the same codename. That happened on
-    # 2026-10-01 while verifying the cross-rate test list.
-    local optimizer_suffix="_opt${optimizer_tag}"
+    # The optimizer tag enters the run tag unless this is a lone, literal `base`
+    # arm with no overrides -- the configuration that means "this sweep does not
+    # use the axis". Any named setting is tagged even when it is the only one.
+    local tag_the_optimizer=1
     if [ "$N_OPTIMIZER_ARMS" -eq 1 ] && [ "$optimizer_spec" = "base" ]; then
-        optimizer_suffix=""
+        tag_the_optimizer=0
     fi
 
-    # The run tag is the arm plus the check node plus the schedule plus the
-    # optimizer setting. It is also the start of the generated TOML's name, so
-    # one file per point.
-    # The layer pair MUST reach the filename. Both keys change the weights and
-    # the score, and neither the weights nor the results name carried them
-    # before: on 2026-10-01 a design-A sweep ("last"/"last") reused the
-    # `_optscale0p3` names of a softmin run, so `retrain = false` on the staged
-    # copy loaded the SOFTMIN-trained weights and the results overwrote the
-    # earlier scoring. Both result sets then sat in one directory
-    # indistinguishable except by a column that one of them lacked.
-    #
-    # The historical pair stays untagged, so every filename written before these
-    # keys existed is still reproduced exactly.
     case "$loss_layer_selection_value" in
-        softmin|last|mean) ;;
-        *) echo "emit_point: loss_layer_selection '$loss_layer_selection_value' must be softmin, last or mean." >&2; exit 1 ;;
+        softmin|last|mean|ramp) ;;
+        *) echo "emit_point: loss_layer_selection '$loss_layer_selection_value' must be softmin, last, mean or ramp." >&2; exit 1 ;;
     esac
     case "$commit_layer_rule_value" in
         first|last) ;;
         *) echo "emit_point: commit_layer_rule '$commit_layer_rule_value' must be first or last." >&2; exit 1 ;;
     esac
+    case "$base_loss_value" in
+        sin_residue|smooth_loss) ;;
+        *) echo "emit_point: base_loss '$base_loss_value' must be sin_residue or smooth_loss." >&2; exit 1 ;;
+    esac
+    # The training-set keys: a non-negative integer and a non-negative number.
+    # A weighted draw has no natural size, so the boundary needs a set size; the
+    # Julia side refuses the same combination, but refuse here, before a queue wait.
+    if ! echo "$training_samples_value" | grep -qE '^[0-9]+$'; then
+        echo "emit_point: training_samples '$training_samples_value' must be a non-negative integer (0 = the whole file)." >&2
+        exit 1
+    fi
+    if ! echo "$failure_weight_boundary_value" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
+        echo "emit_point: failure_weight_boundary '$failure_weight_boundary_value' must be a non-negative number (0 = no weighting)." >&2
+        exit 1
+    fi
+    # Zero in any spelling (0, 0.0, 00) has no digit left once dots and zeros go.
+    local boundary_is_nonzero=0
+    if [ -n "$(echo "$failure_weight_boundary_value" | sed 's/[.0]//g')" ]; then
+        boundary_is_nonzero=1
+    fi
+    if [ "$boundary_is_nonzero" -eq 1 ] && [ "$training_samples_value" -eq 0 ]; then
+        echo "emit_point: failure_weight_boundary = $failure_weight_boundary_value needs training_samples > 0." >&2
+        exit 1
+    fi
     # A pairing that trains one layer and scores another is almost always a
     # mistake; warn rather than refuse, since someone may want it deliberately.
     if [ "$loss_layer_selection_value" = "last" ] && [ "$commit_layer_rule_value" = "first" ]; then
@@ -707,20 +793,40 @@ emit_point() {   # <key> <seed> <use_cer> <check_node_spec> <optimizer_spec>
         echo "           the final layer and commits to the first clearing one -- the mismatch" >&2
         echo "           these keys exist to remove." >&2
     fi
-
-    local layer_tag=""
-    if [ "$loss_layer_selection_value" != "softmin" ] || [ "$commit_layer_rule_value" != "first" ]; then
-        layer_tag="_lsl${loss_layer_selection_value}_clr${commit_layer_rule_value}"
+    # The ramp starts from zero at warmup_layers, so the warmup is part of the
+    # loss definition there. 0 lets the BP transient (layers 1-5: 35, 7.5, 1.1,
+    # 0.24, 0.12 on SOLVED batches) into the weighted mean, where it dominates
+    # everything else by orders of magnitude. Warn, since 5 was the measured knee.
+    if [ "$loss_layer_selection_value" = "ramp" ] && [ "${warmup_layers_value:-0}" -lt 3 ] && [ "$RAMP_WARMUP_WARNED" -eq 0 ]; then
+        echo "[hp_sweep] note: loss_layer_selection=ramp with warmup_layers=${warmup_layers_value:-0}:" >&2
+        echo "           the ramp weights the BP transient (layers 1-5) too. Measured knee is 5." >&2
+        RAMP_WARMUP_WARNED=1
     fi
 
-    local run_tag="_hp${arm}${check_node_tag}${schedule_tag}${optimizer_suffix}${layer_tag}"
-    local hp="hyperparams_hp_${arm}${check_node_tag}${schedule_tag}${optimizer_suffix}${layer_tag}_$(tag_of "$key")_seed${seed}.toml"
+    # The run tag: `_<arm>_<optimizer tag>`, e.g. _cer_init_0p1 -- or `_<arm>`
+    # alone for a lone, untagged `base` arm. Nothing else reaches the filename
+    # (2026-10-09): the settings a sweep holds fixed are in the TOML, not the
+    # name. Two points that would share a filename are refused, since no other
+    # part of the name could tell them apart.
+    local run_tag="_${arm}"
+    if [ "$tag_the_optimizer" -eq 1 ]; then
+        run_tag="_${arm}_${optimizer_tag}"
+    fi
+    # The TOML keeps the `hyperparams_hp_` prefix: cleanup.py and the local
+    # runner find sweep TOMLs by it.
+    local hp="hyperparams_hp${run_tag}_$(tag_of "$key")_seed${seed}.toml"
+    if grep -qxF "$hp" "$EMITTED_TOML_NAMES"; then
+        echo "emit_point: two points would share $hp -- only the arm and the optimizer tag" >&2
+        echo "  reach the filename, so every other axis must take one value across the sweep." >&2
+        exit 1
+    fi
+    echo "$hp" >> "$EMITTED_TOML_NAMES"
 
     # Start from the base TOML minus every key this generator sets itself, so a
     # stale value in the base can never override a swept one. The removed loss
     # terms' keys are stripped too: they are ignored by the code now, but a
     # generated file should not carry dead settings.
-    grep -vE '^[[:space:]]*(retrain|run_tag|use_CER|seed|single_qubit_rescale|require_correlations|check_node|coupling_scale_init|coupling_scale_learnable|coupling_schedule|coupling_schedule_layer_init|coupling_schedule_width_init|coupling_schedule_learnable|loss_layer_selection|commit_layer_rule|warmup_layers|adam_eps|weight_decay|initial_conditions_scale|learning_rate|sparsity_importance|syndrome_gate_threshold|correlation_certainty_threshold|correlation_weight|correlation_importance|certainty_penalty|certainty_hinge_width|certainty_syndrome_gate_threshold|syndrome_gate_mode|syndrome_gate_rate|correlation_form|correlation_agreement_floor|llr_certainty_importance)[[:space:]]*=' \
+    grep -vE '^[[:space:]]*(retrain|run_tag|use_CER|seed|single_qubit_rescale|require_correlations|check_node|coupling_scale_init|coupling_scale_learnable|coupling_schedule|coupling_schedule_layer_init|coupling_schedule_width_init|coupling_schedule_learnable|loss_layer_selection|commit_layer_rule|loss_layer_ramp_sharpness|base_loss|training_samples|failure_weight_boundary|warmup_layers|adam_eps|weight_decay|initial_conditions_scale|learning_rate|sparsity_importance|syndrome_gate_threshold|correlation_certainty_threshold|correlation_weight|correlation_importance|certainty_penalty|certainty_hinge_width|certainty_syndrome_gate_threshold|syndrome_gate_mode|syndrome_gate_rate|correlation_form|correlation_agreement_floor|llr_certainty_importance)[[:space:]]*=' \
         "$MODELS_DIR/$BASE_HP" > "$MODELS_DIR/$hp"
     {
         echo ""
@@ -740,6 +846,10 @@ emit_point() {   # <key> <seed> <use_cer> <check_node_spec> <optimizer_spec>
         echo "coupling_schedule_learnable = ${coupling_schedule_learnable}"
         echo "loss_layer_selection = \"${loss_layer_selection_value}\""
         echo "commit_layer_rule = \"${commit_layer_rule_value}\""
+        echo "loss_layer_ramp_sharpness = ${loss_layer_ramp_sharpness_value}"
+        echo "base_loss = \"${base_loss_value}\""
+        echo "training_samples = ${training_samples_value}"
+        echo "failure_weight_boundary = ${failure_weight_boundary_value}"
         echo ""
         echo "# optimizer arm \"${optimizer_tag}\": stated explicitly on every point,"
         echo "# overridden or not, so one filename never means two settings."
@@ -801,6 +911,7 @@ for key in $REF_DATASETS; do
     done
 done
 
+rm -f "$EMITTED_TOML_NAMES"
 N_RAW_POINTS=$(wc -l < "$TRAIN_CMDS")
 # The replication grid can restate main-grid cells (same dataset, seed, tau, L2
 # form and lambda). Two identical commands are not merely wasted cores: both
@@ -998,7 +1109,10 @@ on_walltime_signal() {
     fi
     echo "[train task \$TASK] staging out \$N_DONE completed point(s) of \$N_TASK" >&2
     stage_out
-    exit 0
+    # Exit 1, NOT 0. The completed points are already staged out above, so nothing
+    # is lost -- but a wall-killed task left a partial model set, and reporting
+    # success would let an afterok dependency start testing against it.
+    exit 1
 }
 trap on_walltime_signal TERM
 trap stage_out EXIT
@@ -1013,6 +1127,7 @@ parallel --jobs \$SLURM_CPUS_PER_TASK --joblog "\$JOBLOG" \\
     --results "\$RESULTS_ROOT" < "\$SLURM_TMPDIR/train.txt" &
 PARALLEL_PID=\$!
 wait "\$PARALLEL_PID"
+PARALLEL_STATUS=\$?
 if [ -f "\$JOBLOG" ]; then
     # Print the Command column in full. It contains spaces, so awk field nine on
     # its own yields only the first token -- which is how a whole failed sweep
@@ -1020,7 +1135,12 @@ if [ -f "\$JOBLOG" ]; then
     # No bare dollar-digit in this comment: see the self-check above.
     awk 'NR>1 && \$7 != 0 {print "  FAILED (exit " \$7 "): " substr(\$0, index(\$0, \$9))}' "\$JOBLOG"
 fi
-echo "[train task \$TASK] \$(awk 'NR>1 && \$7 == 0' "\$JOBLOG" | wc -l)/\$N_TASK point(s) exited 0"
+N_OK=0
+if [ -f "\$JOBLOG" ]; then
+    N_OK=\$(awk 'NR>1 && \$7 == 0' "\$JOBLOG" | wc -l)
+fi
+N_FAILED=\$(( N_TASK - N_OK ))
+echo "[train task \$TASK] \$N_OK/\$N_TASK point(s) exited 0"
 # When points fail, put a REAL error message in this file. The per-job stderr
 # lives under --results in directories named after the whole command (with / = "
 # escaped to +z +e +22), which cannot be read without quoting -- so print the
@@ -1032,6 +1152,26 @@ if [ -n "\$FIRST_STDERR" ]; then
     echo "[train task \$TASK] ---- end ----"
 fi
 echo "[train task \$TASK] done: \$(date)"
+
+# EXIT STATUS IS THE CONTRACT with \`sbatch --dependency=afterok\`. This used to end
+# on an echo, so a task reported SUCCESS even when every one of its points had
+# crashed -- and afterok on that is decorative. Fail loudly instead, and let the
+# dependency kill the test job.
+#
+# afterok on a job ARRAY is all-or-nothing: it is satisfied only when EVERY task
+# exits 0, so one bad point anywhere stops all 160 tests. That is the intent --
+# testing a partial model set produces results that silently describe the wrong
+# experiment. Note a NaN-ROLLED-BACK epoch is not a failure: the point still
+# exits 0 and still writes weights, so rollbacks do not block testing.
+if [ "\$N_FAILED" -gt 0 ]; then
+    echo "[train task \$TASK] \$N_FAILED of \$N_TASK point(s) FAILED; exiting 1 so afterok blocks testing" >&2
+    exit 1
+fi
+if [ "\$PARALLEL_STATUS" -ne 0 ]; then
+    echo "[train task \$TASK] parallel itself exited \$PARALLEL_STATUS; exiting 1" >&2
+    exit 1
+fi
+exit 0
 EOF
 chmod +x "$SLURM_TRAIN"
 
@@ -1177,7 +1317,7 @@ fi
 # node-local staged copy, and stage_out untars this task's files INTO the shared
 # directory without removing anything already there. So a sibling's results that
 # this task wipes locally still survive in $WORKDIR.
-rm -f "\$LOCAL"/results/simulation_results_*_hp*_seed_*.csv
+rm -f "\$LOCAL"/results/simulation_results_*_seed_*.csv
 
 # The generator wrote retrain = true; flip it so this job loads the trained
 # weights rather than retraining on a GPU it cannot use for AD.
@@ -1185,7 +1325,19 @@ for f in "\$LOCAL"/models/hyperparams_hp_*.toml; do
     sed -E 's|^([[:space:]]*retrain[[:space:]]*=[[:space:]]*)true|\1false|' "\$f" > "\$f.tmp"
     mv "\$f.tmp" "\$f"
 done
-echo "[test task \$TASK/$TEST_ARRAY] \$(ls "\$LOCAL"/models/*.json 2>/dev/null | wc -l) trained model(s) staged in; expecting $N_POINTS"
+N_MODELS=\$(ls "\$LOCAL"/models/*.json 2>/dev/null | wc -l)
+echo "[test task \$TASK/$TEST_ARRAY] \$N_MODELS trained model(s) staged in; expecting $N_POINTS"
+# Second line of defence behind \`--dependency=afterok --kill-on-invalid-dep=yes\`.
+# The dependency catches a training job that FAILED; this catches the cases it
+# cannot see -- training never submitted, a stage-out that did not land, someone
+# resubmitting the test job on its own, or a cleanup.py between the two. Without
+# it neural_bp_experiments.jl just skips the points whose weights are missing and
+# the sweep returns a quietly incomplete table.
+if [ "\$N_MODELS" -lt $N_POINTS ]; then
+    echo "ERROR: only \$N_MODELS of $N_POINTS trained model(s) present; refusing to test a partial set." >&2
+    echo "  Check that the training job finished and staged out, then resubmit." >&2
+    exit 1
+fi
 
 stage_out() {
     tar -cf - --exclude='hyperparams_hp_*.toml' -C "\$LOCAL" results logs cluster/logs \\
@@ -1272,8 +1424,12 @@ echo
 # submitted automatically.
 # Must match emit_point's tag exactly, or the check reads a path that was never
 # written and reports a missing file instead of a weights spread. This is the
-# CER tanh arm of the first dataset and seed.
-FIRST_MODEL="neuralbp_weights_nlayers_${NLAYERS}_epochs_$(grep -E '^[[:space:]]*n_epochs' "$MODELS_DIR/$BASE_HP" | head -1 | sed -E 's/[^0-9]*([0-9]+).*/\1/')_trained_using_train_$(echo $DATASETS | awk '{print $1}')_hpcer_seed_$(echo $SEEDS | awk '{print $1}').json"
+# CER arm of the first dataset, seed and optimizer tag.
+FIRST_OPTIMIZER_TAG=""
+if ! { [ "$N_OPTIMIZER_ARMS" -eq 1 ] && [ "$OPTIMIZER_ARMS" = "base" ]; }; then
+    FIRST_OPTIMIZER_TAG="_$(echo "$OPTIMIZER_ARMS" | awk '{print $1}' | sed 's/:.*//')"
+fi
+FIRST_MODEL="neuralbp_weights_nlayers_${NLAYERS}_epochs_$(grep -E '^[[:space:]]*n_epochs' "$MODELS_DIR/$BASE_HP" | head -1 | sed -E 's/[^0-9]*([0-9]+).*/\1/')_trained_using_train_$(echo $DATASETS | awk '{print $1}')_cer${FIRST_OPTIMIZER_TAG}_seed_$(echo $SEEDS | awk '{print $1}').json"
 echo "submit — TRAIN first (CPU, $ACCOUNT_CPU), then TEST (GPU, $ACCOUNT_GPU):"
 echo
 echo "  # 1. training"
@@ -1288,8 +1444,14 @@ echo "  # 3. testing"
 echo "  sbatch $SLURM_TEST"
 echo
 echo "  To chain them without the check instead:"
-echo "    TRAIN=\$(sbatch --parsable $SLURM_TRAIN)"
-echo "    sbatch --dependency=afterok:\$TRAIN $SLURM_TEST"
+echo "    TRAIN_ID=\$(sbatch --parsable $SLURM_TRAIN)"
+echo "    sbatch --dependency=afterok:\$TRAIN_ID --kill-on-invalid-dep=yes $SLURM_TEST"
+echo
+echo "  afterok on an array is ALL-OR-NOTHING: every one of the $TRAIN_ARRAY train tasks must"
+echo "  exit 0, so one failed point stops all $N_TEST_POINTS tests. --kill-on-invalid-dep=yes"
+echo "  then cancels the test job outright instead of parking it in the queue as"
+echo "  DependencyNeverSatisfied. A NaN-rolled-back epoch is NOT a failure (the"
+echo "  point still exits 0 and writes weights), so rollbacks do not block testing."
 
 if [ "$LOCAL" -eq 1 ]; then
     # A smoke test must not read the real datasets. They are 72 x 1e6, and

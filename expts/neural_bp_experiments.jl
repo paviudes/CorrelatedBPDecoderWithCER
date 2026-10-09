@@ -288,7 +288,20 @@ if abspath(PROGRAM_FILE) == @__FILE__
     # How training combined the layers, and which layer testing committed to.
     # Both belong in the results so a row is self-describing: the same weights
     # scored under two commit rules are two different numbers.
+    push!(extra_result_columns, "base_loss" => String(get(hyperparams, "base_loss", "sin_residue")))
     push!(extra_result_columns, "loss_layer_selection" => String(get(hyperparams, "loss_layer_selection", "softmin")))
+    # The ramp's sharpness and where it starts. Recorded for every mode (the
+    # column set must not depend on the mode, or the collector's concatenation
+    # breaks); they are only meaningful under "ramp".
+    push!(extra_result_columns, "loss_layer_ramp_sharpness" =>
+        Float32(get(hyperparams, "loss_layer_ramp_sharpness", DEFAULT_LOSS_LAYER_RAMP_SHARPNESS)))
+    push!(extra_result_columns, "warmup_layers" => Int(get(hyperparams, "warmup_layers", 0)))
+    # Which samples the model was trained on (src/sample_selection.jl): the size
+    # of the training set (0 = the whole file) and the Poisson centre of its
+    # error-weight distribution (0 = the file's own). Both change the weights.
+    push!(extra_result_columns, "training_samples" => Int(get(hyperparams, "training_samples", 0)))
+    push!(extra_result_columns, "failure_weight_boundary" =>
+        Float64(get(hyperparams, "failure_weight_boundary", 0.0)))
     push!(extra_result_columns, "commit_layer_rule" => commit_layer_rule_name(commit_layer_rule))
     push!(extra_result_columns, "check_node" => check_node)
     push!(extra_result_columns, "coupling_scale" => effective_coupling_scale(bpnn))

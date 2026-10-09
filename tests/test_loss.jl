@@ -132,6 +132,9 @@ end
         Enzyme.Duplicated(bpnn.coupling_schedule, grad_schedule),
         Enzyme.Const(temperature),   # loss_layer_temperature
         Enzyme.Const(0),             # warmup_loss_layers
+        Enzyme.Const(LOSS_LAYERS_SOFTMIN),              # loss_layer_selection
+        Enzyme.Const(DEFAULT_LOSS_LAYER_RAMP_SHARPNESS), # loss_layer_ramp_sharpness (ignored here)
+        Enzyme.Const(BASE_LOSS_SIN_RESIDUE),            # base_loss_selection
         Enzyme.Const(base),
         Enzyme.Const(llrs_batch),
         Enzyme.Const(syndromes),
@@ -237,7 +240,7 @@ end
     syndromes::BitMatrix = BitMatrix(mod.(parity_check_matrix * Matrix{Int}(expected), 2) .== 1)
     llrs_batch::Matrix{Float32} = repeat(base.initial_llrs, 1, 2)
 
-    for mode in (LOSS_LAYERS_SOFTMIN, LOSS_LAYERS_LAST, LOSS_LAYERS_MEAN)
+    for mode in (LOSS_LAYERS_SOFTMIN, LOSS_LAYERS_LAST, LOSS_LAYERS_MEAN, LOSS_LAYERS_RAMP)
         grad_w_c2v_v2c::Vector{Float32} = zeros(Float32, length(bpnn.weights_c2v_v2c))
         grad_w_llrs::Vector{Float32} = zeros(Float32, length(bpnn.weights_llrs))
         grad_w_readout::Vector{Float32} = zeros(Float32, length(bpnn.weights_c2v_readout))
@@ -254,6 +257,8 @@ end
             Enzyme.Const(1.0f0),         # loss_layer_temperature
             Enzyme.Const(0),             # warmup_loss_layers
             Enzyme.Const(mode),          # loss_layer_selection
+            Enzyme.Const(3.0f0),         # loss_layer_ramp_sharpness
+            Enzyme.Const(BASE_LOSS_SIN_RESIDUE),            # base_loss_selection
             Enzyme.Const(base),
             Enzyme.Const(llrs_batch),
             Enzyme.Const(syndromes),
@@ -266,10 +271,248 @@ end
         # Untrainable-by-accident is the failure this guards against.
         @test any(!iszero, grad_w_c2v_v2c)
         @test any(!iszero, grad_w_llrs)
-        # `last` and `mean` are non-negative; only softmin can sit below zero
-        # (it lies T*log(n) under min(L)).
+        # `last`, `mean` and `ramp` are non-negative; only softmin can sit below
+        # zero (it lies T*log(n) under min(L)).
         if mode != LOSS_LAYERS_SOFTMIN
             @test loss_value >= 0.0f0
         end
+    end
+end
+
+@testset "loss_layer_selection: ramp" begin
+    # ---- the weights themselves --------------------------------------------
+    # Exactly 1 at the last scored layer, strictly increasing, and -> 0 at the
+    # start -- for every sharpness.
+    for sharpness in (0.1f0, 1.0f0, 3.0f0, 10.0f0)
+        for n_scored in (1, 2, 7, 85)
+            weights::Vector{Float32} = [ramp_layer_weight(i, n_scored, sharpness) for i in 1:n_scored]
+            @test weights[end] == 1.0f0
+            @test all(weights .> 0.0f0)
+            @test issorted(weights)
+            if n_scored > 1
+                @test weights[1] < weights[end]
+            end
+        end
+    end
+    @test ramp_layer_weight(1, 1, 3.0f0) == 1.0f0
+    @test_throws ArgumentError ramp_layer_weight(1, 0, 3.0f0)
+    @test_throws ArgumentError ramp_layer_weight(1, 5, 0.0f0)
+    @test_throws ArgumentError ramp_layer_weight(1, 5, -1.0f0)
+
+    # The two limits. Small k: tanh(k u)/tanh(k) -> u, a linear ramp. Large k:
+    # tanh saturates, so every layer past the first few weighs ~1 -- a step to
+    # uniform-after-warmup.
+    n_scored::Int = 85
+    linear_like::Vector{Float32} = [ramp_layer_weight(i, n_scored, 0.01f0) for i in 1:n_scored]
+    for i in (1, 20, 42, 85)
+        @test isapprox(linear_like[i], Float32(i) / Float32(n_scored); atol = 1e-3)
+    end
+    step_like::Vector{Float32} = [ramp_layer_weight(i, n_scored, 50.0f0) for i in 1:n_scored]
+    @test step_like[10] > 0.99f0
+    @test step_like[1] < 0.6f0
+    # The default at the production geometry: 90 layers, warmup 5 -> 85 scored.
+    # w crosses 0.5 at scored index 16 (layer 21) and 0.9 at scored index 42
+    # (layer 47); w[41] = 0.8996 sits just under 0.9, which is the sharp edge
+    # this pins down.
+    production::Vector{Float32} = [ramp_layer_weight(i, 85, DEFAULT_LOSS_LAYER_RAMP_SHARPNESS) for i in 1:85]
+    @test production[16] >= 0.5f0 && production[15] < 0.5f0
+    @test production[42] >= 0.9f0 && production[41] < 0.9f0
+
+    # ---- the reduction -----------------------------------------------------
+    # Hand-computed on three layers: weights for k = 3 over n = 3 are
+    # tanh(1)/tanh(3), tanh(2)/tanh(3), 1.
+    per_layer::Vector{Float32} = Float32[2.0, 1.0, 0.5]
+    w1::Float32 = Float32(tanh(1.0) / tanh(3.0))
+    w2::Float32 = Float32(tanh(2.0) / tanh(3.0))
+    by_hand::Float32 = (w1 * 2.0f0 + w2 * 1.0f0 + 1.0f0 * 0.5f0) / (w1 + w2 + 1.0f0)
+    @test isapprox(ramp_loss(per_layer, 3.0f0), by_hand; atol = 1e-6)
+    @test isapprox(combine_layer_losses(per_layer, 1.0f0, LOSS_LAYERS_RAMP, 3.0f0), by_hand; atol = 1e-6)
+    # It is a weighted MEAN, so it sits between min and max and is on the scale of
+    # one layer's loss -- unlike a weighted SUM, which would grow with n_layers.
+    @test minimum(per_layer) <= ramp_loss(per_layer, 3.0f0) <= maximum(per_layer)
+    # Temperature is ignored by `ramp`.
+    @test combine_layer_losses(per_layer, 0.01f0, LOSS_LAYERS_RAMP, 3.0f0) ==
+          combine_layer_losses(per_layer, 100.0f0, LOSS_LAYERS_RAMP, 3.0f0)
+    # One scored layer: ramp coincides with the others.
+    @test combine_layer_losses(Float32[0.37], 0.5f0, LOSS_LAYERS_RAMP, 3.0f0) == 0.37f0
+    # Names round-trip.
+    @test loss_layer_selection_code("ramp") == LOSS_LAYERS_RAMP
+    @test loss_layer_selection_code(" RAMP ") == LOSS_LAYERS_RAMP
+    @test loss_layer_selection_name(LOSS_LAYERS_RAMP) == "ramp"
+
+    # ---- what the ramp is FOR ------------------------------------------------
+    # A profile shaped like the measured ones: a huge transient, a plateau at a
+    # floor, then a rise at the end (the drift that costs cleared decodes).
+    # `last` sees only the rise; `mean` is swamped by the transient; `ramp`
+    # with the transient excluded by warmup sees the plateau AND the rise, and
+    # weights the rise most.
+    profile::Vector{Float32} = vcat(Float32[35.0, 7.5, 1.1, 0.24, 0.12],       # transient, layers 1-5
+                                    fill(1.0f-5, 40),                           # plateau, layers 6-45
+                                    Float32[0.05, 0.10, 0.20, 0.30, 0.40])      # the rise, layers 46-50
+    scored::Vector{Float32} = profile[6:end]                                    # warmup 5
+    ramp_value::Float32 = combine_layer_losses(scored, 1.0f0, LOSS_LAYERS_RAMP, 3.0f0)
+    flat_value::Float32 = combine_layer_losses(profile, 1.0f0, LOSS_LAYERS_MEAN)
+    last_value::Float32 = combine_layer_losses(profile, 1.0f0, LOSS_LAYERS_LAST)
+    # The ramp's number is dominated by the rise, not the plateau...
+    @test ramp_value > 1.0f-3
+    # ...but is a mean, so it is well below the last layer alone...
+    @test ramp_value < last_value
+    # ...and nowhere near the transient-dominated flat mean.
+    @test flat_value > 0.8f0
+    @test ramp_value < 0.1f0 * flat_value
+    # Remove the rise and the ramp drops to the floor: it is the rise it scores.
+    no_rise::Vector{Float32} = vcat(fill(1.0f-5, 45))
+    @test combine_layer_losses(no_rise, 1.0f0, LOSS_LAYERS_RAMP, 3.0f0) < 2.0f-5
+    # And through compute_loss with warmup = 2 on the three-layer posteriors from
+    # the earlier testset, `ramp` of a single scored layer is that layer.
+    dual::BitMatrix = two_check_dual()
+    expected::BitMatrix = BitMatrix([1 0; 0 0; 0 0; 0 0])
+    posteriors::Array{Float32, 3} = zeros(Float32, 4, 2, 3)
+    posteriors[:, :, 1] .= Float32[30 30; 30 30; 30 30; 30 30]
+    posteriors[:, :, 2] .= 0.0f0
+    posteriors[:, :, 3] .= Float32[-30 30; 30 30; 30 30; 30 30]
+    @test compute_loss(posteriors, expected, dual, 1.0f0, 2, LOSS_LAYERS_RAMP, 3.0f0) ==
+          compute_loss(posteriors, expected, dual, 1.0f0, 2, LOSS_LAYERS_LAST)
+    # With all three scored the wrong first layer is still felt (unlike `last`)
+    # but far less than under `mean`.
+    ramp_all::Float32 = compute_loss(posteriors, expected, dual, 1.0f0, 0, LOSS_LAYERS_RAMP, 3.0f0)
+    mean_all::Float32 = compute_loss(posteriors, expected, dual, 1.0f0, 0, LOSS_LAYERS_MEAN)
+    last_all::Float32 = compute_loss(posteriors, expected, dual, 1.0f0, 0, LOSS_LAYERS_LAST)
+    @test last_all < ramp_all < mean_all
+end
+
+@testset "base_loss: sin_residue vs smooth_loss" begin
+    # ---- names and values --------------------------------------------------
+    @test base_loss_code("sin_residue") == BASE_LOSS_SIN_RESIDUE
+    @test base_loss_code(" Smooth_Loss ") == BASE_LOSS_SMOOTH
+    @test base_loss_name(BASE_LOSS_SIN_RESIDUE) == "sin_residue"
+    @test base_loss_name(BASE_LOSS_SMOOTH) == "smooth_loss"
+    @test_throws ArgumentError base_loss_code("sine")
+    @test_throws ArgumentError base_loss_name(7)
+    # Both residues are zero at even integers and one at odd integers; they
+    # differ in between, and that is where the gradient at the peak comes from.
+    for even_value in (0.0f0, 2.0f0, 4.0f0)
+        @test smooth_loss(even_value) == 0.0f0
+        @test sine_residue_loss(even_value) < 1.0f-6
+    end
+    for odd_value in (1.0f0, 3.0f0)
+        @test smooth_loss(odd_value) == 1.0f0
+        @test isapprox(sine_residue_loss(odd_value), 1.0f0; atol = 1e-6)
+    end
+    @test smooth_loss(0.5f0) == 0.25f0
+    @test smooth_loss(1.5f0) == 0.25f0
+    @test isapprox(sine_residue_loss(0.5f0), Float32(sqrt(0.5)); atol = 1e-6)
+
+    # ---- the batch loss under each, on the standard three-layer posteriors ----
+    dual::BitMatrix = two_check_dual()
+    expected::BitMatrix = BitMatrix([1 0; 0 0; 0 0; 0 0])
+    posteriors::Array{Float32, 3} = zeros(Float32, 4, 2, 3)
+    posteriors[:, :, 1] .= Float32[30 30; 30 30; 30 30; 30 30]     # confidently wrong
+    posteriors[:, :, 2] .= 0.0f0                                    # undecided
+    posteriors[:, :, 3] .= Float32[-30 30; 30 30; 30 30; 30 30]     # correct
+    # The default is the sine, so every earlier call is reproduced exactly.
+    @test compute_smooth_loss_from_llrs(posteriors[:, :, 1], expected, dual) ==
+          compute_smooth_loss_from_llrs(posteriors[:, :, 1], expected, dual, BASE_LOSS_SIN_RESIDUE)
+    @test base_loss_per_layer(posteriors, expected, dual, 0) ==
+          base_loss_per_layer(posteriors, expected, dual, 0, BASE_LOSS_SIN_RESIDUE)
+    @test compute_loss(posteriors, expected, dual, 1.0f0, 0) ==
+          compute_loss(posteriors, expected, dual, 1.0f0, 0, LOSS_LAYERS_SOFTMIN,
+                       DEFAULT_LOSS_LAYER_RAMP_SHARPNESS, BASE_LOSS_SIN_RESIDUE)
+    @test_throws ArgumentError compute_smooth_loss_from_llrs(posteriors[:, :, 1], expected, dual, 7)
+    for residue in (BASE_LOSS_SIN_RESIDUE, BASE_LOSS_SMOOTH)
+        per_layer::Vector{Float32} = base_loss_per_layer(posteriors, expected, dual, 0, residue)
+        @test per_layer[3] < 1.0f-6          # the correct layer clears both residues
+        @test per_layer[1] > 0.9f0           # the wrong one is near its peak under both
+        @test per_layer[2] > per_layer[3]
+    end
+    # At saturation (|mu| = 30) the two agree exactly: every x is an integer.
+    @test isapprox(base_loss_per_layer(posteriors, expected, dual, 0, BASE_LOSS_SIN_RESIDUE)[1],
+                   base_loss_per_layer(posteriors, expected, dual, 0, BASE_LOSS_SMOOTH)[1]; atol = 1e-5)
+
+    # ---- the gradient at a stuck check: the reason smooth_loss exists ----------
+    # One sample, bit 1 in error, every LLR at +8 ("no error", moderately
+    # confident; this codebase's sigmoid is 1/(1+exp(x)), so +8 -> sigma = 3.4e-4).
+    # Rows 1 and 3 of [H; L] are then VIOLATED at x = 1 + 2*sigma(8), row 2 is
+    # SATISFIED at x = 2*sigma(8). Bit 1 sits only in the violated rows; bit 4
+    # only in the satisfied one. Measured on the real runs: informative batches
+    # plateau at exactly this configuration (x within 1e-3 of 1) from layer ~40.
+    stuck_llrs::Matrix{Float32} = fill(8.0f0, 4, 1)
+    stuck_expected::BitMatrix = BitMatrix([1; 0; 0; 0;;])
+    gradients::Dict{Int, Vector{Float32}} = Dict{Int, Vector{Float32}}()
+    for residue in (BASE_LOSS_SIN_RESIDUE, BASE_LOSS_SMOOTH)
+        grad_llrs::Matrix{Float32} = zeros(Float32, 4, 1)
+        (_, residue_value) = Enzyme.autodiff(
+            Enzyme.ReverseWithPrimal,
+            compute_smooth_loss_from_llrs,
+            Enzyme.Duplicated(stuck_llrs, grad_llrs),
+            Enzyme.Const(stuck_expected),
+            Enzyme.Const(dual),
+            Enzyme.Const(residue)
+        )
+        @test isfinite(residue_value)
+        @test isapprox(residue_value, 2.0f0; atol = 1e-2)     # two violated rows
+        @test all(isfinite, grad_llrs)
+        gradients[residue] = vec(grad_llrs)
+    end
+    sin_gradient::Vector{Float32} = gradients[BASE_LOSS_SIN_RESIDUE]
+    smooth_gradient::Vector{Float32} = gradients[BASE_LOSS_SMOOTH]
+    # Bit 1, only in VIOLATED checks: the sine's (pi/2)cos(pi x/2) vanishes at
+    # x = 1, the quadratic's subgradient is 2. Ratio ~1200 analytically.
+    @test abs(smooth_gradient[1]) > 100.0f0 * abs(sin_gradient[1])
+    @test abs(smooth_gradient[1]) > 1.0f-4
+    # Bit 4, only in the SATISFIED check: the sine has a cusp of slope pi/2 at
+    # x = 0 and the quadratic is flat there. The sine spends its gradient driving
+    # an already-correct bit to saturate harder. Ratio ~1200 the other way.
+    @test abs(sin_gradient[4]) > 100.0f0 * abs(smooth_gradient[4])
+    @test abs(sin_gradient[4]) > 1.0f-4
+    # Both push a violated check away from x = 1 in the same direction: toward
+    # flipping bit 1 (lower its LLR so sigma rises and x climbs to 2).
+    @test sign(smooth_gradient[1]) == sign(sin_gradient[1]) || sin_gradient[1] == 0.0f0
+end
+
+@testset "Enzyme differentiates the full training loss under smooth_loss" begin
+    parity_check_matrix::Matrix{Int} = [1 1 1 0; 0 0 1 1]
+    parity_check_matrix_dual::Matrix{Int} = [1 1 1 0; 0 0 1 1; 1 0 0 1]
+    initial_llrs::Vector{Float32} = fill(Float32(log(9)), 4)
+    base::NeuralBPBase = NeuralBPBase(parity_check_matrix, parity_check_matrix_dual, initial_llrs, 3)
+    bpnn::NachmaniNeuralBP = NachmaniNeuralBP(
+        base;
+        weights_c2v_v2c = random_values_around_one([base.nb_weights_c2v_v2c * base.n_layers]; scale = 0.1f0),
+        weights_llrs = random_values_around_one([base.code_n_bits * base.n_layers]; scale = 0.1f0),
+        weights_c2v_readout = random_values_around_one([base.nb_weights_c2v_readout]; scale = 0.1f0),
+    )
+    expected::BitMatrix = BitMatrix([1 0; 0 0; 0 1; 0 0])
+    syndromes::BitMatrix = BitMatrix(mod.(parity_check_matrix * Matrix{Int}(expected), 2) .== 1)
+    llrs_batch::Matrix{Float32} = repeat(base.initial_llrs, 1, 2)
+    for mode in (LOSS_LAYERS_SOFTMIN, LOSS_LAYERS_LAST, LOSS_LAYERS_RAMP)
+        grad_w_c2v_v2c::Vector{Float32} = zeros(Float32, length(bpnn.weights_c2v_v2c))
+        grad_w_llrs::Vector{Float32} = zeros(Float32, length(bpnn.weights_llrs))
+        grad_w_readout::Vector{Float32} = zeros(Float32, length(bpnn.weights_c2v_readout))
+        grad_alpha::Vector{Float32} = zeros(Float32, 1)
+        grad_schedule::Vector{Float32} = zeros(Float32, 2)
+        (_, loss_value) = Enzyme.autodiff(
+            Enzyme.ReverseWithPrimal,
+            CorrelatedBPDecoderWithCER.get_loss_value,
+            Enzyme.Duplicated(bpnn.weights_c2v_v2c, grad_w_c2v_v2c),
+            Enzyme.Duplicated(bpnn.weights_llrs, grad_w_llrs),
+            Enzyme.Duplicated(bpnn.weights_c2v_readout, grad_w_readout),
+            Enzyme.Duplicated(bpnn.coupling_logit, grad_alpha),
+            Enzyme.Duplicated(bpnn.coupling_schedule, grad_schedule),
+            Enzyme.Const(1.0f0),                # loss_layer_temperature
+            Enzyme.Const(0),                    # warmup_loss_layers
+            Enzyme.Const(mode),                 # loss_layer_selection
+            Enzyme.Const(3.0f0),                # loss_layer_ramp_sharpness
+            Enzyme.Const(BASE_LOSS_SMOOTH),     # base_loss_selection
+            Enzyme.Const(base),
+            Enzyme.Const(llrs_batch),
+            Enzyme.Const(syndromes),
+            Enzyme.Const(expected)
+        )
+        @test isfinite(loss_value)
+        @test all(isfinite, grad_w_c2v_v2c)
+        @test all(isfinite, grad_w_llrs)
+        @test all(isfinite, grad_w_readout)
+        @test any(!iszero, grad_w_c2v_v2c)
+        @test any(!iszero, grad_w_llrs)
     end
 end

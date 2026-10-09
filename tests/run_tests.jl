@@ -6,6 +6,9 @@ include("test_classical_bp.jl")
 # Enriched (correlation-adapted) check node. Like test_loss.jl, its @testsets
 # run at include time.
 include("test_soft_constraints.jl")
+# Which samples of the training pool the batches are drawn from. @testsets at
+# include time.
+include("test_sample_selection.jl")
 
 """
 Main test runner for all Neural BP tests.
