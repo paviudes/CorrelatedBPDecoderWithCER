@@ -120,7 +120,6 @@ end
     grad_w_llrs::Vector{Float32} = zeros(Float32, length(bpnn.weights_llrs))
     grad_w_readout::Vector{Float32} = zeros(Float32, length(bpnn.weights_c2v_readout))
     grad_alpha::Vector{Float32} = zeros(Float32, 1)
-    grad_schedule::Vector{Float32} = zeros(Float32, 2)
     temperature::Float32 = 1.0f0
     (_, loss_value) = Enzyme.autodiff(
         Enzyme.ReverseWithPrimal,
@@ -129,7 +128,6 @@ end
         Enzyme.Duplicated(bpnn.weights_llrs, grad_w_llrs),
         Enzyme.Duplicated(bpnn.weights_c2v_readout, grad_w_readout),
         Enzyme.Duplicated(bpnn.coupling_logit, grad_alpha),
-        Enzyme.Duplicated(bpnn.coupling_schedule, grad_schedule),
         Enzyme.Const(temperature),   # loss_layer_temperature
         Enzyme.Const(0),             # warmup_loss_layers
         Enzyme.Const(LOSS_LAYERS_SOFTMIN),              # loss_layer_selection
@@ -153,10 +151,8 @@ end
     # from the weights entirely -- silently untrainable.
     @test any(!iszero, grad_w_c2v_v2c)
     @test any(!iszero, grad_w_llrs)
-    # The standard check node never reads alpha, so its gradient is exactly 0;
-    # nor the layer schedule, which only scales alpha.
+    # The standard check node never reads alpha, so its gradient is exactly 0.
     @test grad_alpha[1] == 0.0f0
-    @test grad_schedule == zeros(Float32, 2)
 end
 
 @testset "loss_layer_selection: softmin vs last vs mean" begin
@@ -245,7 +241,6 @@ end
         grad_w_llrs::Vector{Float32} = zeros(Float32, length(bpnn.weights_llrs))
         grad_w_readout::Vector{Float32} = zeros(Float32, length(bpnn.weights_c2v_readout))
         grad_alpha::Vector{Float32} = zeros(Float32, 1)
-        grad_schedule::Vector{Float32} = zeros(Float32, 2)
         (_, loss_value) = Enzyme.autodiff(
             Enzyme.ReverseWithPrimal,
             CorrelatedBPDecoderWithCER.get_loss_value,
@@ -253,7 +248,6 @@ end
             Enzyme.Duplicated(bpnn.weights_llrs, grad_w_llrs),
             Enzyme.Duplicated(bpnn.weights_c2v_readout, grad_w_readout),
             Enzyme.Duplicated(bpnn.coupling_logit, grad_alpha),
-            Enzyme.Duplicated(bpnn.coupling_schedule, grad_schedule),
             Enzyme.Const(1.0f0),         # loss_layer_temperature
             Enzyme.Const(0),             # warmup_loss_layers
             Enzyme.Const(mode),          # loss_layer_selection
@@ -489,7 +483,6 @@ end
         grad_w_llrs::Vector{Float32} = zeros(Float32, length(bpnn.weights_llrs))
         grad_w_readout::Vector{Float32} = zeros(Float32, length(bpnn.weights_c2v_readout))
         grad_alpha::Vector{Float32} = zeros(Float32, 1)
-        grad_schedule::Vector{Float32} = zeros(Float32, 2)
         (_, loss_value) = Enzyme.autodiff(
             Enzyme.ReverseWithPrimal,
             CorrelatedBPDecoderWithCER.get_loss_value,
@@ -497,7 +490,6 @@ end
             Enzyme.Duplicated(bpnn.weights_llrs, grad_w_llrs),
             Enzyme.Duplicated(bpnn.weights_c2v_readout, grad_w_readout),
             Enzyme.Duplicated(bpnn.coupling_logit, grad_alpha),
-            Enzyme.Duplicated(bpnn.coupling_schedule, grad_schedule),
             Enzyme.Const(1.0f0),                # loss_layer_temperature
             Enzyme.Const(0),                    # warmup_loss_layers
             Enzyme.Const(mode),                 # loss_layer_selection

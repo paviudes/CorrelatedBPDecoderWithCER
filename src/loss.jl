@@ -19,103 +19,9 @@
 # belong in inference; the loss only needs to say what a correct decode is.
 # =============================================================================
 
-# =============================================================================
-#   The per-check residue: which function of the real-valued syndrome bit
-# =============================================================================
-# Both residues are zero iff x = s(μ) mod 2 is an even integer, i.e. iff the
-# soft decision commutes with that generator, and both peak at the odd integers.
-# They differ in the GRADIENT at the peak, and that difference is the whole
-# reason the second one exists.
-#
-#   sin_residue   |sin(πx/2)|.  d/dx = (π/2)cos(πx/2) = 0 EXACTLY at x = 1, the
-#                 confidently-violated check. Measured 2026-10-08: on every
-#                 informative training batch the per-layer loss plateaus at an
-#                 exact multiple of 1/20 (0.30 = six violated checks per batch of
-#                 20) from layer ~40 onward — BP at a stable fixed point with the
-#                 bits saturated, x within 1e-3 of 1. There dL/dμ =
-#                 residue'(x)·σ'(μ) is (π/2)cos(πx/2)·σ'(μ) ≈ 1e-6 at |μ| = 8 and
-#                 3e-8 at |μ| = 10 — at or below Float32 noise on a 0.3 loss. The
-#                 stuck checks sit at a critical point of the loss, and no layer
-#                 weighting changes that.
-#   smooth_loss   piecewise quadratic, x² for x ≤ 1 and (2−x)² above, with
-#                 SUBGRADIENT ±2 at x = 1 toward the nearest even integer. At the
-#                 same stuck check dL/dμ ≈ 2·σ'(μ): 7e-4 at |μ| = 8, 9e-5 at
-#                 |μ| = 10 — 400 to 3000× the sine's, and above noise until
-#                 |μ| ≈ 12. Adam normalises magnitude, so a consistent sign above
-#                 noise is exactly what the sine was failing to provide.
-#
-# `sin_residue` stays the default so every earlier run reproduces exactly.
-
-const BASE_LOSS_SIN_RESIDUE::Int = 0
-const BASE_LOSS_SMOOTH::Int = 1
-
-function base_loss_code(base_loss_name::AbstractString)::Int
-    """
-    Resolve the `base_loss` hyperparameter to its integer code, so a typo fails
-    at configuration time rather than inside a training loop.
-    """
-    normalised_name::String = lowercase(strip(String(base_loss_name)))
-    base_loss_selection::Int = BASE_LOSS_SIN_RESIDUE
-    if normalised_name == "sin_residue"
-        base_loss_selection = BASE_LOSS_SIN_RESIDUE
-    elseif normalised_name == "smooth_loss"
-        base_loss_selection = BASE_LOSS_SMOOTH
-    else
-        throw(ArgumentError(
-            "Unknown base_loss \"$(base_loss_name)\". Supported: \"sin_residue\" (the " *
-            "historical default, |sin(πx/2)| with zero gradient at a violated check) and " *
-            "\"smooth_loss\" (piecewise quadratic with subgradient ±2 there)."))
-    end
-    return base_loss_selection
-end
-
-function base_loss_name(base_loss_selection::Int)::String
-    """
-    Inverse of `base_loss_code`, for recording the residue a run used.
-    """
-    base_loss_label::String = "sin_residue"
-    if base_loss_selection == BASE_LOSS_SMOOTH
-        base_loss_label = "smooth_loss"
-    elseif base_loss_selection != BASE_LOSS_SIN_RESIDUE
-        throw(ArgumentError("Unknown base loss code $(base_loss_selection)."))
-    end
-    return base_loss_label
-end
-
-# Per-check penalty. g(x) = 0 iff x is an even integer, i.e. iff the residual
-# error commutes with that generator. Piecewise quadratic with subgradient ±2 at
-# the odd integers, so descent is defined everywhere including at the maxima.
-@inline floating_modulus(x) = (x - 2 * floor(x / 2))
-
-function smooth_loss(real_syndrome_bit::Float32)::Float32
-    """
-    g(x) = x²        for 0 ≤ x ≤ 1
-         = (2 - x)²  for 1 < x ≤ 2
-
-    on x = s(μ) mod 2. d/dx = 2x and -2(2-x) respectively, so the gradient does
-    not vanish at x = 1 and the optimizer is always pushed toward the nearest
-    even integer.
-    """
-    x = floating_modulus(real_syndrome_bit)
-    if 0 <= x <= 1
-        return x^2
-    elseif 1 < x <= 2
-        return (2 - x)^2
-    else
-        error("smooth_loss is only defined for 0 ≤ x ≤ 2")
-    end
-end
-
-function sine_residue_loss(real_syndrome_bit::Float32)::Float32
-    """
-    Compute h(x) = |sin (π x / 2)|.
-
-    We will call this on each syndrome bit. We want to regard even syndrome bits as correct, so the loss is zero when x is an even integer.
-    """
-    residue = abs(sin(pi * real_syndrome_bit / 2))
-    return residue
-end
-
+# The per-check residue options, their derivatives, `compute_base_loss` and its
+# gradient live in src/base_loss.jl (moved 2026-10-09). This name is kept for the
+# callers below and in the tests; it is the same computation.
 function compute_smooth_loss_from_llrs(
     posterior_llrs::Matrix{Float32},
     expected_recoveries::BitMatrix,
@@ -123,27 +29,11 @@ function compute_smooth_loss_from_llrs(
     base_loss_selection::Int = BASE_LOSS_SIN_RESIDUE
 )::Float32
     """
-    Batch-mean residue of the total error against the dual check matrix:
-
-        L(μ, e) = (1/N) ∑_j ∑_i g( ∑_k H^⟂_ik [ e_kj + σ(μ_kj) ] )
-
-    where H^⟂ carries the stabilizer generators and the logical operators, so a
-    zero requires both a cleared syndrome and the correct coset. `g` is the
-    residue `base_loss_selection` names: `sine_residue_loss` (default) or
-    `smooth_loss`; see the block above for why the choice matters.
+    Alias of `compute_base_loss` (src/base_loss.jl): the batch-mean residue of the
+    total error against [H; L] under the residue `base_loss_selection` names.
     """
-    n_samples::Int = size(expected_recoveries, 2)
-    e_total_matrix = @. sigmoid(posterior_llrs) + expected_recoveries
-    commutation_relations_matrix = parity_check_matrix_dual * e_total_matrix
-    summed_residue::Float32 = 0.0f0
-    if base_loss_selection == BASE_LOSS_SIN_RESIDUE
-        summed_residue = sum(@. sine_residue_loss(commutation_relations_matrix))
-    elseif base_loss_selection == BASE_LOSS_SMOOTH
-        summed_residue = sum(@. smooth_loss(commutation_relations_matrix))
-    else
-        throw(ArgumentError("Unknown base loss code $(base_loss_selection)."))
-    end
-    average_loss::Float32 = summed_residue / Float32(n_samples)
+    average_loss::Float32 = compute_base_loss(
+        posterior_llrs, expected_recoveries, parity_check_matrix_dual, base_loss_selection)
     return average_loss
 end
 
@@ -386,6 +276,49 @@ function combine_layer_losses(
         throw(ArgumentError("Unknown loss layer selection code $(loss_layer_selection)."))
     end
     return combined
+end
+
+function combine_layer_losses_gradient(
+    losses_per_layer::AbstractVector{Float32},
+    loss_layer_temperature::Float32,
+    loss_layer_selection::Int,
+    loss_layer_ramp_sharpness::Float32 = DEFAULT_LOSS_LAYER_RAMP_SHARPNESS
+)::Vector{Float32}
+    """
+    ∂(combine_layer_losses)/∂L_t for every scored layer t — how much each layer's
+    base loss counts in the total. The hand-written gradient multiplies layer t's
+    base-loss gradient by this weight (src/gradient.jl).
+
+        softmin:  the softmax weights exp(-(L_t - min L)/T) / ∑_s exp(-(L_s - min L)/T)
+                  (the min(L) term's derivative cancels exactly); 1 for a single layer
+        last:     1 at the last scored layer, 0 elsewhere
+        mean:     1/n for every scored layer
+        ramp:     w_t / ∑_s w_s, the ramp weights normalised as in `ramp_loss`
+    """
+    n_scored_layers::Int = length(losses_per_layer)
+    layer_weights::Vector{Float32} = zeros(Float32, n_scored_layers)
+    if loss_layer_selection == LOSS_LAYERS_SOFTMIN
+        if n_scored_layers == 1
+            layer_weights[1] = 1.0f0
+        else
+            min_loss::Float32 = minimum(losses_per_layer)
+            exponentials::Vector{Float32} = exp.(-(losses_per_layer .- min_loss) ./ loss_layer_temperature)
+            layer_weights .= exponentials ./ sum(exponentials)
+        end
+    elseif loss_layer_selection == LOSS_LAYERS_LAST
+        layer_weights[end] = 1.0f0
+    elseif loss_layer_selection == LOSS_LAYERS_MEAN
+        fill!(layer_weights, 1.0f0 / Float32(n_scored_layers))
+    elseif loss_layer_selection == LOSS_LAYERS_RAMP
+        for scored_layer_index in 1:n_scored_layers
+            layer_weights[scored_layer_index] =
+                ramp_layer_weight(scored_layer_index, n_scored_layers, loss_layer_ramp_sharpness)
+        end
+        layer_weights ./= sum(layer_weights)
+    else
+        throw(ArgumentError("Unknown loss layer selection code $(loss_layer_selection)."))
+    end
+    return layer_weights
 end
 
 function compute_loss(

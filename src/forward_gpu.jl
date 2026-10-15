@@ -1,16 +1,17 @@
 # forward_gpu.jl
 # ----------------------------------------------------------------------------
 # GPU-accelerated forward pass for the Nachmani Neural BP decoder.
-# Self-contained: does not modify, shadow, or depend on any function in the
-# rest of the package. Wrapped in a module so loading this file cannot affect
-# anything else.
+# Does not modify or shadow any function in the rest of the package; it uses the
+# enriched check node's GPU kernel (soft_constraints.jl) and α's logistic link.
 #
 # Apple Silicon (Metal.jl) is the default backend. Switching to NVIDIA (CUDA.jl)
 # is a two-line change in the BACKEND section below.
 #
-# Designed for *testing only* — large batches, no autodiff, no training. Sparse
-# matrices are densified (Metal has no usable sparse linalg); for the ~12-edge
-# Tanner graphs of small codes this is essentially free.
+# Written for testing (large batches); its layer function is also the forward
+# of the hand-written GPU gradient (gradient_gpu.jl), which keeps each layer's
+# values on a tape. No autodiff runs through it. Sparse matrices are densified
+# (Metal has no usable sparse linalg); for the ~12-edge Tanner graphs of small
+# codes this is essentially free.
 #
 # ----------------------------------------------------------------------------
 
@@ -100,16 +101,14 @@ struct GPUState
     n_layers   :: Int
     n_samples  :: Int
 
-    # Enriched check node (soft_constraints.jl): the rule selector, the α each
-    # layer uses (already through the logistic link AND the layer schedule, so
-    # entry t is α_t itself and not θ or [T₀, ρ]), and the tables on the device.
-    # A host-side Vector of length n_layers indexed by the layer loop: the kernel
-    # takes one Float32 per call and never needs the vector on the device.
-    # `soft_checks` is `nothing` for the standard rule, so the tanh path
-    # allocates and uploads nothing extra.
-    check_node_kind          :: Int
-    coupling_scale_per_layer :: Vector{Float32}
-    soft_checks              :: Union{GPUSoftCheckState, Nothing}
+    # Enriched check node (soft_constraints.jl): the rule selector, α (already
+    # through the logistic link, so α itself and not θ; the same in every
+    # layer), and the tables on the device. α stays on the host: the kernel
+    # takes it as one Float32 per call. `soft_checks` is `nothing` for the
+    # standard rule, so the tanh path allocates and uploads nothing extra.
+    check_node_kind :: Int
+    coupling_scale  :: Float32
+    soft_checks     :: Union{GPUSoftCheckState, Nothing}
 end
 
 # Convert a sparse matrix to a dense Float32 GPU array: Sparse → dense → Float32 → GPU .
@@ -151,7 +150,7 @@ end
 
 """
     build_gpu_state(bpnn, syndromes_batch) -> GPUState
-    build_gpu_state(base, weights_c2v_v2c, weights_llrs, weights_c2v_readout, coupling_logit, coupling_schedule, syndromes_batch) -> GPUState
+    build_gpu_state(base, weights_c2v_v2c, weights_llrs, weights_c2v_readout, coupling_logit, syndromes_batch) -> GPUState
 
 Build GPUState by converting and uploading CPU data to GPU. Includes:
 - Adjacency matrices (densified and converted to Float32)
@@ -160,38 +159,19 @@ Build GPUState by converting and uploading CPU data to GPU. Includes:
 - Per-layer LLR weights, reshaped and converted to Float32
 - Syndromes, routed according to neuron_to_checks and converted to Float32
 - For the enriched check node: the coupling tables and the enriched checks'
-  syndromes (see soft_constraints.jl), plus α_t for every layer — α through
-  the logistic link, times the layer schedule's damping d(t)
+  syndromes (see soft_constraints.jl), plus α through the logistic link
 
 Overload 1: Extract weights and base from NachmaniNeuralBP struct
 Overload 2: Accept raw weights and base structure directly
 """
-function build_gpu_state(bpnn, syndromes_batch::BitMatrix)
+function build_gpu_state(bpnn, syndromes_batch::BitMatrix)::GPUState
     base = bpnn.base
-    gpustate = build_gpu_state(base, bpnn.weights_c2v_v2c, bpnn.weights_llrs, bpnn.weights_c2v_readout,
-                               bpnn.coupling_logit, bpnn.coupling_schedule, syndromes_batch)
+    gpustate::GPUState = build_gpu_state(base, bpnn.weights_c2v_v2c, bpnn.weights_llrs, bpnn.weights_c2v_readout,
+                                         bpnn.coupling_logit, syndromes_batch)
     return gpustate
 end
 
-function coupling_scale_per_layer(coupling_logit, coupling_schedule, base)::Vector{Float32}
-    """
-    α_t for t = 1..n_layers: the logistic of θ, damped per layer by the step
-    schedule when `base.coupling_schedule_kind` selects it, undamped otherwise.
-    This is the GPU path's single definition of α_t and MUST agree with the CPU
-    path's per-layer `layer_coupling_scale` in `forward_pass_with_weights` and
-    with `effective_coupling_scale_at_layer`; the tests check all three.
-    """
-    linked_coupling_scale::Float32 = coupling_scale_from_logit(coupling_logit[1])
-    per_layer::Vector{Float32} = fill(linked_coupling_scale, base.n_layers)
-    if base.coupling_schedule_kind == COUPLING_SCHEDULE_STEP
-        for layer in 1:base.n_layers
-            per_layer[layer] = linked_coupling_scale * coupling_schedule_damping(coupling_schedule, layer)
-        end
-    end
-    return per_layer
-end
-
-function build_gpu_state(base, weights_c2v_v2c, weights_llrs, weights_c2v_readout, coupling_logit, coupling_schedule, syndromes_batch::BitMatrix)
+function build_gpu_state(base, weights_c2v_v2c, weights_llrs, weights_c2v_readout, coupling_logit, syndromes_batch::BitMatrix)::GPUState
 
     # Adjacency
     adj_V2C_C2V = _to_dense_gpu(base.adj_V2C_C2V)
@@ -243,7 +223,7 @@ function build_gpu_state(base, weights_c2v_v2c, weights_llrs, weights_c2v_readou
         )
     end
 
-    return GPUState(
+    gpu_state::GPUState = GPUState(
         adj_V2C_C2V,
         adj_C2V_V2C_gpu,
         adj_C2V_readout_gpu,
@@ -257,9 +237,10 @@ function build_gpu_state(base, weights_c2v_v2c, weights_llrs, weights_c2v_readou
         base.n_layers,
         size(syndromes_batch, 2),
         base.check_node_kind,
-        coupling_scale_per_layer(coupling_logit, coupling_schedule, base),
+        coupling_scale_from_logit(coupling_logit[1]),
         soft_checks,
     )
+    return gpu_state
 end
 
 """
@@ -327,51 +308,87 @@ end
 
 # ----------------------------------------------------------------------------
 # Single-layer forward pass on GPU.
-# Returns (new messages_c2v, posterior_llrs_at_this_layer).
+# `_compute_layer_gpu_values` returns everything the layer computes, which the
+# backward pass keeps (gradient_gpu.jl); `_compute_layer_gpu`, the testing path,
+# returns (new messages_c2v, posterior_llrs_at_this_layer) from the same values.
 # ----------------------------------------------------------------------------
 
-function _compute_layer_gpu(messages_c2v, initial_llrs_gpu, gs::GPUState, layer::Int)
+struct GPULayerValues
+    messages_v2c   :: ArrayT{Float32, 2}   # RAW m_{v->c}
+    magnitudes_c2v :: ArrayT{Float32, 2}   # M = adj_V2C_C2V · log tanh(|m_{v->c}|/2)
+    signs_c2v      :: ArrayT{Float32, 2}   # 0/1: parity of the incoming signs XOR syndrome
+    # m_{c->v} out of the layer. With the enriched check node this is the
+    # kernel's own buffer, rewritten by its next call: copy it to keep it.
+    messages_c2v   :: ArrayT{Float32, 2}
+    posterior_llrs :: ArrayT{Float32, 2}   # μ
+end
+
+function _compute_layer_gpu_values(
+    messages_c2v::ArrayT{Float32, 2},       # m_{c->v} from the layer before (zeros at layer 1)
+    initial_llrs_gpu::ArrayT{Float32, 2},   # channel LLRs l, (n_bits × batch)
+    gpu_state::GPUState,
+    layer::Int
+)::GPULayerValues
     # This layer's weights: a plain Julia Vector lookup, no device allocation
     # and no copy (they were uploaded per layer in `build_gpu_state`).
-    W_msg = gs.W_msg_layers[layer]                           # (nb_neurons × nb_neurons)
-    weights_llr_col = gs.weights_llr_layers[layer]           # (n_bits,)
+    layer_message_weights::ArrayT{Float32, 2} = gpu_state.W_msg_layers[layer]   # (nb_neurons × nb_neurons)
+    layer_llr_weights::ArrayT{Float32, 1} = gpu_state.weights_llr_layers[layer]  # (n_bits,)
 
     # ---- C → V (variable-to-check incoming form) ----
-    m_v2c = W_msg * messages_c2v                              # (nb_neurons × batch)
-    scaled_llrs = gs.adj_initialize_V2C * (weights_llr_col .* initial_llrs_gpu)
-    m_v2c = m_v2c .+ scaled_llrs                              # avoid in-place .+= for safety on Metal
+    weighted_incoming::ArrayT{Float32, 2} = layer_message_weights * messages_c2v   # (nb_neurons × batch)
+    scaled_llrs::ArrayT{Float32, 2} = gpu_state.adj_initialize_V2C * (layer_llr_weights .* initial_llrs_gpu)
+    messages_v2c::ArrayT{Float32, 2} = weighted_incoming .+ scaled_llrs   # not in-place .+=, for safety on Metal
 
-    m_v2c_mag, m_v2c_signs_bool = _safe_log_tanh_split(m_v2c)
-    m_v2c_signs_fp = Float32.(m_v2c_signs_bool)               # for arithmetic parity
+    # The sign array is the backend's Bool array (a BitMatrix on plain Arrays).
+    log_tanh_split::Tuple{ArrayT{Float32, 2}, AbstractMatrix{Bool}} = _safe_log_tanh_split(messages_v2c)
+    magnitudes_v2c::ArrayT{Float32, 2} = log_tanh_split[1]
+    negative_signs_v2c::ArrayT{Float32, 2} = Float32.(log_tanh_split[2])   # 1 where m_{v->c} < 0, for arithmetic parity
 
     # ---- V → C ----
-    m_c2v_mag = gs.adj_V2C_C2V * m_v2c_mag                    # (nb_neurons × batch)
+    magnitudes_c2v::ArrayT{Float32, 2} = gpu_state.adj_V2C_C2V * magnitudes_v2c   # (nb_neurons × batch)
 
     # Parity: count negative-sign incoming messages, mod 2; XOR with syndrome.
-    parity_fp = gs.adj_V2C_C2V * m_v2c_signs_fp               # integer-valued floats
+    negative_counts_c2v::ArrayT{Float32, 2} = gpu_state.adj_V2C_C2V * negative_signs_v2c   # integer-valued floats
     # (a + b) mod 2  ==  XOR for {0,1}-valued a, b
-    combined = mod.(parity_fp, 2f0) .+ gs.syndromes_routed
-    m_c2v_signs_fp = mod.(combined, 2f0)                      # 0 or 1 in Float32
+    parity_plus_syndrome::ArrayT{Float32, 2} = mod.(negative_counts_c2v, 2f0) .+ gpu_state.syndromes_routed
+    signs_c2v::ArrayT{Float32, 2} = mod.(parity_plus_syndrome, 2f0)   # 0 or 1 in Float32
 
-    messages_c2v_new = _safe_atanh_exp_signed(m_c2v_mag, m_c2v_signs_fp)
+    outgoing_messages_c2v::ArrayT{Float32, 2} = _safe_atanh_exp_signed(magnitudes_c2v, signs_c2v)
 
     # ---- Enriched check node: overwrite the rows of coupled checks ----
     # Mirrors the CPU hook in compute_layer_with_weights!: the standard rule has
     # filled every row; the dense kernel replaces the enriched ones from the RAW
-    # v2c messages `m_v2c` of this layer.
+    # v2c messages of this layer.
     #
     # The result is a buffer the kernel owns and rewrites on the next call (see
-    # its docstring). Safe here: the next layer reads it at `W_msg * messages_c2v`
-    # above, and this layer reads it in the readout below, both BEFORE the next
-    # call happens. Do not hold a reference to it across layers.
-    if gs.check_node_kind == CHECK_NODE_ENRICHED
-        messages_c2v_new = apply_enriched_checks_gpu(messages_c2v_new, m_v2c, gs.coupling_scale_per_layer[layer], gs.soft_checks)
+    # its docstring). Safe here: the next layer reads it at
+    # `layer_message_weights * messages_c2v` above, and this layer reads it in
+    # the readout below, both BEFORE the next call happens. Do not hold a
+    # reference to it across layers.
+    if gpu_state.check_node_kind == CHECK_NODE_ENRICHED
+        outgoing_messages_c2v = apply_enriched_checks_gpu(
+            outgoing_messages_c2v, messages_v2c, gpu_state.coupling_scale, gpu_state.soft_checks)
     end
 
     # ---- Readout ----
-    posterior_llrs = (weights_llr_col .* initial_llrs_gpu) .+ gs.W_readout_masked * messages_c2v_new
+    posterior_llrs::ArrayT{Float32, 2} =
+        (layer_llr_weights .* initial_llrs_gpu) .+ gpu_state.W_readout_masked * outgoing_messages_c2v
 
-    return messages_c2v_new, posterior_llrs
+    layer_values::GPULayerValues =
+        GPULayerValues(messages_v2c, magnitudes_c2v, signs_c2v, outgoing_messages_c2v, posterior_llrs)
+    return layer_values
+end
+
+function _compute_layer_gpu(
+    messages_c2v::ArrayT{Float32, 2},
+    initial_llrs_gpu::ArrayT{Float32, 2},
+    gpu_state::GPUState,
+    layer::Int
+)::Tuple{ArrayT{Float32, 2}, ArrayT{Float32, 2}}
+    layer_values::GPULayerValues = _compute_layer_gpu_values(messages_c2v, initial_llrs_gpu, gpu_state, layer)
+    messages_and_posteriors::Tuple{ArrayT{Float32, 2}, ArrayT{Float32, 2}} =
+        (layer_values.messages_c2v, layer_values.posterior_llrs)
+    return messages_and_posteriors
 end
 
 # ----------------------------------------------------------------------------
@@ -393,9 +410,9 @@ end
     - `chunk_size`: If >0, process samples in slices of this size. If 0 (default),
     auto-estimate from device's maxBufferLength with headroom for intermediates
 
-    forward_pass_gpu(weights_c2v_v2c, weights_llrs, weights_c2v_readout, coupling_logit, coupling_schedule, base, llrs_batch, syndromes_batch) -> Array{Float32, 3}
+    forward_pass_gpu(weights_c2v_v2c, weights_llrs, weights_c2v_readout, coupling_logit, base, llrs_batch, syndromes_batch) -> Array{Float32, 3}
     Arguments (overload 2):
-    - Raw weight vectors (including the length-1 `coupling_logit` and length-2 `coupling_schedule`) and base structure, bypassing NachmaniNeuralBP struct
+    - Raw weight vectors (including the length-1 `coupling_logit`) and base structure, bypassing NachmaniNeuralBP struct
     - Useful for testing or scenarios requiring direct weight manipulation
 """
 function forward_pass_gpu(
@@ -460,11 +477,11 @@ function forward_pass_gpu(
     return posterior_3d_cpu
 end
 
-function forward_pass_gpu(weights_c2v_v2c, weights_llrs, weights_c2v_readout, coupling_logit, coupling_schedule, base, llrs_batch, syndromes_batch)
-    gpustate = build_gpu_state(base, weights_c2v_v2c, weights_llrs, weights_c2v_readout, coupling_logit, coupling_schedule, syndromes_batch)
-    posterior_3d_gpu = _forward_pass_gpu_chunk(gpustate, llrs_batch)
+function forward_pass_gpu(weights_c2v_v2c, weights_llrs, weights_c2v_readout, coupling_logit, base, llrs_batch, syndromes_batch)::Array{Float32, 3}
+    gpustate::GPUState = build_gpu_state(base, weights_c2v_v2c, weights_llrs, weights_c2v_readout, coupling_logit, syndromes_batch)
+    posterior_llrs::Array{Float32, 3} = _forward_pass_gpu_chunk(gpustate, llrs_batch)
     release_gpu_state!(gpustate)
-    return posterior_3d_gpu
+    return posterior_llrs
 end
 
 """

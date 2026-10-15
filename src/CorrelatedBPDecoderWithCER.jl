@@ -151,10 +151,7 @@ export CHECK_NODE_TANH, CHECK_NODE_ENRICHED, check_node_code, check_node_name, S
        apply_enriched_checks_gpu, ENRICHED_MESSAGE_CAP, enriched_kernel_bytes_per_sample,
        cap_batch_size_for_enriched_kernel, release_device_array!, release_gpu_soft_check_state!,
        ENRICHED_KERNEL_MEMORY_BUDGET_BYTES,
-       coupling_scale_from_logit, logit_from_coupling_scale, COUPLING_SCALE_LINK_MARGIN,
-       COUPLING_SCHEDULE_CONSTANT, COUPLING_SCHEDULE_STEP, COUPLING_SCHEDULE_MIN_WIDTH,
-       coupling_schedule_code, coupling_schedule_name, coupling_schedule_damping,
-       coupling_schedule_parameters, coupling_schedule_width_from_parameter
+       coupling_scale_from_logit, logit_from_coupling_scale, COUPLING_SCALE_LINK_MARGIN
 
 # Neural belief propagation
 include("neuralbase.jl")
@@ -163,8 +160,7 @@ export NeuralBPBase, NeuralBP, add_soft_constraints_to_neuralbpbase, parse_cer_d
 
 # Nachmani Neural BP model
 include("nachmani.jl")
-export NachmaniNeuralBP, effective_coupling_scale, effective_coupling_schedule,
-       effective_coupling_scale_at_layer
+export NachmaniNeuralBP, effective_coupling_scale
 
 # Explicit-weight forward pass helpers
 include("forward_pass_weights.jl")
@@ -173,7 +169,19 @@ export forward_pass_with_weights, c2v_to_v2c_with_weights!, readout_with_weights
 # GPU-accelerated forward pass
 include("forward_gpu.jl")
 export forward_pass_gpu, release_gpu_state!, predict_recoveries_gpu, build_gpu_state,
-       update_gpu_state_syndromes!, GPUState, coupling_scale_per_layer
+       update_gpu_state_syndromes!, GPUState
+
+# Hand-written backward pass, one forward rule at a time: CPU, then its GPU
+# mirror (which needs `ArrayT` and `_to_dense_gpu` from forward_gpu.jl).
+include("backward_pass_with_weights.jl")
+export backward_v2c_to_c2v!, backward_c2v_to_v2c!, weight_gradients_c2v_to_v2c!,
+       backward_log_tanh_split!, backward_atanh_exp_signed!, log_tanh_split_adjoint,
+       atanh_exp_signed_adjoint, backward_readout!, weight_gradients_readout!
+include("backward_pass_gpu.jl")
+export GPUBackwardState, build_gpu_backward_state, release_gpu_backward_state!,
+       backward_v2c_to_c2v_gpu, backward_c2v_to_v2c_gpu, weight_gradients_c2v_to_v2c_gpu,
+       backward_readout_gpu, weight_gradients_readout_gpu, backward_atanh_exp_signed_gpu,
+       backward_log_tanh_split_gpu
 
 include("legacy.jl") # these are solely for debugging and testing, not intended for external use.
 export forward_pass, c2v_to_v2c, v2c_to_c2v, readout,
@@ -201,14 +209,31 @@ include("nbp_weights.jl")
 export save_trained_weights, extract_weights_for_BP, save_extracted_weights_for_BP,
        load_extracted_weights_for_BP, load_trained_weights
 
+# The base loss: the per-check residue options with their derivatives, the
+# batch base loss and its gradient. BEFORE loss.jl, which combines it over layers.
+include("base_loss.jl")
+export compute_base_loss, compute_base_loss_gradient, smooth_loss, sine_residue_loss,
+       smooth_loss_derivative, sine_residue_derivative, sigmoid_derivative,
+       base_loss_code, base_loss_name, BASE_LOSS_SIN_RESIDUE, BASE_LOSS_SMOOTH
+
 # Loss functions
 include("loss.jl")
-export compute_loss, base_loss_per_layer, compute_smooth_loss_from_llrs, softmin_loss, smooth_loss,
-       combine_layer_losses, loss_layer_selection_code, loss_layer_selection_name,
-       ramp_layer_weight, ramp_loss, sine_residue_loss,
+export compute_loss, base_loss_per_layer, compute_smooth_loss_from_llrs, softmin_loss,
+       combine_layer_losses, combine_layer_losses_gradient, loss_layer_selection_code,
+       loss_layer_selection_name, ramp_layer_weight, ramp_loss,
        LOSS_LAYERS_SOFTMIN, LOSS_LAYERS_LAST, LOSS_LAYERS_MEAN, LOSS_LAYERS_RAMP,
-       DEFAULT_LOSS_LAYER_RAMP_SHARPNESS,
-       base_loss_code, base_loss_name, BASE_LOSS_SIN_RESIDUE, BASE_LOSS_SMOOTH
+       DEFAULT_LOSS_LAYER_RAMP_SHARPNESS
+
+# The gradient of the training loss by the hand-written backward pass (Enzyme is
+# the oracle in tests/test_gradient.jl). AFTER loss.jl and the backward pass.
+include("gradient.jl")
+export ForwardTape, forward_pass_with_tape, LossAndGradients, compute_loss_and_gradients
+
+# The same gradient with the message passing on the GPU (ArrayT: Metal, CUDA, or
+# plain Arrays). AFTER gradient.jl, whose LossAndGradients it returns.
+include("gradient_gpu.jl")
+export GPUForwardTape, forward_pass_gpu_with_tape, release_gpu_forward_tape!,
+       compute_loss_and_gradients_gpu
 
 # Which samples of the training pool to train on. BEFORE train.jl, which calls it.
 include("sample_selection.jl")
@@ -218,7 +243,7 @@ export filter_training_samples, error_weights, log_poisson_probability,
 
 # Training routines
 include("train.jl")
-export train_neuralbp!, train_neuralbp_enzyme!, train_Nachmani_neuralbp
+export train_neuralbp!, train_neuralbp_enzyme!, train_Nachmani_neuralbp, manual_backprop_setting
 
 # Predictions with trained models
 include("predict.jl")

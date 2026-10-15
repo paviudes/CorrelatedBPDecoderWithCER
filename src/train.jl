@@ -2,8 +2,7 @@ function get_loss_value(
     weights_c2v_v2c, # learnable weights for computing m^t_(v→c) from m^(t-1)_(c→v).
     weights_llrs, # learnable weights for m^t_(v→c) from the initial LLRs, and also for computing the posterior LLRs from m^t_(c→v).
     weights_c2v_readout, # learnable weights for computing the readout (posterior LLRs) from m^t_(c→v).
-    coupling_logit, # learnable length-1 vector holding θ; the forward pass uses α = 1/(1+exp(-θ)) ∈ (0,1) (inert for the standard rule).
-    coupling_schedule, # learnable length-2 vector [T₀, log(w - W_MIN)] of the layer schedule on α (inert under the constant schedule).
+    coupling_logit, # learnable length-1 vector holding θ; the forward pass uses α = 1/(1+exp(-θ)) ∈ (0,1) in every layer (inert for the standard rule).
     loss_layer_temperature, # temperature of the softmin over layers, annealed during training.
     warmup_loss_layers, # first number of layers to leave unconstrained in the loss.
     loss_layer_selection, # how the scored layers combine: softmin | last | mean | ramp (see src/loss.jl).
@@ -20,16 +19,16 @@ function get_loss_value(
 
     Written functionally, with every weight an explicit argument, because that
     is what Enzyme.jl differentiates. The forward pass is always the CPU one:
-    Enzyme cannot differentiate through device-array allocation, and the GPU
-    path is inference-only.
+    Enzyme cannot differentiate through device-array allocation. The GPU
+    gradient is the hand-written `compute_loss_and_gradients_gpu`
+    (src/gradient_gpu.jl), which takes these same arguments.
     """
     syndromes_batch_matrix = Matrix{Bool}(syndromes_batch)
-    posterior_llrs = forward_pass_with_weights(
+    posterior_llrs::Array{Float32, 3} = forward_pass_with_weights(
         weights_c2v_v2c,
         weights_llrs,
         weights_c2v_readout,
         coupling_logit,
-        coupling_schedule,
         base,
         llrs_batch,
         syndromes_batch_matrix
@@ -52,7 +51,6 @@ function get_individual_loss_values(
     weights_llrs::Vector{Float32},
     weights_c2v_readout::Vector{Float32},
     coupling_logit::Vector{Float32},
-    coupling_schedule::Vector{Float32},
     loss_layer_temperature::Float32,
     warmup_loss_layers::Int,
     loss_layer_selection::Int,
@@ -69,12 +67,11 @@ function get_individual_loss_values(
     weighting. Same forward pass, same `base_loss_per_layer`, so the two cannot
     disagree.
     """
-    posterior_llrs = forward_pass_with_weights(
+    posterior_llrs::Array{Float32, 3} = forward_pass_with_weights(
         weights_c2v_v2c,
         weights_llrs,
         weights_c2v_readout,
         coupling_logit,
-        coupling_schedule,
         base,
         llrs_batch,
         syndromes_batch
@@ -124,13 +121,13 @@ end
 # logging concern can be disabled / replaced without touching core logic.
 # ---------------------------------------------------------------------------
 
-function init_training_debug_logs(n_samples_to_log::Int)
+function init_training_debug_logs(n_samples_to_log::Int)::Tuple{DataFrame, DataFrame}
     """
     Pre-allocate the two per-batch debug tables. `hp_log` carries the
     hyperparameters in force, the loss, the NaN-skip count, the weight
     statistics and α; `losses_log` carries the base loss at every scored layer.
     """
-    hp_log = DataFrame(
+    hp_log::DataFrame = DataFrame(
         epoch = zeros(Int, n_samples_to_log),
         sample = zeros(Int, n_samples_to_log),
         loss_layer_temp = zeros(Float32, n_samples_to_log),
@@ -146,11 +143,9 @@ function init_training_debug_logs(n_samples_to_log::Int)
         max_weight_c2v_readout = zeros(Float32, n_samples_to_log),
         median_weight_c2v_readout = zeros(Float32, n_samples_to_log),
         coupling_scale = zeros(Float32, n_samples_to_log),
-        coupling_logit = zeros(Float32, n_samples_to_log),
-        coupling_schedule_layer = zeros(Float32, n_samples_to_log),
-        coupling_schedule_width = zeros(Float32, n_samples_to_log)
+        coupling_logit = zeros(Float32, n_samples_to_log)
     )
-    losses_log = DataFrame(
+    losses_log::DataFrame = DataFrame(
         :epoch => zeros(Int, n_samples_to_log),
         :batch => zeros(Int, n_samples_to_log),
         :layers => zeros(Int, n_samples_to_log),
@@ -192,9 +187,6 @@ function log_batch_debug!(
     hp_log[index, :median_weight_c2v_readout] = median(bpnn.weights_c2v_readout)
     hp_log[index, :coupling_scale] = effective_coupling_scale(bpnn)
     hp_log[index, :coupling_logit] = bpnn.coupling_logit[1]
-    (step_layer, step_width) = effective_coupling_schedule(bpnn)
-    hp_log[index, :coupling_schedule_layer] = step_layer
-    hp_log[index, :coupling_schedule_width] = step_width
 
     losses_log[index, :epoch] = epoch
     losses_log[index, :batch] = b
@@ -212,6 +204,27 @@ end
 
 # ---------------------------------------------------------------------------
 
+function manual_backprop_setting(hyperparameters::Dict, check_node_kind::Int)::Bool
+    """
+    The `manual_backprop` hyperparameter, validated: it must be a Bool, and it
+    may be true only with the standard (tanh) check node, the one the
+    hand-written backward pass covers. An enriched run asking for it is
+    refused rather than quietly trained with Enzyme.
+    """
+    requested_manual_backprop::Any = get(hyperparameters, "manual_backprop", false)
+    if !(requested_manual_backprop isa Bool)
+        throw(ArgumentError(
+            "manual_backprop = $(repr(requested_manual_backprop)) must be true or false."))
+    end
+    if requested_manual_backprop && check_node_kind == CHECK_NODE_ENRICHED
+        throw(ArgumentError(
+            "manual_backprop = true covers the standard (tanh) check node only, and this run has " *
+            "check_node = \"enriched\". Train it with manual_backprop = false (Enzyme)."))
+    end
+    manual_backprop::Bool = requested_manual_backprop
+    return manual_backprop
+end
+
 function train_neuralbp_enzyme!(
     bpnn::NachmaniNeuralBP,
     syndromes::BitMatrix,
@@ -225,8 +238,10 @@ function train_neuralbp_enzyme!(
 )
     """
     Train the NeuralBP model using the provided syndromes and expected recoveries.
-    We use Enzyme.jl for AD of the loss w.r.t. the model parameters, and an
-    `Optimisers.jl` optimizer chain (gradient-clip → Adam/AdamW) for updates.
+    The gradient of the loss w.r.t. the model parameters comes from Enzyme.jl
+    by default, or from the hand-written backward pass with
+    `manual_backprop = true` — on the GPU when USE_GPU=1, on the CPU otherwise.
+    Updates use an `Optimisers.jl` chain (gradient-clip → Adam/AdamW).
 
     The loss is `compute_loss`: the softmin over scored layers of the base loss
     (the residue of e + σ(μ) against [H; L]). Its one annealed hyperparameter,
@@ -256,7 +271,7 @@ function train_neuralbp_enzyme!(
     max_grad_norm = hyperparameters["max_grad_norm"]
     adam_eps = hyperparameters["adam_eps"]
     max_nan_skips_per_epoch = hyperparameters["nanskip"]
-    warmup_loss_layers = hyperparameters["warmup_layers"]
+    warmup_loss_layers::Int = Int(hyperparameters["warmup_layers"])
     # How the scored layers collapse to one number. "softmin" reproduces every
     # earlier run; "last" scores only the final layer, which is the mode that
     # matches `commit_layer_rule = "last"` at test time.
@@ -290,11 +305,23 @@ function train_neuralbp_enzyme!(
     coupling_scale_learnable::Bool =
         Bool(get(hyperparameters, "coupling_scale_learnable", true)) &&
         base.check_node_kind == CHECK_NODE_ENRICHED
-    # Same for the layer schedule's [T₀, ρ]: frozen unless the step schedule is
-    # active, so a constant-schedule run never moves parameters it never reads.
-    coupling_schedule_learnable::Bool =
-        Bool(get(hyperparameters, "coupling_schedule_learnable", true)) &&
-        base.coupling_schedule_kind == COUPLING_SCHEDULE_STEP
+    # Which gradient. Enzyme (the default) reproduces every earlier run.
+    # `manual_backprop = true` is the hand-written backward pass (src/gradient.jl),
+    # on the device when the GPU is enabled (USE_GPU=1, the switch testing reads)
+    # and on the host otherwise. It agrees with Enzyme to Float32 round-off, not
+    # bit for bit.
+    manual_backprop::Bool = manual_backprop_setting(hyperparameters, base.check_node_kind)
+    gradient_on_device::Bool = manual_backprop && gpu_active()
+    hand_written_gradient::Function = compute_loss_and_gradients
+    gradient_description::String = "Enzyme on the CPU"
+    if gradient_on_device
+        hand_written_gradient = compute_loss_and_gradients_gpu
+        gradient_description = "hand-written backward pass on the GPU"
+    elseif manual_backprop
+        gradient_description = "hand-written backward pass on the CPU"
+    elseif gpu_active()
+        gradient_description = "Enzyme on the CPU (USE_GPU=1 moves training to the GPU only with manual_backprop = true)"
+    end
     # The softmin temperature is the only annealed hyperparameter.
     annealing_schedule = Dict("loss_layer_temperature" => hyperparameters["loss_layer_temperature"])
 
@@ -348,9 +375,6 @@ function train_neuralbp_enzyme!(
     if !coupling_scale_learnable
         Optimisers.freeze!(opt_state.coupling_logit)
     end
-    if !coupling_schedule_learnable
-        Optimisers.freeze!(opt_state.coupling_schedule)
-    end
     # A LEARNED α must not be weight-decayed either. Decay shrinks every
     # parameter toward 0; for the message weights that is the existing
     # regulariser, but for α it is a standing bias toward "no couplings" — a
@@ -364,34 +388,18 @@ function train_neuralbp_enzyme!(
         # leaf can be swapped by key without touching the others.
         opt_state = merge(opt_state, (coupling_logit = Optimisers.setup(coupling_scale_rule, bpnn.coupling_logit),))
     end
-    # The schedule's [T₀, ρ] must not be decayed for the same reason, and a
-    # worse one: decaying T₀ toward 0 drags the step to the FRONT of the network
-    # and switches the couplings off in every layer, which is the "no couplings"
-    # bias again, now dressed as a schedule.
-    if coupling_schedule_learnable && weight_decay > 0f0
-        coupling_schedule_rule::OptimiserChain = OptimiserChain(
-            ClipGrad(max_grad_norm), Adam(learning_rate, (0.9f0, 0.999f0), adam_eps))
-        opt_state = merge(opt_state, (coupling_schedule = Optimisers.setup(coupling_schedule_rule, bpnn.coupling_schedule),))
-    end
 
     if !is_quiet
         n_weights = length(bpnn.weights_c2v_v2c) + length(bpnn.weights_llrs) + length(bpnn.weights_c2v_readout)
         if coupling_scale_learnable
             n_weights += length(bpnn.coupling_logit)
         end
-        if coupling_schedule_learnable
-            n_weights += length(bpnn.coupling_schedule)
-        end
         print_info("Starting training on $(n_samples) samples, split into batches of $(batch_size), with $(n_weights) learnable parameters.")
+        print_info("Gradient: $(gradient_description).")
         if base.check_node_kind == CHECK_NODE_ENRICHED
             print_info("Enriched check node: $(describe_soft_check_tables(base.soft_check_tables)); " *
                        "coupling scale α = $(effective_coupling_scale(bpnn)) (logit $(bpnn.coupling_logit[1])) " *
                        "($(coupling_scale_learnable ? "learnable" : "fixed")).")
-        end
-        if base.coupling_schedule_kind == COUPLING_SCHEDULE_STEP
-            (step_layer, step_width) = effective_coupling_schedule(bpnn)
-            print_info("Coupling schedule: step at layer T₀ = $(step_layer), width w = $(step_width) layers " *
-                       "($(coupling_schedule_learnable ? "learnable" : "fixed")).")
         end
     end
     # -------------------------
@@ -401,6 +409,13 @@ function train_neuralbp_enzyme!(
 
     n_applied_updates::Int = 0
     n_rolled_back_epochs::Int = 0
+    # Wall time of the gradient computations: the first one separately, since it
+    # includes compiling the gradient (Enzyme's, the hand-written one, or the
+    # device kernels).
+    training_start_ns::UInt64 = time_ns()
+    first_gradient_seconds::Float64 = 0.0
+    later_gradient_seconds::Float64 = 0.0
+    n_gradients::Int = 0
     for epoch in 1:n_epochs
         batch_progress = is_quiet ? nothing : Progress(n_gradient_updates_per_epoch, desc="Epoch $epoch Batches: ")
 
@@ -439,39 +454,70 @@ function train_neuralbp_enzyme!(
             # -------------------------
             # Allocate gradients
             # -------------------------
-            grad_w_c2v_v2c = zeros(Float32, length(bpnn.weights_c2v_v2c))
-            grad_w_llrs    = zeros(Float32, length(bpnn.weights_llrs))
-            grad_w_readout = zeros(Float32, length(bpnn.weights_c2v_readout))
+            grad_w_c2v_v2c::Vector{Float32} = zeros(Float32, length(bpnn.weights_c2v_v2c))
+            grad_w_llrs::Vector{Float32}    = zeros(Float32, length(bpnn.weights_llrs))
+            grad_w_readout::Vector{Float32} = zeros(Float32, length(bpnn.weights_c2v_readout))
             # Always Duplicated, even when α is frozen or unused: the optimiser
             # leaf decides whether the gradient is applied, and a fixed
             # signature keeps ONE compiled Enzyme thunk for every configuration.
             grad_coupling_scale::Vector{Float32} = zeros(Float32, length(bpnn.coupling_logit))
-            grad_coupling_schedule::Vector{Float32} = zeros(Float32, length(bpnn.coupling_schedule))
+            loss_value::Float32 = NaN32
 
             # -------------------------
-            # Enzyme autodiff
+            # The gradient: Enzyme autodiff, or the hand-written backward pass
+            # (same arguments, in get_loss_value's order)
             # -------------------------
-            (_, loss_value) = Enzyme.autodiff(
-                Enzyme.ReverseWithPrimal,
-                get_loss_value,
-                # Arguments for which we want gradients:
-                Enzyme.Duplicated(bpnn.weights_c2v_v2c, grad_w_c2v_v2c),
-                Enzyme.Duplicated(bpnn.weights_llrs, grad_w_llrs),
-                Enzyme.Duplicated(bpnn.weights_c2v_readout, grad_w_readout),
-                Enzyme.Duplicated(bpnn.coupling_logit, grad_coupling_scale),
-                Enzyme.Duplicated(bpnn.coupling_schedule, grad_coupling_schedule),
-                # Constant arguments (order MUST match get_loss_value's signature):
-                Enzyme.Const(hp[:loss_layer_temperature]),
-                Enzyme.Const(warmup_loss_layers),
-                Enzyme.Const(loss_layer_selection),
-                Enzyme.Const(loss_layer_ramp_sharpness),
-                Enzyme.Const(base_loss_selection),
-                Enzyme.Const(base),
-                Enzyme.Const(llrs_batch),
-                Enzyme.Const(syndromes_batch),
-                Enzyme.Const(expected_batch)
-            )
-            
+            gradient_start_ns::UInt64 = time_ns()
+            if manual_backprop
+                hand_written::LossAndGradients = hand_written_gradient(
+                    bpnn.weights_c2v_v2c,
+                    bpnn.weights_llrs,
+                    bpnn.weights_c2v_readout,
+                    bpnn.coupling_logit,
+                    hp[:loss_layer_temperature],
+                    warmup_loss_layers,
+                    loss_layer_selection,
+                    loss_layer_ramp_sharpness,
+                    base_loss_selection,
+                    base,
+                    llrs_batch,
+                    syndromes_batch,
+                    expected_batch
+                )
+                loss_value = hand_written.loss
+                grad_w_c2v_v2c .= hand_written.weights_c2v_v2c
+                grad_w_llrs .= hand_written.weights_llrs
+                grad_w_readout .= hand_written.weights_c2v_readout
+                grad_coupling_scale .= hand_written.coupling_logit
+            else
+                (_, loss_value) = Enzyme.autodiff(
+                    Enzyme.ReverseWithPrimal,
+                    get_loss_value,
+                    # Arguments for which we want gradients:
+                    Enzyme.Duplicated(bpnn.weights_c2v_v2c, grad_w_c2v_v2c),
+                    Enzyme.Duplicated(bpnn.weights_llrs, grad_w_llrs),
+                    Enzyme.Duplicated(bpnn.weights_c2v_readout, grad_w_readout),
+                    Enzyme.Duplicated(bpnn.coupling_logit, grad_coupling_scale),
+                    # Constant arguments (order MUST match get_loss_value's signature):
+                    Enzyme.Const(hp[:loss_layer_temperature]),
+                    Enzyme.Const(warmup_loss_layers),
+                    Enzyme.Const(loss_layer_selection),
+                    Enzyme.Const(loss_layer_ramp_sharpness),
+                    Enzyme.Const(base_loss_selection),
+                    Enzyme.Const(base),
+                    Enzyme.Const(llrs_batch),
+                    Enzyme.Const(syndromes_batch),
+                    Enzyme.Const(expected_batch)
+                )
+            end
+            gradient_seconds::Float64 = (time_ns() - gradient_start_ns) / 1.0e9
+            if n_gradients == 0
+                first_gradient_seconds = gradient_seconds
+            else
+                later_gradient_seconds += gradient_seconds
+            end
+            n_gradients += 1
+
             # -------------------------
             # NaN / Inf guard — skip the optimizer step entirely if any
             # gradient component is non-finite. This preserves the last
@@ -481,8 +527,7 @@ function train_neuralbp_enzyme!(
                            all(isfinite, grad_w_c2v_v2c) &&
                            all(isfinite, grad_w_llrs)    &&
                            all(isfinite, grad_w_readout) &&
-                           all(isfinite, grad_coupling_scale) &&
-                           all(isfinite, grad_coupling_schedule)
+                           all(isfinite, grad_coupling_scale)
 
             if !grads_finite
                 nan_skip_count += 1
@@ -511,17 +556,15 @@ function train_neuralbp_enzyme!(
             # -------------------------
             # Adaptive Gradient Step (Adam / AdamW + ClipGrad)
             # -------------------------
-            grads = (
+            grads::NamedTuple = (
                 weights_c2v_v2c     = grad_w_c2v_v2c,
                 weights_llrs        = grad_w_llrs,
                 weights_c2v_readout = grad_w_readout,
-                coupling_logit      = grad_coupling_scale,
-                coupling_schedule   = grad_coupling_schedule
+                coupling_logit      = grad_coupling_scale
             )
-            # θ and [T₀, ρ] are unconstrained, so the Adam step needs no
-            # projection: the logistic link in `forward_pass_with_weights` keeps
-            # α in (0, 1) however far θ travels, and the width is exp(ρ) plus a
-            # floor however far ρ travels.
+            # θ is unconstrained, so the Adam step needs no projection: the
+            # logistic link in `forward_pass_with_weights` keeps α in (0, 1)
+            # however far θ travels.
             (opt_state, bpnn) = Optimisers.update!(opt_state, bpnn, grads)
             n_applied_updates += 1
             # -------------------------
@@ -541,7 +584,6 @@ function train_neuralbp_enzyme!(
                     bpnn.weights_llrs,
                     bpnn.weights_c2v_readout,
                     bpnn.coupling_logit,
-                    bpnn.coupling_schedule,
                     hp[:loss_layer_temperature],
                     warmup_loss_layers,
                     loss_layer_selection,
@@ -580,7 +622,6 @@ function train_neuralbp_enzyme!(
             bpnn.weights_llrs        .= bpnn_checkpoint.weights_llrs
             bpnn.weights_c2v_readout .= bpnn_checkpoint.weights_c2v_readout
             bpnn.coupling_logit      .= bpnn_checkpoint.coupling_logit
-            bpnn.coupling_schedule   .= bpnn_checkpoint.coupling_schedule
             opt_state = deepcopy(opt_state_checkpoint)
             n_rolled_back_epochs += 1
             # NOT gated on is_quiet: a rolled-back epoch discards its work, and a
@@ -595,6 +636,17 @@ function train_neuralbp_enzyme!(
         end
     end
 
+    # One line, quiet or not: what a training point costs with this gradient.
+    training_seconds::Float64 = (time_ns() - training_start_ns) / 1.0e9
+    mean_later_gradient_milliseconds::Float64 = 0.0
+    if n_gradients > 1
+        mean_later_gradient_milliseconds = 1000.0 * later_gradient_seconds / (n_gradients - 1)
+    end
+    print_info("Training: $(n_gradients) gradients ($(gradient_description)) in " *
+               "$(round(training_seconds; digits = 1)) s. The first took " *
+               "$(round(first_gradient_seconds; digits = 1)) s (it includes compilation); " *
+               "the rest $(round(mean_later_gradient_milliseconds; digits = 2)) ms each on average.")
+
     if is_debug
         save_training_debug_logs(debugging_logfile, hp_log, individual_losses_log)
     end
@@ -605,7 +657,8 @@ function train_neuralbp_enzyme!(
               "($(n_rolled_back_epochs) of $(n_epochs)). The weights are still at " *
               "their initial values, and saving them would produce a model " *
               "indistinguishable from an untrained one in every downstream file. " *
-              "Refusing. Check the loss terms for Enzyme-incompatible constructs.")
+              "Refusing. Gradient: $(gradient_description). Check the loss terms for " *
+              "constructs that make it non-finite.")
     end
     if n_rolled_back_epochs > 0
         @warn "Training finished with $(n_rolled_back_epochs) of $(n_epochs) epochs rolled back and $(n_applied_updates) applied updates."
@@ -662,38 +715,19 @@ function train_Nachmani_neuralbp(
     if haskey(initial_conditions, "coupling_scale")
         initial_coupling_scale = Float32(initial_conditions["coupling_scale"][1])
     end
-    # The layer schedule starts at (`coupling_schedule_layer_init`,
-    # `coupling_schedule_width_init`) in layers, again unless the caller supplied
-    # them. Read even under the constant schedule, where they are inert, so the
-    # struct is always fully specified.
-    initial_step_layer::Float32 =
-        Float32(get(hyperparameters, "coupling_schedule_layer_init", Float32(base.n_layers)))
-    initial_step_width::Float32 =
-        Float32(get(hyperparameters, "coupling_schedule_width_init", 3.0f0))
-    if haskey(initial_conditions, "coupling_schedule_layer")
-        initial_step_layer = Float32(initial_conditions["coupling_schedule_layer"][1])
-    end
-    if haskey(initial_conditions, "coupling_schedule_width")
-        initial_step_width = Float32(initial_conditions["coupling_schedule_width"][1])
-    end
-    bpnn = NachmaniNeuralBP(
+    bpnn::NachmaniNeuralBP = NachmaniNeuralBP(
         base,
         weights_c2v_v2c=initial_conditions["weights_c2v_v2c"],
         weights_llrs=initial_conditions["weights_llrs"],
         weights_c2v_readout=initial_conditions["weights_c2v_readout"],
-        coupling_scale=initial_coupling_scale,
-        coupling_schedule_layer=initial_step_layer,
-        coupling_schedule_width=initial_step_width
+        coupling_scale=initial_coupling_scale
     )
-    # Resuming from a checkpoint restores the TRAINED PARAMETERS themselves, not
-    # α or (T₀, w). Rebuilding θ from α above costs one logit(logistic(θ)) round
-    # trip, exact only to Float32, and the schedule's ρ likewise; a resumed run
-    # should continue from exactly where it stopped.
+    # Resuming from a checkpoint restores the TRAINED PARAMETER itself, not α.
+    # Rebuilding θ from α above costs one logit(logistic(θ)) round trip, exact
+    # only to Float32; a resumed run should continue from exactly where it
+    # stopped.
     if haskey(initial_conditions, "coupling_logit")
         bpnn.coupling_logit .= initial_conditions["coupling_logit"]
-    end
-    if haskey(initial_conditions, "coupling_schedule")
-        bpnn.coupling_schedule .= initial_conditions["coupling_schedule"]
     end
 
     # Extract the name of the training file name to include in the weights file name for clarity on what data the model was trained on.

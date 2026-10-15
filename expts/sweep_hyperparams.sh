@@ -171,15 +171,8 @@ commit_layer_rule    = "last"
 # filename stays valid). "enriched:<alpha>:<fixed|learn>" puts the CER couplings
 # inside each check factor (src/soft_constraints.jl) with alpha as the scale on
 # J: "fixed" holds it there, "learn" trains it from that start alongside the
-# message weights. Tag _cnenr<alpha>F / _cnenr<alpha>L.
-#
-# An enriched spec may carry a LAYER SCHEDULE on alpha as four more fields:
-#     enriched:<alpha>:<fixed|learn>:step:<T0>:<w>:<fixed|learn>
-# which uses alpha_t = alpha * d(t), d(t) = 1/(1 + exp((t - T0)/w)): full
-# couplings early, rolled off around layer T0 over ~4w layers. T0 and w are TWO
-# trainable parameters (or held at their init with :fixed). Tag _sch<T0>w<w>F/L
-# appended after the check-node tag. Without the four fields the schedule is
-# constant, and every earlier filename stays valid.
+# message weights. Tag _cnenr<alpha>F / _cnenr<alpha>L. alpha is one value
+# shared by every layer (the layer schedule on alpha was removed 2026-10-11).
 #
 # WHY alpha = 0.503 HERE. alpha is not a fitted number: single_qubit_rescale
 # maps the MEDIAN single-qubit rate to 0.1 and leaves J untouched, so the pair
@@ -190,19 +183,13 @@ commit_layer_rule    = "last"
 # consistent value; the learned alpha drifted UP toward 0.50 (0.42 -> 0.45,
 # sd 0.07) before the loss lost its grip on it.
 #
-# WHY A SCHEDULE. Per-weight failure analysis (2026-09-22, lr = 0.001, all
-# epochs completing): a constant alpha cuts convergence failures ~70% at error
-# weights 3-4 but RAISES coset failures at every weight, and the enriched
-# decoder's late commits (median layer 8-16 vs 6-11 for tanh) are the ones that
-# land wrong. Damping the couplings late is the lever the constant alpha lacks.
-#
 # CLASSICAL RESULT (2026-09-16, standard BP, no training, p = 5e-4, 3 devices):
 # alpha = 1 is 10x WORSE than tanh (convergence failures on w2/w3 errors: the
 # priors are softened 17x by single_qubit_rescale but J is not, so pairs cost
 # barely more than singles). alpha = 0.42 was 50% BETTER than tanh (1980 -> 989
 # failures, paired McNemar z = 21). Enriched arms are emitted for CER arms only
 # (the no-CER baseline has no couplings to enrich; NeuralBPBase refuses).
-check_node_arms  = ["tanh", "enriched:0.42:learn", "enriched:0.42:learn:step:12:3:learn"]
+check_node_arms  = ["tanh", "enriched:0.42:learn"]
 
 # --- optimizer axis: a COORDINATE sweep around the base TOML -----------------
 # Each entry is  <tag>[:<key>=<value>[,<key>=<value>...]]. An entry with no
@@ -601,19 +588,14 @@ emit_point() {   # <key> <seed> <use_cer> <check_node_spec> <optimizer_spec>
         require="false"
     fi
     # Check node. "enriched:<alpha>:<fixed|learn>" -> check_node enriched,
-    # coupling_scale_init alpha, learnable per the third field. An optional layer
-    # schedule follows as ":step:<T0>:<w>:<fixed|learn>". Fields are split on
-    # ":" one at a time with ${var%%:*} / ${var#*:}, so a spec with too few
+    # coupling_scale_init alpha, learnable per the third field. Fields are split
+    # on ":" one at a time with ${var%%:*} / ${var#*:}, so a spec with too few
     # fields leaves the remainder EQUAL to the last field rather than empty --
     # every branch below therefore tests the field it expects and fails on
     # anything else.
     local check_node="${check_node_spec%%:*}"
     local coupling_scale_init="1.0"
     local coupling_scale_learnable="false"
-    local coupling_schedule="constant"
-    local coupling_schedule_layer_init="90"
-    local coupling_schedule_width_init="3"
-    local coupling_schedule_learnable="false"
     if [ "$check_node" = "enriched" ]; then
         if [ "$use_cer" = "false" ]; then
             echo "emit_point: an enriched check node needs couplings; refusing to emit it on the no-CER arm." >&2
@@ -629,37 +611,14 @@ emit_point() {   # <key> <seed> <use_cer> <check_node_spec> <optimizer_spec>
             echo "emit_point: check node spec '$check_node_spec' must have :fixed or :learn as its third field." >&2
             exit 1
         fi
-        # Anything after the third field is the schedule.
+        # Nothing may follow the third field. The ":step:<T0>:<w>:<fixed|learn>"
+        # layer schedule that used to go there was removed on 2026-10-11.
         if [ "$after_alpha" != "$learn_spec" ]; then
-            local schedule_spec="${after_alpha#*:}"
-            local schedule_kind="${schedule_spec%%:*}"
-            if [ "$schedule_kind" != "step" ]; then
-                echo "emit_point: check node spec '$check_node_spec': unknown schedule '$schedule_kind' (only :step:<T0>:<w>:<fixed|learn>)." >&2
-                exit 1
-            fi
-            local schedule_rest="${schedule_spec#*:}"
-            if [ "$schedule_rest" = "$schedule_kind" ]; then
-                echo "emit_point: check node spec '$check_node_spec': ':step' needs :<T0>:<w>:<fixed|learn> after it." >&2
-                exit 1
-            fi
-            coupling_schedule="step"
-            coupling_schedule_layer_init="${schedule_rest%%:*}"
-            local after_layer="${schedule_rest#*:}"
-            coupling_schedule_width_init="${after_layer%%:*}"
-            local schedule_learn_spec="${after_layer#*:}"
-            if [ "$after_layer" = "$coupling_schedule_width_init" ]; then
-                echo "emit_point: check node spec '$check_node_spec': the schedule needs a :fixed or :learn after <T0>:<w>." >&2
-                exit 1
-            fi
-            if [ "$schedule_learn_spec" = "learn" ]; then
-                coupling_schedule_learnable="true"
-            elif [ "$schedule_learn_spec" != "fixed" ]; then
-                echo "emit_point: check node spec '$check_node_spec': the schedule must end in :fixed or :learn, got '$schedule_learn_spec'." >&2
-                exit 1
-            fi
+            echo "emit_point: check node spec '$check_node_spec' has fields after :fixed/:learn. The layer schedule on alpha (:step:...) was removed on 2026-10-11; alpha is one value for every layer." >&2
+            exit 1
         fi
     elif [ "$check_node" != "tanh" ]; then
-        echo "emit_point: unknown check node '$check_node' (tanh or enriched:<alpha>:<fixed|learn>[:step:<T0>:<w>:<fixed|learn>])." >&2
+        echo "emit_point: unknown check node '$check_node' (tanh or enriched:<alpha>:<fixed|learn>)." >&2
         exit 1
     fi
 
@@ -823,9 +782,10 @@ emit_point() {   # <key> <seed> <use_cer> <check_node_spec> <optimizer_spec>
     echo "$hp" >> "$EMITTED_TOML_NAMES"
 
     # Start from the base TOML minus every key this generator sets itself, so a
-    # stale value in the base can never override a swept one. The removed loss
-    # terms' keys are stripped too: they are ignored by the code now, but a
-    # generated file should not carry dead settings.
+    # stale value in the base can never override a swept one. The keys of the
+    # removed loss terms and of the removed layer schedule (coupling_schedule*)
+    # are stripped too: the code ignores them now (and refuses a "step"
+    # schedule), so a generated file should not carry them.
     grep -vE '^[[:space:]]*(retrain|run_tag|use_CER|seed|single_qubit_rescale|require_correlations|check_node|coupling_scale_init|coupling_scale_learnable|coupling_schedule|coupling_schedule_layer_init|coupling_schedule_width_init|coupling_schedule_learnable|loss_layer_selection|commit_layer_rule|loss_layer_ramp_sharpness|base_loss|training_samples|failure_weight_boundary|warmup_layers|adam_eps|weight_decay|initial_conditions_scale|learning_rate|sparsity_importance|syndrome_gate_threshold|correlation_certainty_threshold|correlation_weight|correlation_importance|certainty_penalty|certainty_hinge_width|certainty_syndrome_gate_threshold|syndrome_gate_mode|syndrome_gate_rate|correlation_form|correlation_agreement_floor|llr_certainty_importance)[[:space:]]*=' \
         "$MODELS_DIR/$BASE_HP" > "$MODELS_DIR/$hp"
     {
@@ -840,10 +800,6 @@ emit_point() {   # <key> <seed> <use_cer> <check_node_spec> <optimizer_spec>
         echo "check_node = \"${check_node}\""
         echo "coupling_scale_init = ${coupling_scale_init}"
         echo "coupling_scale_learnable = ${coupling_scale_learnable}"
-        echo "coupling_schedule = \"${coupling_schedule}\""
-        echo "coupling_schedule_layer_init = ${coupling_schedule_layer_init}"
-        echo "coupling_schedule_width_init = ${coupling_schedule_width_init}"
-        echo "coupling_schedule_learnable = ${coupling_schedule_learnable}"
         echo "loss_layer_selection = \"${loss_layer_selection_value}\""
         echo "commit_layer_rule = \"${commit_layer_rule_value}\""
         echo "loss_layer_ramp_sharpness = ${loss_layer_ramp_sharpness_value}"
@@ -1472,9 +1428,9 @@ if [ "$LOCAL" -eq 1 ]; then
     SMOKE_HP="hyperparams_hp_smoke.toml"
     grep -vE '^[[:space:]]*(retrain|run_tag|use_CER|seed|single_qubit_rescale|require_correlations|check_node|coupling_scale_init|coupling_scale_learnable|coupling_schedule|coupling_schedule_layer_init|coupling_schedule_width_init|coupling_schedule_learnable|n_epochs|n_gradient_updates_per_epoch|sparsity_importance|syndrome_gate_threshold|correlation_certainty_threshold|correlation_weight|correlation_importance|certainty_penalty|certainty_hinge_width|certainty_syndrome_gate_threshold|syndrome_gate_mode|syndrome_gate_rate|correlation_form|correlation_agreement_floor|llr_certainty_importance)[[:space:]]*=' \
         "$MODELS_DIR/$BASE_HP" > "$MODELS_DIR/$SMOKE_HP"
-    # The smoke test exercises the enriched check node with a LEARNED alpha AND
-    # a LEARNED step schedule, which is the arm with the most new code on its
-    # path: both links, both Duplicated arguments, both optimiser leaves.
+    # The smoke test exercises the enriched check node with a LEARNED alpha,
+    # which is the arm with the most code on its path: the logistic link, the
+    # extra Duplicated argument and the decay-free optimiser leaf.
     {
         echo ""
         echo "# smoke test: 1 epoch, 20 updates — enough to exercise every code path."
@@ -1489,10 +1445,6 @@ if [ "$LOCAL" -eq 1 ]; then
         echo "check_node = \"enriched\""
         echo "coupling_scale_init = 0.503"
         echo "coupling_scale_learnable = true"
-        echo "coupling_schedule = \"step\""
-        echo "coupling_schedule_layer_init = 12"
-        echo "coupling_schedule_width_init = 3"
-        echo "coupling_schedule_learnable = true"
     } >> "$MODELS_DIR/$SMOKE_HP"
 
     SMOKE_CMD="julia --project=\"./../\" neural_bp_experiments.jl --workdir $WORKDIR --codename $CODENAME \
@@ -1500,7 +1452,7 @@ if [ "$LOCAL" -eq 1 ]; then
 --quiet false --isdebug true --train train_${SMOKE_KEY}.txt --test test_${SMOKE_KEY}.txt"
 
     echo
-    echo "local smoke test — enriched check node, learned alpha from 0.503, learned step schedule from (12, 3), $SMOKE_N samples, 1 epoch:"
+    echo "local smoke test — enriched check node, learned alpha from 0.503, $SMOKE_N samples, 1 epoch:"
     echo "  cd $SCRIPT_DIR"
     echo "  rm -f $DATA/results/simulation_results_*_smoke_seed_1.csv"
     echo "  USE_GPU=0 $SMOKE_CMD"

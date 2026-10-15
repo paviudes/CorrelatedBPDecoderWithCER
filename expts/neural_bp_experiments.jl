@@ -102,7 +102,12 @@ if abspath(PROGRAM_FILE) == @__FILE__
     # typo fails before any data is read. No automatic filename tag: put it in
     # `run_tag`, as for every other hyperparameter that defines an arm.
     check_node::String = String(get(hyperparams, "check_node", "tanh"))
-    check_node_code(check_node)
+    check_node_kind::Int = check_node_code(check_node)
+    # Which gradient training uses (Enzyme, or `manual_backprop = true`: the
+    # hand-written backward pass, on the GPU under USE_GPU=1). Checked here as
+    # well, so a bad value or an enriched run asking for it fails before any
+    # data is read.
+    manual_backprop_setting(hyperparams, check_node_kind)
     coupling_scale_init::Float32 = Float32(get(hyperparams, "coupling_scale_init", 1.0f0))
     if check_node == "enriched"
         print_info("[check_node=enriched] couplings enter the check factor with " *
@@ -120,31 +125,8 @@ if abspath(PROGRAM_FILE) == @__FILE__
         end
     end
 
-    # Layer schedule on α: "constant" (one α everywhere) or "step" (α_t = α·d(t),
-    # a logistic step down at layer T₀ of width w, both trainable). Only read by
-    # the enriched check node; `NeuralBPBase` refuses it on the tanh rule. Same
-    # filename rule as the check node: no automatic tag, so `run_tag` must
-    # distinguish a step run from the constant run it would otherwise overwrite.
-    coupling_schedule::String = String(get(hyperparams, "coupling_schedule", "constant"))
-    coupling_schedule_code(coupling_schedule)
-    coupling_schedule_layer_init::Float32 =
-        Float32(get(hyperparams, "coupling_schedule_layer_init", Float32(n_hidden_layers)))
-    coupling_schedule_width_init::Float32 =
-        Float32(get(hyperparams, "coupling_schedule_width_init", 3.0f0))
-    if coupling_schedule == "step"
-        print_info("[coupling_schedule=step] α_t = α · d(t), step at layer T₀ = $(coupling_schedule_layer_init), " *
-                   "width w = $(coupling_schedule_width_init) layers " *
-                   "($(Bool(get(hyperparams, "coupling_schedule_learnable", true)) ? "learnable" : "fixed")).")
-        if run_tag == ""
-            throw(ArgumentError(
-                "coupling_schedule = \"step\" needs a non-empty `run_tag` in the " *
-                "hyperparameters TOML (e.g. \"_sch12w3L\"), or its weights and " *
-                "results files collide with the constant schedule's."))
-        end
-    end
-
     # Train the Neural BP model
-    base = load_base_BP_model(
+    base::NeuralBPBase = load_base_BP_model(
         parity_check_matrix_file, logicals_file, n_hidden_layers;
         cer_data_file=cer_data_file,
         use_cer=use_CER,
@@ -152,19 +134,15 @@ if abspath(PROGRAM_FILE) == @__FILE__
         single_qubit_rescale=Float32(get(hyperparams, "single_qubit_rescale", 0.0f0)),
         require_correlations=Bool(get(hyperparams, "require_correlations", false)),
         check_node=check_node,
-        coupling_schedule=coupling_schedule,
     )
-    initial_conditions = Dict{String, Vector{Float32}}(
+    initial_conditions::Dict{String, Vector{Float32}} = Dict{String, Vector{Float32}}(
         "weights_c2v_v2c" => random_values_around_one([base.nb_weights_c2v_v2c * base.n_layers]; scale=hyperparams["initial_conditions_scale"]),
         "weights_llrs" => random_values_around_one([base.code_n_bits * base.n_layers]; scale=hyperparams["initial_conditions_scale"]),
         "weights_c2v_readout" => random_values_around_one([base.nb_weights_c2v_readout]; scale=hyperparams["initial_conditions_scale"]),
         # α is NOT drawn at random: it starts at the value `coupling_scale_init`
         # names, so the run begins AT the hypothesis. Stored as its logit; see
-        # `coupling_scale_from_logit`. The schedule's (T₀, w) likewise start at
-        # their named values, in layers.
-        "coupling_scale" => Float32[coupling_scale_init],
-        "coupling_schedule_layer" => Float32[coupling_schedule_layer_init],
-        "coupling_schedule_width" => Float32[coupling_schedule_width_init]
+        # `coupling_scale_from_logit`.
+        "coupling_scale" => Float32[coupling_scale_init]
     )
     start = time()
     bpnn = train_Nachmani_neuralbp(
@@ -303,16 +281,12 @@ if abspath(PROGRAM_FILE) == @__FILE__
     push!(extra_result_columns, "failure_weight_boundary" =>
         Float64(get(hyperparams, "failure_weight_boundary", 0.0)))
     push!(extra_result_columns, "commit_layer_rule" => commit_layer_rule_name(commit_layer_rule))
+    # Which gradient trained the model: Enzyme (false) or the hand-written
+    # backward pass (true). They agree to Float32 round-off, not bit for bit.
+    push!(extra_result_columns, "manual_backprop" => manual_backprop_setting(hyperparams, check_node_kind))
     push!(extra_result_columns, "check_node" => check_node)
     push!(extra_result_columns, "coupling_scale" => effective_coupling_scale(bpnn))
     push!(extra_result_columns, "coupling_logit" => bpnn.coupling_logit[1])
-    # The layer schedule and where it ended up (learned when trainable, the
-    # fixed init otherwise). Under the constant schedule the two values are the
-    # inert defaults; the kind column says which.
-    (final_step_layer, final_step_width) = effective_coupling_schedule(bpnn)
-    push!(extra_result_columns, "coupling_schedule" => coupling_schedule)
-    push!(extra_result_columns, "coupling_schedule_layer" => final_step_layer)
-    push!(extra_result_columns, "coupling_schedule_width" => final_step_width)
 
     # Diagnostic aggregates. `num_failures` (already recorded) is the sum of
     # num_coset_failures and num_convergence_failures; splitting it is the whole

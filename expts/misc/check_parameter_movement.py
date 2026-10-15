@@ -6,13 +6,12 @@ check_parameter_movement.py — did the trainable parameters actually move?
     python3 misc/check_parameter_movement.py --workdir <run dir> --tag opt
 
 The primary outcome of the optimizer sweep is NOT the failure count. It is
-whether alpha and the step schedule move at all. They did not in any run so far:
+whether alpha moves at all. It did not in any run so far:
 
     alpha  0.42 -> 0.4156 +- 0.008   over 2500 updates
-    T0     12   -> 12.0006 +- 0.039  over 2500 updates
 
 At lr = 0.001 a parameter taking full Adam steps travels 2.5 in that budget, so
-those moved by ~1e-4 of nominal. The suspected cause is `adam_eps = 1e-4`,
+alpha barely moved. The suspected cause is `adam_eps = 1e-4`,
 10000x the 1e-8 default: Adam's step is lr * m/(sqrt(v) + eps), and for a
 small-gradient parameter sqrt(v) ~ eps, so the denominator is eps-dominated and
 the step collapses. The message weights have large enough gradients that
@@ -22,15 +21,14 @@ This script reads the trained weights JSONs and reports, per (optimizer arm,
 check-node arm):
 
     alpha       final value, spread over seeds, and |final - init|
-    T0, w       same, for the step schedule
     weight sd   spread of the message weights, against THIS arm's own
                 initial_conditions_scale — a swept ic_scale changes the "never
                 moved" reference, so a fixed 0.058 would be wrong here
     epochs      completed epochs (a rolled-back epoch reverts the parameters,
                 which is itself a way to see no movement)
 
-Read `alpha move` and `T0 move` first. If they stay ~1e-3 at every setting, the
-optimizer is not the binding constraint and per-layer alpha cannot work either.
+Read `alpha move` first. If it stays ~1e-3 at every setting, the optimizer is
+not the binding constraint.
 """
 
 import argparse
@@ -67,21 +65,16 @@ class ModelRecord:
     check_node_tag: str
     seed: int
     alpha: Optional[float]
-    step_layer: Optional[float]
-    step_width: Optional[float]
-    schedule_kind: str
     weight_sd: float
     initial_conditions_scale: Optional[float]
     alpha_init: Optional[float]
-    step_layer_init: Optional[float]
-    step_width_init: Optional[float]
     completed_epochs: Optional[int]
 
 
 def split_tag(arm_tag: str) -> Tuple[str, str]:
     """
     Separate the optimizer suffix from the rest of the run tag.
-    `_hpcer_cnenr0p42L_sch12w3L_optreps1em8` -> ("eps1em8", "cer_cnenr0p42L_sch12w3L").
+    `_hpcer_cnenr0p42L_optreps1em8` -> ("eps1em8", "cer_cnenr0p42L").
     An untagged run reports its optimizer arm as "base".
     """
     optimizer_tag: str = "base"
@@ -184,14 +177,9 @@ def collect(run_directory: Path, tag_filter: str) -> List[ModelRecord]:
             check_node_tag=check_node_tag or "tanh",
             seed=seed,
             alpha=(weights.get("coupling_scale") or [None])[0],
-            step_layer=weights.get("coupling_schedule_layer"),
-            step_width=weights.get("coupling_schedule_width"),
-            schedule_kind=weights.get("coupling_schedule_kind", "constant"),
             weight_sd=statistics.pstdev(message_weights),
             initial_conditions_scale=read_toml_number(toml_path, "initial_conditions_scale"),
             alpha_init=read_toml_number(toml_path, "coupling_scale_init"),
-            step_layer_init=read_toml_number(toml_path, "coupling_schedule_layer_init"),
-            step_width_init=read_toml_number(toml_path, "coupling_schedule_width_init"),
             completed_epochs=completed_epochs(run_directory, fields["dataset"], arm_tag, seed),
         ))
     return records
@@ -224,8 +212,8 @@ def report(records: List[ModelRecord]) -> None:
     print()
     print(f"  {len(records)} trained model(s)")
     print()
-    header: str = ("  {:<10} {:<26} {:>3} {:>5} {:>20} {:>20} {:>20} {:>16}".format(
-        "optimizer", "arm", "n", "ep", "alpha  (±sd) move", "T0  (±sd) move", "w  (±sd) move", "weight sd / init"))
+    header: str = ("  {:<10} {:<26} {:>3} {:>5} {:>20} {:>16}".format(
+        "optimizer", "arm", "n", "ep", "alpha  (±sd) move", "weight sd / init"))
     print(header)
     print("  " + "-" * (len(header) - 2))
     for (optimizer_tag, check_node_tag) in sorted(grouped):
@@ -238,16 +226,6 @@ def report(records: List[ModelRecord]) -> None:
         alpha_text: str = format_movement(
             summarise([record.alpha for record in group]),
             summarise([record.alpha_init for record in group]))
-        has_schedule: bool = any(record.schedule_kind == "step" for record in group)
-        layer_text: str = f"{'—':>20}"
-        width_text: str = f"{'—':>20}"
-        if has_schedule:
-            layer_text = format_movement(
-                summarise([record.step_layer for record in group]),
-                summarise([record.step_layer_init for record in group]))
-            width_text = format_movement(
-                summarise([record.step_width for record in group]),
-                summarise([record.step_width_init for record in group]))
         weight_summary = summarise([record.weight_sd for record in group])
         scale_summary = summarise([record.initial_conditions_scale for record in group])
         weight_text: str = "—"
@@ -257,11 +235,11 @@ def report(records: List[ModelRecord]) -> None:
             else:
                 untrained_sd: float = scale_summary[0] * UNIFORM_SD_FACTOR
                 weight_text = f"{weight_summary[0]:.4f} / {untrained_sd:.4f}"
-        print("  {:<10} {:<26} {:>3} {:>5} {} {} {} {:>16}".format(
+        print("  {:<10} {:<26} {:>3} {:>5} {} {:>16}".format(
             optimizer_tag, check_node_tag, len(group), epochs_text,
-            alpha_text, layer_text, width_text, weight_text))
+            alpha_text, weight_text))
     print()
-    print("  alpha/T0/w columns are  <final mean>±<sd over seeds>  <|final - init|>.")
+    print("  the alpha column is  <final mean>±<sd over seeds>  <|final - init|>.")
     print("  A move of ~1e-3 is no movement: at lr = 1e-3 over 2500 updates, full")
     print("  Adam steps would travel ~2.5. weight sd is against this arm's own")
     print("  initial_conditions_scale * 1/sqrt(3), the untrained value.")

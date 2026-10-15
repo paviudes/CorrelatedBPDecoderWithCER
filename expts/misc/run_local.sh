@@ -65,8 +65,8 @@
 # --design ramp swaps in the ramp loss alone (4 trainings, 16 tests);
 # --design all runs the three optimizer arms together (12 trainings, 48 tests).
 #
-# The cluster sweep is 8 arms x 5 seeds = 40 trainings / 160 tests. Dropped here:
-# the CER-tanh arm and the enriched+step-schedule arm, and three seeds.
+# The cluster sweep is 6 arms x 5 seeds = 30 trainings / 120 tests. Dropped here:
+# the CER-tanh arm, and three seeds.
 #
 # Consequences, stated plainly:
 #   - Without the CER-tanh arm, "no-CER vs enriched" conflates the PRIORS with the

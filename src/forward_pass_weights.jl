@@ -256,31 +256,24 @@ function forward_pass_with_weights(
     weights_llrs,
     weights_c2v_readout,
     coupling_logit,
-    coupling_schedule,
     base,
     initial_llrs_batch,
     syndromes_batch
-)
+)::Array{Float32, 3}
     """
     Forward pass with explicit weights as arguments, so that it's friendly for Enzyme.jl.
 
     `coupling_logit` is the length-1 vector holding θ, the UNCONSTRAINED trained
     parameter. The logistic link α = 1/(1 + exp(-θ)) is applied exactly HERE,
-    once per forward pass rather than once per layer, and α is what travels down
-    to the check-node kernel. Putting the link at this level is what keeps α
-    inside (0, 1) for free while leaving the kernel able to take any α — which
-    is why `α = 0` is still expressible and still reproduces the tanh rule.
+    once per forward pass rather than once per layer, and α — the same in every
+    layer — is what travels down to the check-node kernel. Putting the link at
+    this level is what keeps α inside (0, 1) for free while leaving the kernel
+    able to take any α — which is why `α = 0` is still expressible and still
+    reproduces the tanh rule.
 
-    `coupling_schedule` is the length-2 vector [T₀, log(w - W_MIN)] of the layer
-    schedule. Under `COUPLING_SCHEDULE_STEP` each layer t receives
-    α_t = α · d(t) with d the logistic step of `coupling_schedule_damping`;
-    under `COUPLING_SCHEDULE_CONSTANT` every layer receives α and the vector is
-    never read. The damping is evaluated per layer inside the differentiated
-    region, so the gradient with respect to [T₀, ρ] is exact.
-
-    Both conversions are inside the differentiated region, so Enzyme carries the
-    chains θ -> α -> messages -> loss and [T₀, ρ] -> d(t) -> messages -> loss,
-    and the reported gradients are with respect to the parameters Adam updates.
+    The conversion is inside the differentiated region, so Enzyme carries the
+    chain θ -> α -> messages -> loss, and the reported gradient is with respect
+    to the parameter Adam updates.
     """
     n_samples = size(initial_llrs_batch, 2)
     neurons_per_layer = base.nb_neurons_per_layer
@@ -310,16 +303,11 @@ function forward_pass_with_weights(
 
     # Forward pass through layers
     for layer in 1:base.n_layers
-        # α_t for this layer. A fresh length-1 vector per layer rather than one
-        # buffer mutated in place: the kernel reads it after this point and the
-        # reverse pass needs each layer's value, and a new allocation gives
-        # Enzyme nothing to disambiguate. Ninety 4-byte allocations per forward
-        # pass is not a cost worth an aliasing question.
-        layer_damping::Float32 = 1.0f0
-        if base.coupling_schedule_kind == COUPLING_SCHEDULE_STEP
-            layer_damping = coupling_schedule_damping(coupling_schedule, layer)
-        end
-        layer_coupling_scale::Vector{Float32} = Float32[linked_coupling_scale * layer_damping]
+        # α as a fresh length-1 vector (the kernel's argument type). Allocated
+        # per layer, as when α could vary by layer, rather than hoisted out of
+        # the loop: hoisting would change the order in which Enzyme sums α's
+        # gradient over the layers, and with it the last bits of every earlier run.
+        coupling_scale_vector::Vector{Float32} = Float32[linked_coupling_scale]
         compute_layer_with_weights!(
             messages_c2v,
             activated_m_c2v_magnitudes,
@@ -334,7 +322,7 @@ function forward_pass_with_weights(
             weights_c2v_v2c,
             weights_llrs,
             weights_c2v_readout,
-            layer_coupling_scale,
+            coupling_scale_vector,
             base,
             layer,
             n_samples
@@ -348,18 +336,18 @@ function forward_pass_with_weights(
     bpnn::NachmaniNeuralBP,
     initial_llrs_batch,
     syndromes_batch
-)
+)::Array{Float32, 3}
     """
     Forward pass of a model, unpacking its weights into the explicit-weight version above.
     """
-    return forward_pass_with_weights(
+    posterior_llrs::Array{Float32, 3} = forward_pass_with_weights(
         bpnn.weights_c2v_v2c,
         bpnn.weights_llrs,
         bpnn.weights_c2v_readout,
         bpnn.coupling_logit,
-        bpnn.coupling_schedule,
         bpnn.base,
         initial_llrs_batch,
         syndromes_batch
     )
+    return posterior_llrs
 end

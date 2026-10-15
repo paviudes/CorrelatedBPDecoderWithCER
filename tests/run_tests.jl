@@ -9,6 +9,13 @@ include("test_soft_constraints.jl")
 # Which samples of the training pool the batches are drawn from. @testsets at
 # include time.
 include("test_sample_selection.jl")
+# The hand-written backward pass, one forward rule at a time. @testsets at
+# include time; the GPU testset runs on plain Arrays when no backend is present.
+include("test_backward_pass.jl")
+# The base-loss options and their derivatives, against Enzyme.
+include("test_base_loss.jl")
+# The hand-written gradient of the training loss, against Enzyme, every mode.
+include("test_gradient.jl")
 
 """
 Main test runner for all Neural BP tests.

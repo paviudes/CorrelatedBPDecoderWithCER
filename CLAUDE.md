@@ -198,42 +198,65 @@ end
   check-to-variable rule of the **forward pass** (training and testing alike).
   "enriched" puts the CER couplings inside each check factor and sends the exact
   marginal; derivation in `refs/soft_check_nbp.tex`. Reduces to "tanh" at α = 0.
-- α is `coupling_scale` (a length-1 weight vector on `NachmaniNeuralBP`), initialised
-  from `coupling_scale_init` (1 = Bayesian), learned unless
+- α is stored as its logit, `coupling_logit` (a length-1 weight vector on
+  `NachmaniNeuralBP`; α = 1/(1 + e^(−θ))), initialised from `coupling_scale_init`
+  (1 = Bayesian), learned unless
   `coupling_scale_learnable = false`, saved in the weights JSON and the results CSV.
 - **An enriched run needs a non-empty `run_tag`** (the scripts refuse otherwise): no
   filename carries a check-node tag, so it would load/overwrite the tanh run's files.
 - Same kernel for classical BP: `standard_bp_experiments.jl` with `check_node = "enriched"`
   and a fixed `coupling_scale_init` is the training-free α = 0 vs α = 1 comparison.
 - Tests: `tests/test_soft_constraints.jl` (tables, α = 0 ≡ tanh, brute-force posterior,
-  Enzyme gradients, CPU ≡ GPU, tanh path unchanged, weights-file round trip).
+  Enzyme gradients, CPU ≡ GPU, tanh path unchanged, weights-file round trip, refusal
+  of the removed layer schedule).
+- **Known limit of the GPU kernel** (`apply_enriched_checks_gpu`, testing only; noted
+  2026-10-13, not fixed): it stabilises with ONE maximum per (check, sample), and
+  each target's two class sums still contain the target's own factor. A huge
+  incoming LLR on the target (|m_v2c| > ~87) can push one sum below Float32's range,
+  and the message then saturates at ±16.6 even when the true message is small
+  (Float32 emulation, incoming (−110, 1, 1): GPU −16.6, CPU 0.30; the CPU kernel
+  stabilises each class separately). Exact while every |m_v2c| < ~70; at unit
+  weights a BB v2c message is at most 2 × 16.6 + |l|, so it needs weights above ~2.
 
-## Layer schedule on α (`coupling_schedule`, added 2026-09-22)
+## α: one value for every layer (the layer schedule was removed 2026-10-11)
 
 - **α is a unit-consistency factor, not a fitted number.** `single_qubit_rescale` maps
   the median single-qubit rate to 0.1 and leaves J untouched, so the pair term must be
   softened by the same ratio: `α* = log(9) / log((1−m)/m)`, m the median raw rate.
   That is 0.426 on `p_0.0005_sig_0.001` (where "0.42" came from) and **0.503 on
-  `p_0.0015_sig_0.0015`**. Every run on the new dataset before this date used 0.42.
-- `coupling_schedule = "constant" | "step"` in the TOML. "step" uses
-  `α_t = α · d(t)`, `d(t) = 1/(1 + exp((t − T₀)/w))`: full couplings early, rolled
-  off around layer T₀ over ~4w layers. Rationale: loopy overcounting compounds with
-  iteration, and the per-weight failure analysis showed the enriched decoder's late
-  commits (median layer 8–16) are the ones that land in the wrong coset.
-- **Two trainable parameters, not one per layer.** Stored as `coupling_schedule =
-  [T₀, log(w − 0.5)]` on `NachmaniNeuralBP`; init from `coupling_schedule_layer_init`
-  / `coupling_schedule_width_init` (layers), learned unless
-  `coupling_schedule_learnable = false`. Only ~2% of samples are active past layer 10
-  and `warmup_layers` hides the first layers from the loss, so 90 free α_t would fit
-  noise. The width has a 0.5-layer floor (its gradient is d(1−d)/w).
-- **d(t) is computed as `(1 − tanh(u/2))/2`, never `1/(1+exp(u))`.** Same function;
-  the exp form overflows to Inf at 88.7·w layers past T₀ and Enzyme's reverse pass
-  returns Inf·0 = NaN there, NaN-skipping the batch — reachable at the width floor.
-- Needs `check_node = "enriched"` (`NeuralBPBase` refuses it on tanh) and, like the
-  check node, **a non-empty `run_tag`** — no filename carries a schedule tag.
-- Sweep spec: `enriched:<α>:<fixed|learn>[:step:<T₀>:<w>:<fixed|learn>]`, tag
-  `_cnenr<α>F/L[_sch<T₀>w<w>F/L]`. `standard_bp_experiments.jl` honours the same keys
-  with everything fixed: that is the classical (T₀, w) scan.
+  `p_0.0015_sig_0.0015`**. Every run on the new dataset before 2026-09-22 used 0.42.
+- **In the neural decoder (and the unit-weight standard BP built on it) the enriched
+  check node is the only correlation-aware message-passing rule, and its α is the same
+  in every layer.** From 2026-09-22 to 2026-10-11 a separate key,
+  `coupling_schedule = "step"`, let α vary by layer as `α_t = α · d(t)` (a logistic
+  step with two trainable parameters, T₀ and w). It was removed to keep one rule with
+  one α. Nothing measured depended on it: every enriched result in `data/` (395 rows)
+  and every local run from 2026-10-07 had a constant α; the cluster step arm
+  (`_sch12w3L`, 2026-10-05) is recorded only as neither causing nor preventing the NaN
+  rollbacks; and its learned T₀ moved 12 → 12.0006 ± 0.039 in 2,500 updates
+  (`check_parameter_movement.py`), so the init was the schedule.
+  - The forward pass still allocates α per layer (`Float32[α]` inside the layer loop)
+    so that Enzyme sums α's gradient over layers in the same order as every earlier run.
+  - Signatures: `get_loss_value`, `get_individual_loss_values`,
+    `compute_loss_and_gradients`, `forward_pass_with_weights`, `forward_pass_with_tape`,
+    `forward_pass_gpu` and `build_gpu_state` lost their `coupling_schedule` argument —
+    **four `Duplicated` arguments, then the five `Const`s**. `NachmaniNeuralBP` lost the
+    field (positional constructor: base, three weight vectors, `coupling_logit`);
+    `LossAndGradients` lost it too; `GPUState.coupling_scale` is a scalar.
+  - Old inputs: a TOML with `coupling_schedule = "step"` is refused by
+    `parse_hyper_parameters`; `"constant"` and the `coupling_schedule_*` keys are
+    ignored (the sweep generator strips them). A weights JSON with
+    `coupling_schedule_kind = "step"` is refused by `load_trained_neuralbp_model`; one
+    with `"constant"` loads as before. New weights files, results CSVs and debug logs
+    carry no schedule fields (the collector stacks CSVs with `cols = :union`).
+  - Sweep spec: `enriched:<α>:<fixed|learn>`; a spec with more fields is refused.
+  - **Left as is (decided 2026-10-12):** the old Float64 classical-BP stack
+    (`bp_algo.jl`, `tanner_graph.jl`, `quantum_code.jl`; drivers `quantum_BP_test.jl`,
+    `ballistic_errors.jl`, `misc/explicit_errors.jl`) has its own correlation rule:
+    one degree-2 soft check per correlated pair, appended to H, message
+    `2 atanh(tanh(J) tanh(m/2))` with `J = ½ log(w/(1−w))`, `w = weight_soft_constraint`.
+    Its plain path, `run_bp(…, n_checks + 1, …)`, is the standard-BP reference in
+    `test_forward.jl` and `test_bp_algo.jl`.
 - `check_training_health.sh <codename> [tag]` reports completed epochs per arm (an
   epoch with 6 non-finite gradients is **rolled back**, weights and Adam state) and
   weight sd (~0.058 = never moved). Arm comparisons are only meaningful when
@@ -595,7 +618,8 @@ and was commented out in favour of the sine; it is now a switch.
 
 - `base_loss = "sin_residue"` is the default and reproduces every earlier run;
   `"smooth_loss"` selects the quadratic. `BASE_LOSS_SIN_RESIDUE = 0`,
-  `BASE_LOSS_SMOOTH = 1`, `base_loss_code` / `base_loss_name`.
+  `BASE_LOSS_SMOOTH = 1`, `base_loss_code` / `base_loss_name`. All of these, the
+  residues and their derivatives now live in `src/base_loss.jl` (2026-10-09).
 - Threaded as one more positional argument after `loss_layer_ramp_sharpness` in
   `compute_smooth_loss_from_llrs` → `base_loss_per_layer` → `compute_loss` (all
   with defaults) and in `get_loss_value` / `get_individual_loss_values` (no
@@ -736,6 +760,248 @@ Pooled over 4 test sets × 2 seeds, 800k per arm. 0 of 16 rolled back.
   warmup, k, training set — from the baseline TOML. The ramp-at-warmup-0 note
   prints once, not per point.
 
+### Measured 2026-10-09: `--design icscale`, 50 layers, ramp + last + smooth_loss, Poisson(3) 10k set, warmup 0
+
+Pooled over 4 test sets × 2 seeds, 800k per arm. 0 of 8 rolled back. Baseline = the
+2026-10-09 ramp + smooth arms (whole file, warmup 5, init 0.3).
+
+| arm | total | coset | conv | TRAIN set (s1/s2) | baseline (init 0.3) |
+|---|---|---|---|---|---|
+| CER, init 0.1 | 2305 | 930 | 1375 | 538 / 562 | — |
+| CER, init 0.3 | **2014** | 863 | 1151 | 575 / 550 | 2247 (883 \| 1364), TRAIN 620 / 568 |
+| no-CER, init 0.1 | 2482 | 533 | 1949 | 807 / 811 | — |
+| no-CER, init 0.3 | **2314** | 544 | 1770 | 774 / 768 | 2444 (502 \| 1942), TRAIN 767 / 845 |
+
+- **The sampler did its job on the input side and the decoder did not respond.**
+  The set was exactly as designed (Poisson(3): 42% / 23% / 35% at w ≤ 2 / 3 / ≥ 4,
+  ~9,050 distinct of 10,000, identical across the four arms at a seed). Informative
+  batches rose from 5.6–12% to **15–17% (CER) and 21–29% (no-CER)** — exactly
+  20 × Σ_w Pois(3;w)·P(fail|w) ≈ 0.19 failures per batch, as the arithmetic said.
+  Training was healthy and the epoch-mean loss fell 30%. And the **per-weight
+  failure rates at weights ≥ 5 on the training distribution are unchanged to the
+  third digit** (CER: 1.69 / 2.72 / 6.6 / 12.3% at w = 5 / 6 / 7 / 8 vs 1.72 / 2.72 /
+  7.05 / 12.5% before; no-CER likewise). Totals moved −5% (no-CER) and −10% (CER),
+  1–2σ, and the CER number is mostly the transferred-set blocks below.
+- **Init scale: 0.3 vs 0.1 is nothing on the training distribution** (CER 1125 vs
+  1100, no-CER 1542 vs 1618). The pooled +13% for CER at 0.1 is one seed's block
+  on one transferred set, not the init.
+- **Warmup 0 under the ramp costs what was predicted.** On solved batches (85% of
+  all) the layers 1–5 transient is **46–70% of the ramp loss** for CER (11–28% for
+  no-CER, whose smooth-loss transient is smaller), and training spent itself there:
+  the median layer-1 loss on solved batches fell 18.7 → 12.2 while the informative
+  plateau stayed at 0.30–0.35. Half the gradient taught layer 1 to decode.
+
+#### The failures are PATTERNS, and the sampler could not reach them (2026-10-09)
+
+The per-sample files make the structure explicit, and it changes what "a failure"
+means here:
+
+- **BP's verdict is a function of the error pattern** (same pattern ⇒ same
+  syndrome ⇒ same decode): every failing pattern fails on **every one** of its
+  occurrences, in all 32 arm-seed-set files. A failure count is a sum over distinct
+  patterns of their multiplicities, not a Poisson count of samples.
+- **The error model is a few thousand patterns with heavy repetition.** The TRAIN
+  test set's 200k samples are 10,848 distinct patterns; at p = .0005 only 2,600–3,600.
+  Within one weight the probability is extremely non-uniform: at p = .0005 sig = .001,
+  82% of the weight-3 samples are patterns that occur ≥ 20× (top pattern 129×), while
+  C(72,3) = 59,640 weight-3 patterns exist.
+- **On the training distribution the failures are the RARE patterns**: 807 failures =
+  727 distinct patterns (multiplicity 1–3). Only **2–4%** of a model's failing test
+  patterns were in its 10k training set and only **~11%** exist anywhere in the 200k
+  training file. The Poisson draw is uniform *within* a weight, i.e. proportional to
+  frequency, so it over-samples precisely the frequent cliques the decoder already
+  handles (2,325 weight-3 draws covered 676 distinct patterns) and never sees the
+  tail where the failures are. That is why tripling the informative share moved
+  nothing: the signal came from the wrong patterns.
+- **The CER seed "blocks" on the transferred sets are 1–4 FREQUENT patterns each**:
+  cer_init_0p1 s1 at p = .0005 sig = .001 has 425 failures of which 334 are four
+  patterns — (3,19,49) 129/129, (6,22,52) 100/100, (9,29,39) 77/77, (2,24,54) 28/28 —
+  all weight 3, all containing a coupled pair, all convergence failures (either never
+  cleared, or cleared and drifted out under commit = last: 159 of 162 at p = .0007).
+  Nearly disjoint between seeds (overlap 0–2 patterns). This pre-existed (the
+  baseline's 297/140, 98/224, 82/218 swings) and is specific to CER under a change of
+  test-time priors/couplings; the no-CER arms, whose inputs do not change between
+  test sets, have no blocks. **Counted per distinct pattern, CER beats no-CER on
+  every set** (TRAIN 511–544 vs 711–744, −27%; transferred sets −25 to −35%); the
+  sample-weighted number flips sign in the seeds that hit a frequent clique.
+- **Half of a model's failing patterns are flippable.** Jaccard overlap of the
+  failing-pattern sets between seeds is 0.5–0.7 (CER vs no-CER: 0.3–0.44), so about
+  half the failures are structural (every init fails them) and half are decided by
+  the init — the training target, if training could reach them.
+- **Consequences.** (1) The statistical unit is the pattern: report distinct failing
+  patterns alongside sample counts, and do not trust √N error bars on the
+  transferred CER sets. (2) Weight-balancing cannot target failures; the lever is
+  *pattern* coverage — synthetic errors drawn uniformly over patterns of a given
+  weight (the `online_training` stub, which today only resamples the file), or
+  hard-example mining of the decoder's own failing patterns (a forward pass over the
+  pool, ~80 s on Metal, yields a few hundred patterns). The file's own patterns
+  cannot cover the tail: 89% of the failing test patterns are not in it. (3) For
+  the CER arms, the four-pattern blocks are the cheapest large win: frequent cliques
+  the decoder fails deterministically, fixable by including the most frequent
+  patterns of each prior in the training set, or masked by first-to-clear where they
+  are drift.
+
+## Hand-written backward pass (`src/backward_pass_with_weights.jl`, `src/backward_pass_gpu.jl`, started 2026-10-09)
+
+- Built one forward rule at a time, CPU and GPU together, each function the
+  ADJOINT of one forward step (∂L/∂outputs in, ∂L/∂inputs out). Step one of each
+  rule is the reversed data flow — the forward rule's sum over the same
+  neighbourhood, outputs back to inputs, constants (syndrome, channel LLR)
+  dropped; step two, the derivative factors between raw and activated adjoints
+  and the weight gradients, comes separately. Notation: m raw message, A = a(m)
+  activated, bar = ∂L/∂.
+- **Done: `backward_v2c_to_c2v!`** (rule 1̄, activated domain, within a layer):
+  Ā_{v′→c} = Σ_{v∈N(c)−v′} Ā_{c→v}, i.e. `transpose(adj_V2C_C2V) * Ā_c2v`.
+  Derived by differentiating rule 1 w.r.t. one input (Jacobian entries 1[v ≠ v′])
+  and the chain rule. `adj_V2C_C2V` is symmetric, so the transpose is the
+  forward's own matrix — asserted in a test, not relied on. GPU mirror
+  `backward_v2c_to_c2v_gpu` with a `GPUBackwardState` holding the dense
+  transpose (built once per model, `release_gpu_backward_state!`).
+- **Done: `backward_c2v_to_v2c!`** (rule 2̄, raw domain, layer t → t−1):
+  m̄^{t−1}_{c′→v} = Σ_{c∈N(v)−c′} W^{t−1}_{(v,c;c′,v)} m̄^t_{v→c} — `sparse_multiply!`
+  with `rows`/`cols` swapped, the weight vector unchanged (the weight of a pair,
+  read from its other end). Two kinds of derivative come out of one rule and they
+  are different in kind: the adjoints w.r.t. the NEURONS (m̄) are the carrier that
+  propagates to the next layer down; the derivatives w.r.t. W and b are the
+  gradient the optimiser wants and are read off locally, since each weight
+  appears in exactly one place — `weight_gradients_c2v_to_v2c!`:
+  W̄_{(v,c;c′,v)} = Σ_samples m̄^t_{v→c}·m^{t−1}_{c′→v} (outer product at the
+  nonzeros) and b̄^t_v += Σ_samples l_v·Σ_{c∈N(v)} m̄^t_{v→c} (`adj_initialize_V2C'`
+  then the LLR). Both accumulate; b^t_v is also used by the readout, whose share
+  comes with the readout adjoint. GPU: `backward_c2v_to_v2c_gpu(m̄_v2c, state,
+  layer)` with the transposed, masked per-layer weight matrices in
+  `GPUBackwardState` (now built from the model, `build_gpu_backward_state(bpnn)`,
+  so it is rebuilt per training step like the forward state);
+  `weight_gradients_c2v_to_v2c_gpu` returns the FLAT (n_pairs,) weight gradient
+  (one-hot selectors, since 2026-10-12; it returned the dense (nb × nb) form
+  before) and the (n_bits,) channel gradient.
+- Tests `tests/test_backward_pass.jl`: the two-check graph by hand (both rules),
+  the BB code against pair-by-pair reference loops, the adjoint identities, finite
+  differences of L = Σ G ⊙ (rule output) through the production forward
+  functions for W̄ and b̄, accumulation, CPU ≡ GPU (plain Arrays when no
+  backend). Rule 1̄'s CPU tests pass (2026-10-09).
+- Two test lessons. `GPUBackwardState` is built from a MODEL (it carries the
+  transposed per-layer weights); rule 1̄'s GPU test uses `unit_weight_neuralbp(base)`.
+  A finite difference against the Float32 forward must sum the loss in Float64 and
+  use a large step — the rules are linear in every parameter, so any step is exact
+  — because a 648-term Float32 sum over a 1e-2 step is mostly rounding (simulated:
+  19 of 30 seeds over 2e-3; Float64 sum at step 0.5: max error 6e-6).
+- **Done (2026-10-09): the whole CPU gradient.** `src/gradient.jl`:
+  `compute_loss_and_gradients` takes `get_loss_value`'s arguments in the same
+  order and returns a `LossAndGradients` (loss + the four gradients Enzyme writes
+  into the `Duplicated` shadows). Three stages: `forward_pass_with_tape` (the same
+  `compute_layer_with_weights!` calls as `forward_pass_with_weights`, so the
+  posteriors are bit-identical; keeps incoming/outgoing c2v, raw v2c, check-node
+  magnitudes and signs per layer), the seed c_t · ∂L_t/∂μᵗ, and the reverse sweep.
+  New rule adjoints in backward_pass_with_weights.jl: `backward_readout!`,
+  `weight_gradients_readout!` (W^ro is shared across layers, so W̄^ro sums over
+  them; bᵗ gets the readout's share AND rule 2's), `backward_atanh_exp_signed!`
+  ((a⁻¹)′ out of the check node), `backward_log_tanh_split!` (a′ into it).
+  `combine_layer_losses_gradient` (src/loss.jl) is c_t: softmax weights, 1 at the
+  last layer, 1/n, or w_t/Σw.
+- **`src/base_loss.jl`** holds the residue options as (g, g′) pairs —
+  `sine_residue_loss`/`sine_residue_derivative`, `smooth_loss`/`smooth_loss_derivative`
+  — plus `compute_base_loss` (moved verbatim from loss.jl; `compute_smooth_loss_from_llrs`
+  is now its alias, so the Enzyme path is the identical computation) and
+  `compute_base_loss_gradient` = (1/N) σ′(μ) ⊙ H⊥ᵀ g′(x). Adding an option = a g, a
+  g′, a code, and one branch in each of the two wrappers.
+- **Numerical forms, chosen to match Enzyme where it matters.** The forward's
+  clamps are replicated (derivative 0 where tanh(|m|/2) or exp(M) is clamped), and
+  the factors use Enzyme's forms in Enzyme's order: tanh′ as 1/cosh², atanh′ as
+  1/(1 − y²). On a Float32 emulation the "same" derivative written as 1 − tanh²
+  differs by up to 25% next to the clamp, and the gradient spread between the two
+  forms reaches 2e-4 (LLR 5.5, 3 layers) to 1e-2 (LLR 8, 5 layers). σ′ is
+  −σ(x)σ(−x): −σ(1 − σ) loses all accuracy for x ≲ −10, and Enzyme's
+  −eˣ/(1 + eˣ)² is Inf/Inf beyond 88.7.
+- Validated before transcription by a float64 numpy prototype against central
+  finite differences: every layer rule × residue × warmup × temperature, ≤ 1e-6
+  relative (Richardson), including saturated regimes.
+- **Scope: the tanh check node only (decided 2026-10-13).** An enriched adjoint
+  (CPU and GPU) was written on 2026-10-12 and removed the next day, to keep the
+  gradient simple while the tanh version is tested. Both wrappers refuse an
+  enriched base; Enzyme stays the path for `check_node = "enriched"`. For the
+  record: with π_vᵉ(k) the softmax of the configuration log-weights within the
+  class {k : b_v(k) = e, parity = s_c}, a_v = m̄_{c→v} (0 where the cap clamped)
+  and ω(k) = Σ_v a_v [π_v⁰(k) 1{b_v(k)=0} − π_v¹(k) 1{b_v(k)=1}], the adjoint is
+  m̄_u = −Σ_k ω(k) b_u(k) − a_u and ᾱ = Σ_k ω(k) E(k), equal to the tanh chain's at
+  α = 0; it matched Enzyme on the CPU (≤ 2.5e-5) and the GPU matched the CPU.
+- **The GPU gradient, `compute_loss_and_gradients_gpu` (`src/gradient_gpu.jl`,
+  2026-10-12, tanh only)**: same arguments and result as the CPU wrapper, message
+  passing in both directions on `ArrayT` (Metal on a Mac **whether or not
+  `USE_GPU` is set**, CUDA on Linux, plain Arrays otherwise).
+  - **The posteriors are not enough for the gradient.** `forward_pass_gpu` already
+    returns μᵗ for every layer, which is all the LOSS needs, and the wrapper uses
+    exactly that (host `base_loss_per_layer`, `combine_layer_losses`,
+    `compute_base_loss_gradient` on the GPU's posteriors; only the per-layer seed
+    goes back up). But the reverse sweep evaluates a′, (a⁻¹)′ and the weight
+    read-offs at each layer's MESSAGES, and μᵗ = R m_c2vᵗ + bᵗ ⊙ l is 72 numbers per
+    sample made from 216 messages — they cannot be recovered from it. So
+    `forward_pass_gpu_with_tape` keeps raw v2c, check-node magnitudes and 0/1 signs,
+    and outgoing c2v per layer on the device. It runs the testing forward's own
+    layer function (`_compute_layer_gpu` now wraps `_compute_layer_gpu_values`), so
+    its posteriors equal `forward_pass_gpu`'s bit for bit.
+  - New GPU rule adjoints (`backward_pass_gpu.jl`): `backward_readout_gpu`,
+    `weight_gradients_readout_gpu`, `backward_atanh_exp_signed_gpu`,
+    `backward_log_tanh_split_gpu` (the CPU's scalar factors `atanh_exp_signed_adjoint`
+    / `log_tanh_split_adjoint`, broadcast — one definition for both paths; the CPU
+    loops now call them, same operations).
+  - **Weight gradients are FLAT on the device**: one-hot selectors per weighted pair
+    (`pair_output_selector`, `pair_input_selector`, and the readout's two) turn the
+    read-off into matrix products, W̄_k = Σ_samples (S_out m̄)_k (S_in m)_k. Replaced
+    the dense (nb × nb) gradient and `gather_weight_gradient_entries` (removed).
+    `GPUBackwardState` now also holds the transposed readout matrix; it is built
+    from (base, message weights, readout weights).
+  - The wrapper builds and frees its forward state, backward state and tape per
+    call (Julia's GC does not feel device memory). It rebuilds and re-uploads the
+    dense per-layer weights every call — fine for correctness, the first thing to
+    optimise for GPU training. At the training batch of 20 a GPU step is likely
+    launch-bound; GPU training pays off with much larger batches.
+- Tests: `tests/test_base_loss.jl` (residue and σ derivatives vs Enzyme on
+  scalars, `compute_base_loss_gradient` vs Enzyme on the toy and a random 18×40
+  dual) and `tests/test_gradient.jl` (tape ≡ forward bit for bit; manual vs Enzyme
+  for 4 rules × 2 residues × warmups × {T = 1, 0.2} on the toy graph (1e-4), the BB
+  code at LLR log 9 (1e-3), and at the CER priors (5e-3 norm); enriched refused).
+  Each comparison prints its largest relative difference. **Measured 2026-10-11
+  (Julia 1.13.1, updated Enzyme): largest relative gradient difference 5.3e-7 on
+  the toy graph, 3.1e-7 on the BB code at LLR log 9, 1.6e-5 at the CER priors** —
+  far inside tolerance, and inside the 2e-4 spread a mismatched derivative form
+  would give, so the factor forms do match Enzyme's. The one failure was the LOSS
+  against Enzyme's primal at rtol 1e-6 (1.7e-6 apart): Enzyme returns the value of
+  its own compiled copy, whose @simd sums associate differently. The test now
+  demands the manual loss EQUAL a plain `get_loss_value` call (same functions,
+  bit-identical posteriors) and allows Enzyme's primal 1e-5.
+- **GPU tests, measured 2026-10-13** (`test_gradient.jl`, Julia 1.13.1, Metal): the
+  tape's posteriors `==` `forward_pass_gpu`'s; GPU wrapper vs CPU wrapper on the BB
+  code at LLR log 9, 1.6e-6. At the CER priors the gradients agreed to 7.7e-4 but
+  the LOSSES were 2–3e-4 apart, failing a loss tolerance of 1e-4. Not a bug: near
+  saturation the tanh rule is ill-conditioned in Float32 (2 atanh(exp(M)) with
+  exp(M) a few ulp below 1), so the device's own rounding of exp/log/tanh moves the
+  posteriors by ~1e-3 relative — which the GPU forward test in
+  `test_soft_constraints.jl` already allows. That test's loss tolerance is now 1e-3
+  (not yet re-run), and a two-check-graph GPU test and the GPU refusal of an
+  enriched base were added. `test_backward_pass.jl` — readout and activation
+  adjoints GPU vs CPU, the flat rule-2 weight gradient.
+- **Training with it: `manual_backprop = true` (TOML, added 2026-10-15).** Default
+  `false` = Enzyme, so every earlier run reproduces bit for bit. `true` calls
+  `compute_loss_and_gradients` in `train_neuralbp_enzyme!` in place of
+  `Enzyme.autodiff` — or `compute_loss_and_gradients_gpu` when `gpu_active()`
+  (USE_GPU=1, the same switch testing reads); the optimiser, clipping, NaN guard
+  and rollback are unchanged. `manual_backprop_setting` validates it (a Bool; an
+  enriched run asking for it is refused, not quietly given Enzyme), called by the
+  training function and, before any data is read, by `neural_bp_experiments.jl`.
+  Recorded in the results CSV as `manual_backprop` (TOML value; whether it ran on
+  the GPU is not recorded — that is USE_GPU at TRAINING time). With `--quiet false`
+  training prints which gradient it uses, and always prints one summary line:
+  gradients computed, total time, the first gradient (compilation included) and
+  the mean of the rest. Test (`test_gradient.jl`, not yet run): two Adam steps on
+  the two-check graph from one seed, with Enzyme, manual CPU and manual GPU, must
+  agree to 1e-5; plus the validation and the enriched refusal.
+  - **Expect the CPU, not the GPU, to be fastest at `batch_size = 20`**: the GPU
+    gradient rebuilds and re-uploads every dense per-layer weight matrix and
+    selector each step and is launch-bound at that size. Caching the
+    model-independent parts of the two states across steps is the first
+    optimisation, larger batches the second.
+
 ## Run tags (changed 2026-10-09)
 
 - **The run tag is `_<arm>_<optimizer tag>` and nothing else** — `_cer_init_0p1`,
@@ -745,6 +1011,11 @@ Pooled over 4 test sets × 2 seeds, 800k per arm. 0 of 16 rolled back.
   settings a sweep holds fixed now live in the TOML and the results CSV, not the
   name. Consequently two points that would share a filename (two check-node
   arms in one sweep, say) are refused by the generator rather than merged.
+  **This includes the generator's own cluster default**, `check_node_arms =
+  ["tanh", "enriched:0.42:learn"]`: both are CER arms, both get `_cer_<opt>`, and
+  `bash sweep_hyperparams.sh --no-edit` exits 1 (verified 2026-10-11). Give the
+  sweep one CER check-node arm, as `run_local.sh` does, until the check node is
+  put back into the arm name.
 - Not part of the tag, and unchanged: the code's own `_no_cer` infix on a no-CER
   run (so `..._200000_no_cer_nocer_init_0p1_seed_1.json`), and the weights
   filename's `nlayers_<N>_epochs_<n>_trained_using_<training file>` fields.
@@ -756,10 +1027,28 @@ Pooled over 4 test sets × 2 seeds, 800k per arm. 0 of 16 rolled back.
 
 ## Running locally on Apple Silicon (`misc/run_local.sh`, added 2026-10-07)
 
-- **Metal does nothing for training.** Enzyme cannot differentiate through
-  device-array allocation, so the training forward pass is always the CPU one
-  (`src/train.jl:20`). Only testing uses the GPU. A local run is therefore CPU
-  training (`USE_GPU=0`) plus Metal testing (`USE_GPU=1`).
+- **Julia 1.13 needs a newer Enzyme.** `Manifest.toml` (resolved under Julia
+  1.12.5, the cluster's `julia/1.12.5`) records Enzyme 0.13.138, which refuses 1.13:
+  `AssertionError: VERSION < v"1.13"` in `Enzyme.Compiler.fixup_1p12_sret!`, raised
+  while compiling, before anything is differentiated (a 1.13.1 REPL hit it on
+  2026-10-11; the 2026-10-09 local trainings ran on 1.12). Nothing pins Enzyme —
+  no `[compat]`, no `Pkg.pin` — only the Manifest. Julia 1.13 fixes landed in
+  Enzyme 0.13.204–0.13.208 (Sep 2026; 0.13.215 current on 2026-10-09). Upgrade path:
+  resolve under 1.12 so the Manifest stays valid for the cluster —
+  `julia +1.12 --project=. -e 'using Pkg; Pkg.update("Enzyme")'` — then run the
+  Enzyme tests (`test_gradient`, `test_base_loss`, `test_loss`, `test_soft_constraints`)
+  and the GPU ones (`test_backward_pass`, the CPU ≡ GPU sets) under BOTH 1.13 and
+  1.12, since GPUCompiler/LLVM may move with it; then commit the Manifest and rerun
+  `precompile_depot.sh` before the next sweep. Runs on the new stack will not
+  reproduce older runs bit for bit at the same seed — compare arms within one stack.
+  Until then, `julia +1.12` (or `juliaup override set 1.12`) runs everything.
+
+- **Metal does nothing for training under Enzyme.** Enzyme cannot differentiate
+  through device-array allocation, so its training forward pass is always the CPU
+  one. A local run is therefore CPU training (`USE_GPU=0`) plus Metal testing
+  (`USE_GPU=1`) — unless `manual_backprop = true`, in which case USE_GPU=1 also
+  puts training's gradient on Metal (tanh check node only; see the hand-written
+  backward pass section).
 - **Testing is the cost, not training.** A test point is ~129 s on an A100; an
   M-series GPU has roughly 1/15th the memory bandwidth for a workload bound by it.
   The lever is the sample count, and there is no CLI flag for it — `--n_samples` is

@@ -8,22 +8,16 @@ function load_base_BP_model(
     single_qubit_rescale::Float32=0f0,
     require_correlations::Bool=false,
     check_node::String="tanh",
-    coupling_schedule::String="constant",
-)
+)::NeuralBPBase
     """
     Load the base BP model from the parity check matrix and logical operators files.
 
     `check_node` selects the check-to-variable rule: "tanh" (the standard rule,
     the default, reproducing every earlier run) or "enriched" (the CER
-    couplings inside each check factor, see soft_constraints.jl). "enriched"
-    requires two-qubit couplings and therefore `use_cer = true` and a CER file
-    with pairs; `NeuralBPBase` refuses otherwise.
-
-    `coupling_schedule` selects how the coupling scale α varies with the layer:
-    "constant" (the default, one α everywhere) or "step" (α_t = α · d(t), a
-    logistic step down in the layer index whose layer and width the model
-    trains; see soft_constraints.jl). Only meaningful with `check_node =
-    "enriched"`; `NeuralBPBase` refuses it on the standard rule.
+    couplings inside each check factor, scaled by one α shared by every layer;
+    see soft_constraints.jl). "enriched" requires two-qubit couplings and
+    therefore `use_cer = true` and a CER file with pairs; `NeuralBPBase`
+    refuses otherwise.
     The parity check matrix file is a text file where each line corresponds to a row of the parity check matrix, and the entries are separated by spaces.
     The logical operators file is a text file where each line corresponds to a logical operator, and the entries are separated by spaces.
     The function will read these files, construct the parity check matrix and logical operators, and return a NeuralBPBase model.
@@ -126,7 +120,7 @@ function load_base_BP_model(
     end
 
     # Construct the NeuralBPBase model
-    base = NeuralBPBase(
+    base::NeuralBPBase = NeuralBPBase(
         parity_check_matrix,
         dual_parity_check_matrix,
         initial_llrs,
@@ -134,13 +128,9 @@ function load_base_BP_model(
         connectivity=connectivity_matrix,
         correlation_strengths=correlation_strengths,
         check_node=check_node,
-        coupling_schedule=coupling_schedule,
     )
     if base.check_node_kind == CHECK_NODE_ENRICHED
         print_info("Enriched check node: $(describe_soft_check_tables(base.soft_check_tables)).")
-    end
-    if base.coupling_schedule_kind == COUPLING_SCHEDULE_STEP
-        print_info("Coupling schedule: step — α_t = α · d(t), with the step layer and width trained.")
     end
     return base
 end
@@ -168,39 +158,31 @@ function load_trained_neuralbp_model(weights_filename::String, bpnn::NachmaniNeu
               "check_node = \"$(recorded_check_node)\" but is being loaded into a " *
               "model with check_node = \"$(active_check_node)\"."
     end
-    # Same for the layer schedule on α: a model whose step was trained under
-    # one schedule and is run under another is a legitimate question, never a
-    # silent one.
-    recorded_schedule::String = String(get(weights_data, "coupling_schedule_kind", "constant"))
-    active_schedule::String = coupling_schedule_name(bpnn.base.coupling_schedule_kind)
-    if recorded_schedule != active_schedule
-        @warn "load_trained_neuralbp_model: $(weights_filename) was trained with " *
-              "coupling_schedule = \"$(recorded_schedule)\" but is being loaded into a " *
-              "model with coupling_schedule = \"$(active_schedule)\"."
+    # A model trained with the layer schedule on α (removed 2026-10-11) used a
+    # different α in every layer; this decoder uses one α for all of them, so
+    # it cannot reproduce that model. Refuse rather than decode it wrongly.
+    recorded_schedule::String = weights_data["coupling_schedule_kind"]
+    if lowercase(strip(recorded_schedule)) != "constant"
+        throw(ArgumentError(
+            "load_trained_neuralbp_model: $(weights_filename) was trained with " *
+            "coupling_schedule = \"$(recorded_schedule)\" (α varying by layer), which " *
+            "was removed on 2026-10-11. The decoder now uses one α for every layer " *
+            "and cannot reproduce this model."))
     end
-    # Create a NachmaniNeuralBP model with the loaded weights. The schedule's
-    # human-unit defaults come from the caller's model, so a file that predates
-    # the schedule (no key) loads with whatever the caller was built with — and
-    # under the constant schedule those values are never read anyway.
-    (caller_step_layer, caller_step_width) = effective_coupling_schedule(bpnn)
-    loaded_bpnn = NachmaniNeuralBP(
+    # Create a NachmaniNeuralBP model with the loaded weights.
+    loaded_bpnn::NachmaniNeuralBP = NachmaniNeuralBP(
         bpnn.base,
         weights_c2v_v2c=weights_data["weights_c2v_v2c"],
         weights_llrs=weights_data["weights_llrs"],
         weights_c2v_readout=weights_data["weights_c2v_readout"],
-        coupling_scale=Float32(weights_data["coupling_scale"][1]),
-        coupling_schedule_layer=caller_step_layer,
-        coupling_schedule_width=caller_step_width
+        coupling_scale=Float32(weights_data["coupling_scale"][1])
     )
-    # Restore the EXACT trained parameters when the file carries them.
-    # Rebuilding from α instead would round-trip through logit(logistic(θ)),
-    # which is lossless only to Float32 precision -- fine for decoding, but a
-    # saved and reloaded model should be bit-identical. Likewise the schedule.
+    # Restore the EXACT trained parameter when the file carries it. Rebuilding
+    # from α instead would round-trip through logit(logistic(θ)), which is
+    # lossless only to Float32 precision -- fine for decoding, but a saved and
+    # reloaded model should be bit-identical.
     if haskey(weights_data, "coupling_logit")
         loaded_bpnn.coupling_logit .= weights_data["coupling_logit"]
-    end
-    if haskey(weights_data, "coupling_schedule")
-        loaded_bpnn.coupling_schedule .= weights_data["coupling_schedule"]
     end
     return loaded_bpnn
 end
@@ -240,13 +222,6 @@ function save_trained_neuralbp_model(
     weights_data["coupling_logit"] = vec(bpnn.coupling_logit)
     weights_data["coupling_scale"] = Float64[effective_coupling_scale(bpnn)]
     weights_data["check_node"] = check_node_name(bpnn.base.check_node_kind)
-    # The layer schedule on α, in both forms as well: the stored [T₀, ρ] is the
-    # parameter, (T₀, w) in layers is what a human reads.
-    (step_layer, step_width) = effective_coupling_schedule(bpnn)
-    weights_data["coupling_schedule"] = vec(bpnn.coupling_schedule)
-    weights_data["coupling_schedule_layer"] = Float64(step_layer)
-    weights_data["coupling_schedule_width"] = Float64(step_width)
-    weights_data["coupling_schedule_kind"] = coupling_schedule_name(bpnn.base.coupling_schedule_kind)
     if seed !== nothing
         weights_data["seed"] = seed
     end
