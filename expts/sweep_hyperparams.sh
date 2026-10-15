@@ -1133,13 +1133,11 @@ export JULIA_PKG_PRECOMPILE_AUTO=0
 
 # Hard gate. Without it the job proceeds and every point dies one by one at its
 # first device array, each burning its own startup, and the stage-out returns
-# nothing.
+# nothing. functional(true) throws with the REASON (no driver, no runtime
+# artifact, ...) where functional() only returns false, so a failure explains
+# itself in the .err file.
 cuda_is_functional() {
-    julia --project=\$SLURM_SUBMIT_DIR/.. -e '
-        using CUDA
-        if !CUDA.functional()
-            exit(1)
-        end'
+    julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using CUDA; CUDA.functional(true)'
 }
 # The check loads CUDA.jl, which costs most of a minute, so it runs a second
 # time only after a failure.
@@ -1150,9 +1148,8 @@ if ! cuda_is_functional; then
     echo "[\$PHASE task \$TASK] CUDA check failed once; re-checking in 60s" >&2
     sleep 60
     if ! cuda_is_functional; then
-        echo "ERROR: CUDA is not functional on this node after forcing a JLL rebuild." >&2
-        echo "  Check that 'module load $CUDA_MODULE' succeeded and that" >&2
-        echo "  LocalPreferences.toml still has [CUDA_Runtime_jll] local_toolkit = true." >&2
+        echo "ERROR: CUDA is not functional on this node after forcing a JLL rebuild;" >&2
+        echo "  the reason is the error CUDA.functional(true) printed above." >&2
         exit 1
     fi
 fi

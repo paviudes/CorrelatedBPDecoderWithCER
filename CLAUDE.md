@@ -142,13 +142,48 @@ end
     `julia`/`parallel`/`module` and fake `SLURM_*`: all 5 train and 8 test tasks exit
     0 (lock owner + waiting siblings, 20 models and 80 results staged out); a failing
     point exits 1; the TERM handler stages out the finished point and exits 1; a CUDA
-    gate failing twice exits 1. Not yet run on Narval.
+    gate failing twice exits 1. Re-run after the gate became `CUDA.functional(true)`:
+    same results, with the reason in the .err file. Not yet run on Narval.
 - **Warm the Julia depot on a LOGIN node** before `sbatch`: `bash misc/precompile_depot.sh`.
   Compute nodes have no internet, and array tasks share one Lustre depot — in-job
-  `Pkg.instantiate()`/`Pkg.precompile()` can stall for the whole walltime.
-- **`LocalPreferences.toml` must keep `local_toolkit = true`** for `CUDA_Runtime_jll`.
-  Switching to artifact mode (`version = "..."`) makes CUDA.jl try to download on a
-  node with no network, which hangs until timeout.
+  `Pkg.instantiate()`/`Pkg.precompile()` can stall for the whole walltime. Since
+  2026-10-15 it also refuses (exit 1, printing the commands) a manifest resolved by
+  another Julia minor version, and prints the CUDA toolkit the login node selected,
+  refusing `none`.
+- **One manifest per Julia minor version (2026-10-15).** The laptop runs 1.13.1 and
+  Narval `julia/1.12.5` (Narval has no 1.13 module, checked 2026-10-15), and a
+  manifest only works with the minor version that resolved it. Julia X.Y reads `Manifest-vX.Y.toml` before `Manifest.toml` (Julia
+  ≥ 1.10.8), so `Manifest.toml` is the laptop's and `Manifest-v1.12.toml` the
+  cluster's. Commit b207a50 re-resolved `Manifest.toml` under 1.13.1 (Enzyme
+  0.13.138 → 0.13.215, CUDA 5.11.2 → 6.4.1, Metal 1.9.3 → 1.11.1) with no 1.12
+  manifest beside it, and `precompile_depot.sh` on Narval failed while precompiling
+  Metal (through LLVMDowngrader_jll 0.11): `Package Zstd_jll [3161d3a3-…] is required
+  but does not seem to be installed`. 1.13 made Zstd_jll a standard library, so a 1.13
+  manifest records it with no `git-tree-sha1`, and 1.12, where it is an ordinary
+  package, has nothing to install. Create the cluster's manifest with the cluster's
+  Julia — `cp Manifest.toml Manifest-v1.12.toml`, then
+  `julia --project=. -e 'using Pkg; Pkg.resolve()'` (resolve keeps every version it
+  can) — and commit it. Redo both after any `Pkg.add`/`Pkg.update` on the laptop, so
+  the cluster follows the laptop's versions.
+- **CUDA.jl 6 (which came with that manifest) removed `CUDA.available_memory()`.**
+  `forward_pass_gpu` caught the `UndefVarError` and would have sized every test chunk
+  for 1 GB without a word; it now calls `CUDA.free_memory()` (there since 5.4) and
+  warns if the query fails. The other CUDA names the code uses (`functional`,
+  `CuArray`, `unsafe_free!`; `name`, `device`, `runtime_version` in
+  `submission/slurm.jl`) all still resolve in 6.4.1.
+- **`local_toolkit = true` in `LocalPreferences.toml` is not a key CUDA_Runtime_jll
+  reads** (checked in the source of 0.21.0+1 and 0.25.0+2: it reads `local` and
+  `version`; `CUDA.set_runtime_version!(local_toolkit=true)` writes `local = "true"`).
+  So the cluster has always used the CUDA runtime ARTIFACT, chosen from the driver
+  Julia can see and downloaded lazily on first load — on the login node, online,
+  during `precompile_depot.sh`. An offline GPU node can only use an artifact already
+  in the depot, and 0.25's artifacts are new downloads (different tree hashes from
+  0.21's). If the login node selects `none`, pin the toolkit:
+  `julia --project=. -e 'using CUDA; CUDA.set_runtime_version!(v"12.9")'` (writes
+  `version` for CUDA_Runtime_jll and CUDA_Compiler_jll; CUDA.jl rejects a runtime
+  only when its MAJOR version exceeds the driver's). `local = "true"` would switch
+  to the module's toolkit instead — untested here. The jobs' CUDA gate now runs
+  `CUDA.functional(true)`, which throws with the reason rather than returning false.
 - **Always pass `--heap-size-hint`** when running many Julia processes on one node.
   The GC sizes its heap against total physical memory, not the cgroup share, so N
   workers each balloon to their high-water mark and collapse the page cache.
@@ -1061,21 +1096,12 @@ means here:
 
 ## Running locally on Apple Silicon (`misc/run_local.sh`, added 2026-10-07)
 
-- **Julia 1.13 needs a newer Enzyme.** `Manifest.toml` (resolved under Julia
-  1.12.5, the cluster's `julia/1.12.5`) records Enzyme 0.13.138, which refuses 1.13:
-  `AssertionError: VERSION < v"1.13"` in `Enzyme.Compiler.fixup_1p12_sret!`, raised
-  while compiling, before anything is differentiated (a 1.13.1 REPL hit it on
-  2026-10-11; the 2026-10-09 local trainings ran on 1.12). Nothing pins Enzyme —
-  no `[compat]`, no `Pkg.pin` — only the Manifest. Julia 1.13 fixes landed in
-  Enzyme 0.13.204–0.13.208 (Sep 2026; 0.13.215 current on 2026-10-09). Upgrade path:
-  resolve under 1.12 so the Manifest stays valid for the cluster —
-  `julia +1.12 --project=. -e 'using Pkg; Pkg.update("Enzyme")'` — then run the
-  Enzyme tests (`test_gradient`, `test_base_loss`, `test_loss`, `test_soft_constraints`)
-  and the GPU ones (`test_backward_pass`, the CPU ≡ GPU sets) under BOTH 1.13 and
-  1.12, since GPUCompiler/LLVM may move with it; then commit the Manifest and rerun
-  `precompile_depot.sh` before the next sweep. Runs on the new stack will not
-  reproduce older runs bit for bit at the same seed — compare arms within one stack.
-  Until then, `julia +1.12` (or `juliaup override set 1.12`) runs everything.
+- **The laptop runs Julia 1.13.1 on `Manifest.toml`** (since b207a50, 2026-10-15).
+  It needs Enzyme ≥ 0.13.204: the 0.13.138 of the old 1.12-resolved manifest refused
+  1.13 with `AssertionError: VERSION < v"1.13"` in `Enzyme.Compiler.fixup_1p12_sret!`.
+  The cluster keeps its own `Manifest-v1.12.toml` (cluster notes, "One manifest per
+  Julia minor version"). Runs on the new stack will not reproduce older runs bit for
+  bit at the same seed — compare arms within one stack.
 
 - **Metal does nothing for training under Enzyme.** Enzyme cannot differentiate
   through device-array allocation, so its training forward pass is always the CPU

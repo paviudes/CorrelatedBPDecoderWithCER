@@ -373,7 +373,7 @@ value (the default) means derive it.
 NOTE ON THE TWO BATCHING LEVELS. This sizes the OUTER loop in
 `predict_and_check_neuralbp`, which also governs host-side memory (each chunk's
 posterior tensor comes back to the CPU). `forward_pass_gpu` independently
-sub-chunks on the device from `CUDA.available_memory()`, so this value is an
+sub-chunks on the device from `CUDA.free_memory()`, so this value is an
 upper bound on device residency, not the only guard. Larger outer batches also
 mean fewer `build_gpu_state` rebuilds (which re-upload the weight tensor every
 call), so bigger is faster until host memory complains — hence `max_batch_size`.

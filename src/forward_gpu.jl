@@ -430,18 +430,23 @@ function forward_pass_gpu(
     # single buffer allocated. Use 1/4 of maxBufferLength as our budget so
     # the per-layer intermediates, masked weights, syndromes, etc., still fit.
     if chunk_size <= 0
-        budget_bytes = try
+        # 1 GB when there is no device to ask (the CPU path) or the query fails.
+        budget_bytes::Int = Int(2^30)
+        try
             if GPU_AVAILABLE && CorrelatedBPDecoderWithCER.METAL_LOADED
-                Int(CorrelatedBPDecoderWithCER.Metal.device().maxBufferLength) ÷ 4
+                budget_bytes = Int(CorrelatedBPDecoderWithCER.Metal.device().maxBufferLength) ÷ 4
             elseif GPU_AVAILABLE && CorrelatedBPDecoderWithCER.CUDA_LOADED
-                # CUDA.available_memory() returns free VRAM in bytes on the current device.
-                # Use 1/4 of free memory so per-layer intermediates and weights still fit.
-                Int(CorrelatedBPDecoderWithCER.CUDA.available_memory()) ÷ 4
-            else
-                Int(2^30)   # 1 GB fallback for CPU
+                # Free VRAM in bytes on the current device; a quarter of it, so the
+                # per-layer intermediates and weights still fit. CUDA.jl 6 removed
+                # the old name, `available_memory`, and the catch below then fell
+                # back to 1 GB without a word.
+                budget_bytes = CorrelatedBPDecoderWithCER.CUDA.free_memory() ÷ 4
             end
-        catch
-            Int(2^30)   # 1 GB fallback if the device query is unavailable
+        catch device_query_error
+            budget_bytes = Int(2^30)
+            print_bracketed_record(stdout, log_level_label(Logging.Warn), log_level_color(Logging.Warn),
+                ["forward_pass_gpu: the device memory query failed " *
+                 "($(sprint(showerror, device_query_error))); sizing chunks for 1 GB."])
         end
         # The enriched check node keeps (2^d × n_enriched × chunk) tensors alive
         # per layer, which for the BB code is ~4x the output tensor's per-sample
@@ -452,7 +457,7 @@ function forward_pass_gpu(
         # `maxBufferLength` is Metal's limit on a SINGLE buffer, not a statement
         # about free memory, and on unified memory every allocation competes
         # with the host — so a quarter of it is a far larger budget than the
-        # enriched kernel should claim. CUDA's `available_memory()` IS a real
+        # enriched kernel should claim. CUDA's `free_memory()` IS a real
         # budget, so the cap would only slow that path down. No-op for the
         # standard check node either way.
         if CorrelatedBPDecoderWithCER.METAL_LOADED
