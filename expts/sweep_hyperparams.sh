@@ -4,12 +4,15 @@
 # Writes a settings TOML, opens it in $EDITOR, then generates:
 #     <codename>/cluster/hp_sweep_train_<ts>.txt   one julia command per point
 #     <codename>/cluster/hp_sweep_test_<ts>.txt    the same points, with --test
-#     <codename>/cluster/hp_sweep_train_<ts>.sh    CPU job, GNU parallel
+#     <codename>/cluster/hp_sweep_train_<ts>.sh    GPU job, GNU parallel
 #     <codename>/cluster/hp_sweep_test_<ts>.sh     GPU job
 #     <codename>/models/hyperparams_hp_*.toml      one per point
 #
-# Training is CPU-only (Enzyme AD cannot use a GPU) so it runs on a plain CPU
-# allocation; only testing asks for a GPU.
+# Both jobs run on GPU nodes (2026-10-15). Training uses the hand-written
+# backward pass on the card (`manual_backprop = true`, which the base TOML must
+# say, and USE_GPU=1), `train_jobs` trainings sharing one card; testing runs one
+# process per card, as before. The test job is chained on the training job with
+# afterok. The network is unrolled to 90 layers, fixed here; it is not a setting.
 #
 #   bash sweep_hyperparams.sh              edit settings, then generate
 #   bash sweep_hyperparams.sh --no-edit    use the defaults as written
@@ -109,7 +112,9 @@ ref_datasets     = []
 test_keys        = ["p_0.0015_sig_0.0015_s_1", "p_0.0007_sig_0.001_s_1", "p_0.0005_sig_0.001_s_1", "p_0.0005_sig_0.0005_s_1"]
 
 base_hyperparams = "hyperparams_baseline.toml"
-n_hidden_layers  = 90
+# Layers: FIXED at 90 in the generator, not a setting (2026-10-15). 50 was worse
+# on every arm (2026-10-08: +11% to +83% failures), so there is nothing to choose.
+# A settings file that still names another count is refused.
 # Network seeds, on EVERY cell. Seed variance has been the binding error bar
 # throughout (sd up to 1000 failures at a fixed configuration), so nothing is
 # read off fewer than five.
@@ -189,7 +194,13 @@ commit_layer_rule    = "last"
 # barely more than singles). alpha = 0.42 was 50% BETTER than tanh (1980 -> 989
 # failures, paired McNemar z = 21). Enriched arms are emitted for CER arms only
 # (the no-CER baseline has no couplings to enrich; NeuralBPBase refuses).
-check_node_arms  = ["tanh", "enriched:0.42:learn"]
+#
+# TANH ONLY FOR NOW (2026-10-15). Training runs on GPUs with the hand-written
+# backward pass (manual_backprop = true), which covers the tanh check node only;
+# an enriched arm needs Enzyme, which cannot use the GPU, so the generator
+# refuses one. (Two CER arms would also collide: only the arm and the optimizer
+# tag reach the filename.)
+check_node_arms  = ["tanh"]
 
 # --- optimizer axis: a COORDINATE sweep around the base TOML -----------------
 # Each entry is  <tag>[:<key>=<value>[,<key>=<value>...]]. An entry with no
@@ -274,25 +285,22 @@ optimizer_arms   = ["designA:loss_layer_selection=last,commit_layer_rule=last,in
 #   optimizer_arms = ["wu0:warmup_layers=0", "wu2:warmup_layers=2", "wu5:warmup_layers=5", "wu10:warmup_layers=10"]
 
 # --- cluster ----------------------------------------------------------------
-# ACTIVE: NARVAL. Two profiles are kept here; switching is the six values marked
+# ACTIVE: NARVAL. Two profiles are kept here; switching is the five values marked
 # [PROFILE]. Nothing else in this file is cluster-specific.
 #
 #   NARVAL (Calcul Quebec)           NIBI (SHARCNET)
-#   CPU  64 cores, 249G / 498G       CPU  192 cores, 748G (766000M)
-#   GPU  4x A100 40GB                GPU  8x H100 SXM 80GB NVLink
+#   GPU  4x A100 40GB, 48 cores      GPU  8x H100 SXM 80GB NVLink
 #   MIG  a100_Ng.Mgb                 MIG  h100_1g.10gb / 2g.20gb / 3g.40gb
 #   requests --gpus-per-node=        MIG requests --gpus=   (auto handles both)
 #   compute nodes: NO internet       compute nodes: internet
 #
 #   [PROFILE]             narval           nibi
-#   train_cpus            54               120
-#   cpu_node_memory_mb    510000 (498G)    766000 (748G)
-#   train_array_tasks     5                2
 #   gpu_type              a100             h100_3g.40gb
+#   train_cpus            12               14
 #   test_cpus             12               14
+#   train_array_tasks     5                5
 #   test_array_tasks      8                8
 cluster_name     = "narval"
-account_cpu      = "def-jemerson"
 account_gpu      = "def-jemerson_gpu"
 email            = "pavithran.sridhar@gmail.com"
 julia_module     = "julia/1.12.5"
@@ -303,31 +311,35 @@ heap_size_hint   = "4G"
 # interleaved slice of the point list (task t takes lines t, t+K, t+2K, ...), so
 # K tasks cut the wall time by ~K without any task needing a bigger node. Slurm
 # schedules small allocations sooner, so more/smaller tasks generally start
-# earlier than one large one.
-#   60 points / 5 tasks = 12 per task, well inside one 54-core wave.
-train_array_tasks = 5
-# --mem-per-cpu is POOLED (mem_per_cpu x cpus_per_task). 54 x 6G = 324G, so this
-# lands on Narval's 498G nodes rather than the 249G ones -- which is what the
-# 246-point sweep ran on. The generator hard-fails below if the product exceeds
-# cpu_node_memory_mb.
-train_cpus       = 54   # points per task per wave; a Narval CPU node has 64
-train_mem_per_cpu = "6G"
-cpu_node_memory_mb = 510000   # 498G, for the overcommit check
-# 3h, not 4: measured 1h47m for an 8-point slice on 2026-10-05 (task 0, 10:47:54
-# -> 12:35:15), plus ~210s of precompile and stage-in. The preflight below puts
-# the 8-point estimate at 2h05m = 69% of this, and a shorter wall schedules sooner.
-train_wall_time  = "3:00:00"
-
-# Measured: 3.7 min per test per process. ONE CARD PER ARRAY TASK, one process
-# on it: a 1-GPU request schedules far sooner than a whole 4-GPU node, and the
-# no-sharing rule (see below) is satisfied trivially rather than by arithmetic.
-# Scale throughput with test_array_tasks, NOT with processes per card.
-#   60 points / 8 tasks = 8 per task x ~4 min = ~30 min.
+# earlier than one large one. Both jobs ask for the same allocation: ONE card per
+# array task (gpu_type, n_gpus_per_node, mem_per_gpu below) on account_gpu.
 #
-# NEVER put two processes on one unpartitioned card: the real footprint is ~1.5x
-# the nominal GPU_MEMORY, so two on a 40 GB a100 overcommit and die stochastically
-# at OOM — that killed 21/54 tests on 2026-08-28. MIG only worked because MIG is
-# a HARD partition. Sharing is safe only when the hardware partitions it.
+# TRAINING: `train_jobs` trainings share the task's card (USE_GPU=1, the
+# hand-written backward pass; the base TOML must say manual_backprop = true).
+# Sharing a card is safe here, unlike in testing: a training process holds a
+# CUDA context and batches of 20 -- well under 1 GB of VRAM -- where a test
+# process sizes its batch to fill the card. Host RAM is the limit: each training
+# reads the 1e6-sample file (~2 GB with readdlm's intermediates) on top of Julia
+# and CUDA, so the generator refuses train_jobs x heap_size_hint above
+# n_gpus_per_node x mem_per_gpu. How well 4 trainings share one card is
+# UNMEASURED; seconds_per_train_point below allows for it.
+#   20 points / 5 tasks = 4 per task = one wave of train_jobs = 4.
+train_array_tasks = 5
+train_jobs       = 4                 # trainings at a time on the task's card
+train_cpus       = 12                # 48 cores / 4 GPUs on a Narval GPU node; >= train_jobs
+train_wall_time  = "1:00:00"
+
+# TESTING. ONE PROCESS PER CARD: a 1-GPU request schedules far sooner than a
+# whole 4-GPU node, and the no-sharing rule (see below) is satisfied trivially
+# rather than by arithmetic. Scale throughput with test_array_tasks, NOT with
+# processes per card.
+#   80 points / 8 tasks = 10 per task x 129 s (measured, below) = ~22 min.
+#
+# NEVER put two TEST processes on one unpartitioned card: the real footprint is
+# ~1.5x the nominal GPU_MEMORY, so two on a 40 GB a100 overcommit and die
+# stochastically at OOM -- that killed 21/54 tests on 2026-08-28. MIG only worked
+# because MIG is a HARD partition. Sharing is safe only when the hardware
+# partitions it.
 test_array_tasks = 8
 # Full a100 (40GB), one process per card -- the configuration that completed
 # 27/27 and 54/54 clean. a100_3g.20gb schedules sooner when the queue is long but
@@ -336,9 +348,9 @@ gpu_type         = "a100"
 # "auto" emits --gpus-per-node= for a full card and --gpus= for a MIG slice
 # (which is what Nibi requires). Correct for Narval either way.
 gpu_request_style = "auto"
-n_gpus_per_node  = 1                 # one card per array task
-test_jobs        = 1                 # one process on it; do not raise
-mem_per_gpu      = "32G"             # SLURM HOST ram per GPU (not VRAM)
+n_gpus_per_node  = 1                 # one card per array task, both jobs
+test_jobs        = 1                 # one TEST process on it; do not raise
+mem_per_gpu      = "32G"             # SLURM HOST ram per GPU (not VRAM), both jobs
 vram_per_gpu     = ""                # VRAM in GB for the batch sizer; "" => infer from gpu_type
 test_cpus        = 12   # 48 cores / 4 GPUs on a Narval GPU node
 test_wall_time   = "4:00:00"
@@ -347,14 +359,21 @@ test_wall_time   = "4:00:00"
 # MEASURED on this code and this code size (2026-10-01 run, a100, 1e6 samples):
 #   per test      129 s  (task 0 did 35 tests in 75m12s; that INCLUDES the fresh
 #                         julia+CUDA load GNU parallel pays for every point)
-#   per train pt  ~6600 s (tasks ran 4 points concurrently in 100-120 min)
 #   startup       up to 370 s of precompile, plus stage-in and three julia
 #                 invocations -> 900 s is a safe allowance
+# ESTIMATED, not yet measured on Narval (2026-10-15):
+#   per train pt  1800 s  one training point while train_jobs = 4 share the card.
+#                 A laptop point took ~10 min at 50 layers (hand-written backward
+#                 pass, GPU and CPU alike), so ~18 min at 90 layers on its own;
+#                 the cost of sharing a card is unknown. After the first sweep,
+#                 replace this with what the points report: each prints a
+#                 "Training: ... in <s> s" line, kept in its stdout under
+#                 cluster/logs/hp_<ts>_train_task<t>/.
 # The generator multiplies these out against the array width and refuses to
 # write a job that cannot finish. Raise them if the code or the sample count
 # grows; they are estimates, not promises.
 seconds_per_test = 129
-seconds_per_train_point = 6600
+seconds_per_train_point = 1800
 job_startup_seconds = 900
 EOF
 echo "[hp_sweep] wrote defaults to: $SETTINGS_FILE"
@@ -402,7 +421,17 @@ quoted_list() { get "$1" | grep -o '"[^"]*"' | tr -d '"'; }
 WORKDIR=$(get workdir);              CODENAME=$(get codename)
 DATASETS=$(list datasets);           REF_DATASETS=$(list ref_datasets)
 TEST_KEYS=$(list test_keys)
-BASE_HP=$(get base_hyperparams);     NLAYERS=$(get n_hidden_layers)
+BASE_HP=$(get base_hyperparams)
+# The network is unrolled to 90 layers, always (50 was worse on every arm,
+# 2026-10-08). Not a setting: a settings file that still names another count is
+# refused rather than silently overridden, since the count is in every filename.
+NLAYERS=90
+SETTINGS_NLAYERS=$(get n_hidden_layers)
+if [ -n "$SETTINGS_NLAYERS" ] && [ "$SETTINGS_NLAYERS" != "$NLAYERS" ]; then
+    echo "n_hidden_layers = $SETTINGS_NLAYERS in $SETTINGS_FILE: the layer count is fixed at $NLAYERS." >&2
+    echo "  Delete that line from the settings file." >&2
+    exit 1
+fi
 SEEDS=$(list seeds)
 INCLUDE_NOCER=$(get include_nocer)
 RESCALE=$(get single_qubit_rescale)
@@ -426,6 +455,15 @@ CHECK_NODE_ARMS=$(list check_node_arms)
 if [ -z "$CHECK_NODE_ARMS" ]; then
     CHECK_NODE_ARMS="tanh"
 fi
+# Checked here, before any file is written; emit_point refuses it again.
+for check_node_arm in $CHECK_NODE_ARMS; do
+    if [ "${check_node_arm%%:*}" != "tanh" ]; then
+        echo "check_node_arms: '$check_node_arm' -- training runs the hand-written backward pass" >&2
+        echo "  (manual_backprop = true, on the GPU), which covers the tanh check node only." >&2
+        echo "  Set check_node_arms = [\"tanh\"]." >&2
+        exit 1
+    fi
+done
 OPTIMIZER_ARMS=$(quoted_list optimizer_arms)
 if [ -z "$OPTIMIZER_ARMS" ]; then
     OPTIMIZER_ARMS="base"
@@ -449,18 +487,38 @@ base_hyperparameter_value() {   # <key>
     grep -E "^[[:space:]]*$1[[:space:]]*=" "$MODELS_DIR/$BASE_HP" | head -1 |
         sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]*#.*$//; s/^"//; s/"$//; s/[[:space:]]*$//'
 }
-ACCOUNT_CPU=$(get account_cpu);      ACCOUNT_GPU=$(get account_gpu)
+ACCOUNT_GPU=$(get account_gpu)
 EMAIL=$(get email);                  JULIA_MODULE=$(get julia_module)
 CUDA_MODULE=$(get cuda_module);      HEAP=$(get heap_size_hint)
-TRAIN_CPUS=$(get train_cpus);        TRAIN_MEM=$(get train_mem_per_cpu)
+TRAIN_CPUS=$(get train_cpus);        TRAIN_JOBS=$(get train_jobs)
 TRAIN_ARRAY=$(get train_array_tasks); TEST_ARRAY=$(get test_array_tasks)
 TRAIN_WALL=$(get train_wall_time)
 GPU_TYPE=$(get gpu_type);            N_GPUS=$(get n_gpus_per_node)
 TEST_JOBS=$(get test_jobs);          MEM_PER_GPU=$(get mem_per_gpu)
 VRAM_PER_GPU=$(get vram_per_gpu)
 TEST_CPUS=$(get test_cpus);          TEST_WALL=$(get test_wall_time)
-CLUSTER_NAME=$(get cluster_name);    CPU_NODE_MEM_MB=$(get cpu_node_memory_mb)
+CLUSTER_NAME=$(get cluster_name)
 GPU_REQUEST_STYLE=$(get gpu_request_style)
+if [ -z "$TRAIN_JOBS" ]; then
+    TRAIN_JOBS=4
+fi
+if [ -z "$TRAIN_CPUS" ]; then
+    TRAIN_CPUS="$TEST_CPUS"
+fi
+# A training task gets the cores ONE card comes with, as a test task does. A
+# larger number is almost certainly a CPU-node value from an older settings file
+# (54), and SLURM would refuse the allocation.
+if [ "$TRAIN_CPUS" -gt $(( TEST_CPUS * N_GPUS )) ]; then
+    echo "train_cpus = $TRAIN_CPUS is more than the $(( TEST_CPUS * N_GPUS )) cores of n_gpus_per_node = $N_GPUS" >&2
+    echo "  card(s) (test_cpus each). Training runs on GPU nodes now; set train_cpus <= test_cpus." >&2
+    exit 1
+fi
+# account_cpu, train_mem_per_cpu and cpu_node_memory_mb belonged to the CPU
+# training job, which is gone: training runs on the GPU account now.
+if [ -n "$(get account_cpu)" ] || [ -n "$(get train_mem_per_cpu)" ] || [ -n "$(get cpu_node_memory_mb)" ]; then
+    echo "[hp_sweep] note: account_cpu / train_mem_per_cpu / cpu_node_memory_mb are ignored --" >&2
+    echo "           training runs on GPU nodes on account_gpu (train_cpus cores, mem_per_gpu RAM)." >&2
+fi
 
 # VRAM per card, for the prediction batch sizer. This is NOT --mem-per-gpu, which
 # is host RAM: GPU_MEMORY has to fit the CARD or the batch is sized too large and
@@ -480,16 +538,29 @@ if [ -z "$VRAM_PER_GPU" ]; then
         *) echo "unknown gpu_type '$GPU_TYPE': set vram_per_gpu explicitly." >&2; exit 1 ;;
     esac
 fi
-# PREFLIGHT: --mem-per-cpu is POOLED, so cpus_per_task x mem_per_cpu must fit the
-# node. Getting this wrong is not a slow job, it is a rejected submission after
-# the queue wait, so fail here instead.
-TRAIN_MEM_MB=$(echo "$TRAIN_MEM" | awk '{u=toupper($0); v=u; gsub(/[^0-9.]/,"",v);
-    if (u ~ /G/) printf "%d", v*1024; else printf "%d", v}')
-TRAIN_TOTAL_MB=$(( TRAIN_CPUS * TRAIN_MEM_MB ))
-if [ "$TRAIN_TOTAL_MB" -gt "$CPU_NODE_MEM_MB" ]; then
-    echo "train_cpus x train_mem_per_cpu = ${TRAIN_CPUS} x ${TRAIN_MEM} = ${TRAIN_TOTAL_MB}M" >&2
-    echo "  exceeds the ${CLUSTER_NAME} CPU node's ${CPU_NODE_MEM_MB}M. --mem-per-cpu is POOLED." >&2
-    echo "  Lower train_cpus to $(( CPU_NODE_MEM_MB / TRAIN_MEM_MB )) or reduce train_mem_per_cpu." >&2
+# PREFLIGHT: the training job runs train_jobs julia processes in ONE GPU
+# allocation, whose host RAM is n_gpus_per_node x mem_per_gpu. Each process may
+# grow to its heap_size_hint (and reads the 1e6-sample training file), so their
+# sum must fit. Getting this wrong is not a slow job but processes killed at OOM
+# after the queue wait, so fail here instead.
+megabytes_of() {   # <size like 4G, 32G, 2048M>
+    echo "$1" | awk '{u=toupper($0); v=u; gsub(/[^0-9.]/,"",v);
+        if (u ~ /G/) printf "%d", v*1024; else printf "%d", v}'
+}
+if ! echo "$TRAIN_JOBS" | grep -qE '^[1-9][0-9]*$'; then
+    echo "train_jobs = '$TRAIN_JOBS' must be a positive integer (trainings at a time per card)." >&2
+    exit 1
+fi
+if [ "$TRAIN_CPUS" -lt "$TRAIN_JOBS" ]; then
+    echo "train_cpus = $TRAIN_CPUS < train_jobs = $TRAIN_JOBS: every training needs a core of its own" >&2
+    echo "  for its host-side work. Raise train_cpus or lower train_jobs." >&2
+    exit 1
+fi
+HEAP_MB=$(megabytes_of "$HEAP")
+TRAIN_HOST_MB=$(( N_GPUS * $(megabytes_of "$MEM_PER_GPU") ))
+if [ $(( TRAIN_JOBS * HEAP_MB )) -gt "$TRAIN_HOST_MB" ]; then
+    echo "train_jobs x heap_size_hint = ${TRAIN_JOBS} x ${HEAP} exceeds the training task's host RAM," >&2
+    echo "  n_gpus_per_node x mem_per_gpu = ${N_GPUS} x ${MEM_PER_GPU}. Lower train_jobs or raise mem_per_gpu." >&2
     exit 1
 fi
 
@@ -518,6 +589,15 @@ MODELS_DIR="$WORKDIR/$CODENAME/models"
 CLUSTER_DIR="$WORKDIR/$CODENAME/cluster"
 if [ ! -f "$MODELS_DIR/$BASE_HP" ]; then
     echo "no base hyperparameters: $MODELS_DIR/$BASE_HP" >&2
+    exit 1
+fi
+# The training job runs on a GPU node with the hand-written backward pass.
+# Enzyme cannot use the GPU, so without manual_backprop = true every point would
+# run Enzyme on the allocation's few CPU cores (~6600 s a point measured on a
+# CPU node) and the 1 h wall would take them all.
+if [ "$COLLECT" -eq 0 ] && [ "$(base_hyperparameter_value manual_backprop)" != "true" ]; then
+    echo "$MODELS_DIR/$BASE_HP must set manual_backprop = true: the training job runs on" >&2
+    echo "  GPU nodes with the hand-written backward pass (Enzyme cannot use the GPU)." >&2
     exit 1
 fi
 # The stage-in tars the codename as it stands, so these have to exist here or
@@ -587,38 +667,22 @@ emit_point() {   # <key> <seed> <use_cer> <check_node_spec> <optimizer_spec>
         arm="nocer"
         require="false"
     fi
-    # Check node. "enriched:<alpha>:<fixed|learn>" -> check_node enriched,
-    # coupling_scale_init alpha, learnable per the third field. Fields are split
-    # on ":" one at a time with ${var%%:*} / ${var#*:}, so a spec with too few
-    # fields leaves the remainder EQUAL to the last field rather than empty --
-    # every branch below therefore tests the field it expects and fails on
-    # anything else.
+    # Check node: "tanh" only. Training runs the hand-written backward pass on
+    # the GPU, which covers the tanh check node only (an enriched model would be
+    # refused by the Julia side at its first point, after the queue wait). The
+    # enriched spec was "enriched:<alpha>:<fixed|learn>"; it needs Enzyme, and
+    # so a CPU training job, which this generator no longer writes. α stays at
+    # its inert defaults below, as on every tanh point before.
     local check_node="${check_node_spec%%:*}"
     local coupling_scale_init="1.0"
     local coupling_scale_learnable="false"
     if [ "$check_node" = "enriched" ]; then
-        if [ "$use_cer" = "false" ]; then
-            echo "emit_point: an enriched check node needs couplings; refusing to emit it on the no-CER arm." >&2
-            exit 1
-        fi
-        local check_node_rest="${check_node_spec#*:}"
-        coupling_scale_init="${check_node_rest%%:*}"
-        local after_alpha="${check_node_rest#*:}"
-        local learn_spec="${after_alpha%%:*}"
-        if [ "$learn_spec" = "learn" ]; then
-            coupling_scale_learnable="true"
-        elif [ "$learn_spec" != "fixed" ]; then
-            echo "emit_point: check node spec '$check_node_spec' must have :fixed or :learn as its third field." >&2
-            exit 1
-        fi
-        # Nothing may follow the third field. The ":step:<T0>:<w>:<fixed|learn>"
-        # layer schedule that used to go there was removed on 2026-10-11.
-        if [ "$after_alpha" != "$learn_spec" ]; then
-            echo "emit_point: check node spec '$check_node_spec' has fields after :fixed/:learn. The layer schedule on alpha (:step:...) was removed on 2026-10-11; alpha is one value for every layer." >&2
-            exit 1
-        fi
+        echo "emit_point: check node '$check_node_spec': training runs the hand-written backward pass" >&2
+        echo "  (manual_backprop = true, on the GPU), which covers the tanh check node only." >&2
+        echo "  Set check_node_arms = [\"tanh\"]." >&2
+        exit 1
     elif [ "$check_node" != "tanh" ]; then
-        echo "emit_point: unknown check node '$check_node' (tanh or enriched:<alpha>:<fixed|learn>)." >&2
+        echo "emit_point: unknown check node '$check_node' (tanh)." >&2
         exit 1
     fi
 
@@ -786,12 +850,15 @@ emit_point() {   # <key> <seed> <use_cer> <check_node_spec> <optimizer_spec>
     # removed loss terms and of the removed layer schedule (coupling_schedule*)
     # are stripped too: the code ignores them now (and refuses a "step"
     # schedule), so a generated file should not carry them.
-    grep -vE '^[[:space:]]*(retrain|run_tag|use_CER|seed|single_qubit_rescale|require_correlations|check_node|coupling_scale_init|coupling_scale_learnable|coupling_schedule|coupling_schedule_layer_init|coupling_schedule_width_init|coupling_schedule_learnable|loss_layer_selection|commit_layer_rule|loss_layer_ramp_sharpness|base_loss|training_samples|failure_weight_boundary|warmup_layers|adam_eps|weight_decay|initial_conditions_scale|learning_rate|sparsity_importance|syndrome_gate_threshold|correlation_certainty_threshold|correlation_weight|correlation_importance|certainty_penalty|certainty_hinge_width|certainty_syndrome_gate_threshold|syndrome_gate_mode|syndrome_gate_rate|correlation_form|correlation_agreement_floor|llr_certainty_importance)[[:space:]]*=' \
+    grep -vE '^[[:space:]]*(retrain|run_tag|use_CER|seed|single_qubit_rescale|require_correlations|check_node|coupling_scale_init|coupling_scale_learnable|coupling_schedule|coupling_schedule_layer_init|coupling_schedule_width_init|coupling_schedule_learnable|manual_backprop|loss_layer_selection|commit_layer_rule|loss_layer_ramp_sharpness|base_loss|training_samples|failure_weight_boundary|warmup_layers|adam_eps|weight_decay|initial_conditions_scale|learning_rate|sparsity_importance|syndrome_gate_threshold|correlation_certainty_threshold|correlation_weight|correlation_importance|certainty_penalty|certainty_hinge_width|certainty_syndrome_gate_threshold|syndrome_gate_mode|syndrome_gate_rate|correlation_form|correlation_agreement_floor|llr_certainty_importance)[[:space:]]*=' \
         "$MODELS_DIR/$BASE_HP" > "$MODELS_DIR/$hp"
     {
         echo ""
         echo "# generated by sweep_hyperparams.sh $TS"
         echo "retrain = true"
+        # The training job runs on a GPU node and needs the hand-written gradient
+        # (checked in the base TOML above; stated here so every point says so).
+        echo "manual_backprop = true"
         echo "run_tag = \"${run_tag}\""
         echo "use_CER = $use_cer"
         echo "seed = $seed"
@@ -911,10 +978,10 @@ walltime_to_seconds() {   # <[[D-]HH:]MM:SS
     }'
 }
 
-# TRAINING: a task runs its slice through GNU parallel with
-# `--jobs $SLURM_CPUS_PER_TASK`, so points go in concurrent waves.
+# TRAINING: a task runs its slice through GNU parallel with `--jobs train_jobs`
+# on its one card, so points go in concurrent waves of train_jobs.
 TRAIN_POINTS_PER_TASK=$(( (N_POINTS + TRAIN_ARRAY - 1) / TRAIN_ARRAY ))
-TRAIN_WAVES=$(( (TRAIN_POINTS_PER_TASK + TRAIN_CPUS - 1) / TRAIN_CPUS ))
+TRAIN_WAVES=$(( (TRAIN_POINTS_PER_TASK + TRAIN_JOBS - 1) / TRAIN_JOBS ))
 TRAIN_ESTIMATE=$(( JOB_STARTUP_SECONDS + TRAIN_WAVES * SECONDS_PER_TRAIN_POINT ))
 TRAIN_BUDGET=$(walltime_to_seconds "$TRAIN_WALL")
 # TESTING: strictly sequential within a task (test_jobs = 1, one process per card).
@@ -978,32 +1045,16 @@ if [ -n "$HEREDOC_HAZARDS" ]; then
     exit 1
 fi
 
-# ------------------------------------------------------------ SLURM: train ---
-cat > "$SLURM_TRAIN" <<EOF
-#!/bin/bash
-#SBATCH --account=$ACCOUNT_CPU
-#SBATCH --job-name=hptrain_$TS
-#SBATCH --output=$CLUSTER_DIR/hp_sweep_train_${TS}_task%a.out
-#SBATCH --error=$CLUSTER_DIR/hp_sweep_train_${TS}_task%a.err
-#SBATCH --array=0-$((TRAIN_ARRAY - 1))
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=$TRAIN_CPUS
-#SBATCH --mem-per-cpu=$TRAIN_MEM
-#SBATCH --time=$TRAIN_WALL
-#SBATCH --signal=B:TERM@600
-#SBATCH --mail-type=ALL
-#SBATCH --mail-user=$EMAIL
-set -uo pipefail
+# ---------------------------------------------------- shared GPU preamble ---
+# Both jobs run on GPU nodes and start the same way: modules, the depot, and a
+# CUDA_Runtime_jll compiled where a driver is visible, behind one lock. Written
+# ONCE, to a file both scripts include verbatim, so the two cannot drift. It is
+# generated like the scripts (unquoted heredoc: generation-time values expand,
+# escaped ones are left for the job) and uses PHASE and TASK, which each script
+# assigns before including it: under set -u an unassigned one is a runtime error.
+GPU_PREAMBLE_FILE=$(mktemp)
+cat > "$GPU_PREAMBLE_FILE" <<EOF
 module load $JULIA_MODULE
-# CUDA module even though training is CPU-only. LocalPreferences.toml pins
-# CUDA_Runtime_jll local_toolkit = true, so CUDA.jl discovers a SYSTEM toolkit
-# rather than downloading an artifact; with no toolkit on PATH its precompile
-# fails, and the Pkg.precompile() below exits non-zero. Loading the module
-# NOTE: no backticks in this heredoc -- it is unquoted (<<EOF), so backticks are
-# command substitution and bash would try to RUN whatever they enclose.
-# costs nothing here and removes that failure mode. USE_GPU=0 still keeps
-# training on the CPU, which is what Enzyme requires.
 module load $CUDA_MODULE
 # DEPOT. Falling back to \$HOME here is how a depot gets silently corrupted: on
 # Nibi /home is a ~50GB quota and a CUDA+Enzyme depot will exhaust it mid-extract,
@@ -1018,16 +1069,131 @@ if [ -z "\${JULIA_DEPOT_PATH:-}" ]; then
     fi
     export JULIA_DEPOT_PATH="\${SCRATCH}/.julia"
 fi
-echo "[\${SLURM_JOB_NAME:-job}] depot: \$JULIA_DEPOT_PATH"
+echo "[\$PHASE task \$TASK] depot: \$JULIA_DEPOT_PATH"
 export JULIA_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 JULIA_PKG_OFFLINE=true
-export USE_GPU=0
-cd \$SLURM_SUBMIT_DIR
-if ! julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'; then
-    exit 1
+# Both jobs use the card: training runs the hand-written backward pass on it
+# (manual_backprop = true in every point's TOML), testing the forward pass.
+export GPU_BACKEND=cuda USE_GPU=1
+# CUDA_Runtime_jll bakes in whether a driver was visible AT PRECOMPILE TIME. The
+# depot is warmed on a LOGIN node (misc/precompile_depot.sh), which has no driver,
+# so its cache says "no CUDA runtime found", and a later precompile finds
+# everything up to date and keeps it. So the JLL must be rebuilt on a GPU node,
+# where the driver IS present, before either job uses CUDA.
+#
+# BUT ONLY ONE TASK MAY DO IT. On 2026-10-01 all 8 array tasks ran this block at
+# once against the one Lustre depot. Five waited for a sibling ("CUDA Being
+# precompiled by another machine (hostname: ng30707 ...)") and recovered; three
+# read a half-written .ji and died with
+#     ERROR: ArgumentError: No value arguments present
+#     _include_from_serialized ... loading.jl:1288
+# at the CUDA gate below, losing 105 of 280 tests. The gate did its job — the
+# alternative was 105 silent garbage results — but the race is the bug.
+#
+# One task wins the mkdir (atomic enough on Lustre for this), rebuilds, and
+# touches a sentinel. The others wait for it. The lock name carries the sweep
+# timestamp and is SHARED by the two jobs of a generation: the training job,
+# which runs first, rebuilds, and the test job chained after it finds the
+# sentinel and goes straight to the gate. A NEW generation is never blocked by a
+# stale lock; re-running the SAME generation reuses the already-warm depot, which
+# is what we want.
+REBUILD_LOCK="$CLUSTER_DIR/hp_${TS}_cuda_rebuild.lock"
+REBUILD_DONE="$CLUSTER_DIR/hp_${TS}_cuda_rebuild.done"
+REBUILD_WAIT_SECONDS=1800
+if mkdir "\$REBUILD_LOCK" 2>/dev/null; then
+    echo "[\$PHASE task \$TASK] rebuilding CUDA_Runtime_jll (this task owns the depot lock)"
+    if ! julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using Pkg; Pkg.instantiate()'; then
+        exit 1
+    fi
+    if ! julia --project=\$SLURM_SUBMIT_DIR/.. -e '
+        pkg = Base.PkgId(Base.UUID("76a88914-d11a-5bdc-97e0-2f5a05c973a2"), "CUDA_Runtime_jll")
+        Base.compilecache(pkg)'; then
+        exit 1
+    fi
+    if ! julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using Pkg; Pkg.precompile()'; then
+        exit 1
+    fi
+    touch "\$REBUILD_DONE"
+    echo "[\$PHASE task \$TASK] depot rebuild done; siblings released"
+else
+    echo "[\$PHASE task \$TASK] another task owns the depot lock; waiting for the rebuild"
+    WAITED=0
+    while [ ! -f "\$REBUILD_DONE" ] && [ "\$WAITED" -lt "\$REBUILD_WAIT_SECONDS" ]; do
+        sleep 15
+        WAITED=\$(( WAITED + 15 ))
+    done
+    if [ -f "\$REBUILD_DONE" ]; then
+        echo "[\$PHASE task \$TASK] rebuild signalled after \${WAITED}s"
+    else
+        # The owner died before signalling. Proceeding is still the right move:
+        # the depot may well be fine, and the gate below is what decides.
+        echo "[\$PHASE task \$TASK] WARNING: no rebuild sentinel after \${WAITED}s; proceeding to the gate anyway" >&2
+    fi
 fi
 export JULIA_PKG_PRECOMPILE_AUTO=0
 
+# Hard gate. Without it the job proceeds and every point dies one by one at its
+# first device array, each burning its own startup, and the stage-out returns
+# nothing.
+cuda_is_functional() {
+    julia --project=\$SLURM_SUBMIT_DIR/.. -e '
+        using CUDA
+        if !CUDA.functional()
+            exit(1)
+        end'
+}
+# The check loads CUDA.jl, which costs most of a minute, so it runs a second
+# time only after a failure.
+if ! cuda_is_functional; then
+    # One retry. The 2026-10-01 failures were torn reads of a .ji another node
+    # was still writing; by now the owner has finished, and a fresh process
+    # usually loads it cleanly. If it fails twice the depot really is bad.
+    echo "[\$PHASE task \$TASK] CUDA check failed once; re-checking in 60s" >&2
+    sleep 60
+    if ! cuda_is_functional; then
+        echo "ERROR: CUDA is not functional on this node after forcing a JLL rebuild." >&2
+        echo "  Check that 'module load $CUDA_MODULE' succeeded and that" >&2
+        echo "  LocalPreferences.toml still has [CUDA_Runtime_jll] local_toolkit = true." >&2
+        exit 1
+    fi
+fi
+echo "[\$PHASE task \$TASK] CUDA functional."
+EOF
+
+# ------------------------------------------------------------ SLURM: train ---
+cat > "$SLURM_TRAIN" <<EOF
+#!/bin/bash
+#SBATCH --account=$ACCOUNT_GPU
+#SBATCH --job-name=hptrain_$TS
+#SBATCH --output=$CLUSTER_DIR/hp_sweep_train_${TS}_task%a.out
+#SBATCH --error=$CLUSTER_DIR/hp_sweep_train_${TS}_task%a.err
+#SBATCH --array=0-$((TRAIN_ARRAY - 1))
+${GPU_SBATCH_LINE}
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=$TRAIN_CPUS
+#SBATCH --mem-per-gpu=$MEM_PER_GPU
+#SBATCH --time=$TRAIN_WALL
+#SBATCH --signal=B:TERM@600
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=$EMAIL
+set -uo pipefail
+# NOTE: no backticks in this heredoc -- it is unquoted (<<EOF), so backticks are
+# command substitution and bash would try to RUN whatever they enclose.
+#
+# PHASE and TASK come FIRST: the shared preamble below echoes both, and this
+# script runs under \`set -u\`. On 2026-10-05 TASK was assigned below the block
+# that echoed it, and all 8 test tasks died in under a second with
+#     slurm_script: line 75: TASK: unbound variable
+# \`bash -n\` does not catch this -- an unbound variable under \`set -u\` is a
+# RUNTIME error -- which is why generated scripts are checked by executing them
+# with stub binaries.
+PHASE=train
 TASK=\${SLURM_ARRAY_TASK_ID:-0}
+cd \$SLURM_SUBMIT_DIR
+EOF
+cat "$GPU_PREAMBLE_FILE" >> "$SLURM_TRAIN"
+cat >> "$SLURM_TRAIN" <<EOF
+
 LOCAL="\$SLURM_TMPDIR/$CODENAME"
 tar -chf - -C "$WORKDIR" "$CODENAME" | tar -xf - -C "\$SLURM_TMPDIR"
 mkdir -p "\$LOCAL"/{models,results,logs} "\$LOCAL/cluster/logs/hp_${TS}_train_task\${TASK}"
@@ -1073,14 +1239,20 @@ on_walltime_signal() {
 trap on_walltime_signal TERM
 trap stage_out EXIT
 
-echo "[train task \$TASK/$TRAIN_ARRAY] \$N_TASK of $N_POINTS point(s), \$SLURM_CPUS_PER_TASK at a time: \$(date)"
+echo "[train task \$TASK/$TRAIN_ARRAY] \$N_TASK of $N_POINTS point(s), $TRAIN_JOBS at a time on \${SLURM_GPUS_ON_NODE:-1} GPU(s): \$(date)"
 # --joblog records seq / exit status / command per point in ONE readable file.
 # The --results directories are named after the full command with / = " escaped
 # to +z +e +22, so they cannot be cat'd without quoting; the joblog is the index.
 JOBLOG="\$LOCAL/cluster/logs/hp_${TS}_train_task\${TASK}.joblog"
 RESULTS_ROOT="\$LOCAL/cluster/logs/hp_${TS}_train_task\${TASK}"
-parallel --jobs \$SLURM_CPUS_PER_TASK --joblog "\$JOBLOG" \\
-    --results "\$RESULTS_ROOT" < "\$SLURM_TMPDIR/train.txt" &
+# The trainings share the task's card(s): slot {%} goes to card
+# ((slot - 1) mod n_cards) + 1, so with one card all $TRAIN_JOBS use it. Each is one
+# julia process with its own CUDA context, well under 1 GB of VRAM at a batch of
+# 20. (Testing never shares a card; see the test job.)
+export SLURM_CUDA_VISIBLE_DEVICES=\${CUDA_VISIBLE_DEVICES:-0}
+parallel --jobs $TRAIN_JOBS --joblog "\$JOBLOG" --results "\$RESULTS_ROOT" \\
+    'card=\$(( ({%} - 1) % \${SLURM_GPUS_ON_NODE:-1} + 1 )); export CUDA_VISIBLE_DEVICES=\$(echo \$SLURM_CUDA_VISIBLE_DEVICES | cut -d, -f\$card); bash -c {}' \\
+    < "\$SLURM_TMPDIR/train.txt" &
 PARALLEL_PID=\$!
 wait "\$PARALLEL_PID"
 PARALLEL_STATUS=\$?
@@ -1149,111 +1321,22 @@ ${GPU_SBATCH_LINE}
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=$EMAIL
 set -uo pipefail
-module load $JULIA_MODULE
-module load $CUDA_MODULE
-# DEPOT. Falling back to \$HOME here is how a depot gets silently corrupted: on
-# Nibi /home is a ~50GB quota and a CUDA+Enzyme depot will exhaust it mid-extract,
-# leaving packages with some source files and not others (that is what produced
-# "Adapt/src/wrappers.jl: No such file or directory"). Fail loudly instead.
-if [ -z "\${JULIA_DEPOT_PATH:-}" ]; then
-    if [ -z "\${SCRATCH:-}" ]; then
-        echo "ERROR: neither JULIA_DEPOT_PATH nor SCRATCH is set." >&2
-        echo "  Refusing to default the Julia depot to \$HOME: on this cluster /home" >&2
-        echo "  is small and a partial extraction there corrupts packages silently." >&2
-        exit 1
-    fi
-    export JULIA_DEPOT_PATH="\${SCRATCH}/.julia"
-fi
-echo "[\${SLURM_JOB_NAME:-job}] depot: \$JULIA_DEPOT_PATH"
-export JULIA_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 JULIA_PKG_OFFLINE=true
-export GPU_BACKEND=cuda USE_GPU=1
-cd \$SLURM_SUBMIT_DIR
-# Assigned HERE, above the depot block, because that block echoes "[test task
-# \$TASK]" and this script runs under \`set -u\`. It used to be assigned after the
-# CUDA gate: on 2026-10-05 all 8 tasks died in under a second with
+# NOTE: no backticks in this heredoc -- it is unquoted (<<EOF), so backticks are
+# command substitution and bash would try to RUN whatever they enclose.
+#
+# PHASE and TASK come FIRST: the shared preamble below echoes both, and this
+# script runs under \`set -u\`. On 2026-10-05 TASK was assigned below the block
+# that echoed it, and all 8 test tasks died in under a second with
 #     slurm_script: line 75: TASK: unbound variable
-# and the sweep recorded nothing. \`bash -n\` does not catch this -- an unbound
-# variable under \`set -u\` is a RUNTIME error -- which is why the generated-script
-# smoke test now actually executes the preamble with stub binaries.
+# \`bash -n\` does not catch this -- an unbound variable under \`set -u\` is a
+# RUNTIME error -- which is why generated scripts are checked by executing them
+# with stub binaries.
+PHASE=test
 TASK=\${SLURM_ARRAY_TASK_ID:-0}
-# CUDA_Runtime_jll bakes in whether a driver was visible AT PRECOMPILE TIME. The
-# CPU training job has no driver, so its Pkg.precompile() poisons the shared depot
-# with "no CUDA runtime found"; this job's precompile then finds everything up to
-# date and leaves the bad cache in place. So the JLL must be rebuilt here, where
-# the driver IS present.
-#
-# BUT ONLY ONE TASK MAY DO IT. On 2026-10-01 all 8 array tasks ran this block at
-# once against the one Lustre depot. Five waited for a sibling ("CUDA Being
-# precompiled by another machine (hostname: ng30707 ...)") and recovered; three
-# read a half-written .ji and died with
-#     ERROR: ArgumentError: No value arguments present
-#     _include_from_serialized ... loading.jl:1288
-# at the CUDA gate below, losing 105 of 280 tests. The gate did its job — the
-# alternative was 105 silent garbage results — but the race is the bug.
-#
-# One task wins the mkdir (atomic enough on Lustre for this), rebuilds, and
-# touches a sentinel. The others wait for it. The lock name carries the sweep
-# timestamp, so a re-submission of a NEW generation is never blocked by a stale
-# lock; re-running the SAME generation reuses the already-warm depot, which is
-# what we want.
-REBUILD_LOCK="$CLUSTER_DIR/hp_${TS}_cuda_rebuild.lock"
-REBUILD_DONE="$CLUSTER_DIR/hp_${TS}_cuda_rebuild.done"
-REBUILD_WAIT_SECONDS=1800
-if mkdir "\$REBUILD_LOCK" 2>/dev/null; then
-    echo "[test task \$TASK] rebuilding CUDA_Runtime_jll (this task owns the depot lock)"
-    if ! julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using Pkg; Pkg.instantiate()'; then
-        exit 1
-    fi
-    if ! julia --project=\$SLURM_SUBMIT_DIR/.. -e '
-        pkg = Base.PkgId(Base.UUID("76a88914-d11a-5bdc-97e0-2f5a05c973a2"), "CUDA_Runtime_jll")
-        Base.compilecache(pkg)'; then
-        exit 1
-    fi
-    if ! julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using Pkg; Pkg.precompile()'; then
-        exit 1
-    fi
-    touch "\$REBUILD_DONE"
-    echo "[test task \$TASK] depot rebuild done; siblings released"
-else
-    echo "[test task \$TASK] another task owns the depot lock; waiting for the rebuild"
-    WAITED=0
-    while [ ! -f "\$REBUILD_DONE" ] && [ "\$WAITED" -lt "\$REBUILD_WAIT_SECONDS" ]; do
-        sleep 15
-        WAITED=\$(( WAITED + 15 ))
-    done
-    if [ -f "\$REBUILD_DONE" ]; then
-        echo "[test task \$TASK] rebuild signalled after \${WAITED}s"
-    else
-        # The owner died before signalling. Proceeding is still the right move:
-        # the depot may well be fine, and the gate below is what decides.
-        echo "[test task \$TASK] WARNING: no rebuild sentinel after \${WAITED}s; proceeding to the gate anyway" >&2
-    fi
-fi
-export JULIA_PKG_PRECOMPILE_AUTO=0
-
-# Hard gate. Without it the job proceeds and all $N_TEST_POINTS tests die one by one at
-# _to_dense_gpu, each burning its own startup, and the stage-out returns nothing.
-cuda_is_functional() {
-    julia --project=\$SLURM_SUBMIT_DIR/.. -e '
-        using CUDA
-        if !CUDA.functional()
-            exit(1)
-        end'
-}
-if ! cuda_is_functional; then
-    # One retry. The 2026-10-01 failures were torn reads of a .ji another node
-    # was still writing; by now the owner has finished, and a fresh process
-    # usually loads it cleanly. If it fails twice the depot really is bad.
-    echo "[test task \$TASK] CUDA check failed once; re-checking in 60s" >&2
-    sleep 60
-fi
-if ! cuda_is_functional; then
-    echo "ERROR: CUDA is not functional on this node after forcing a JLL rebuild." >&2
-    echo "  Check that 'module load $CUDA_MODULE' succeeded and that" >&2
-    echo "  LocalPreferences.toml still has [CUDA_Runtime_jll] local_toolkit = true." >&2
-    exit 1
-fi
-echo "[test] CUDA functional."
+cd \$SLURM_SUBMIT_DIR
+EOF
+cat "$GPU_PREAMBLE_FILE" >> "$SLURM_TEST"
+cat >> "$SLURM_TEST" <<EOF
 
 LOCAL="\$SLURM_TMPDIR/$CODENAME"
 tar -chf - -C "$WORKDIR" "$CODENAME" | tar -xf - -C "\$SLURM_TMPDIR"
@@ -1275,8 +1358,8 @@ fi
 # this task wipes locally still survive in $WORKDIR.
 rm -f "\$LOCAL"/results/simulation_results_*_seed_*.csv
 
-# The generator wrote retrain = true; flip it so this job loads the trained
-# weights rather than retraining on a GPU it cannot use for AD.
+# The generator wrote retrain = true (the training job needs it); flip it so
+# this job loads the trained weights rather than training them again.
 for f in "\$LOCAL"/models/hyperparams_hp_*.toml; do
     sed -E 's|^([[:space:]]*retrain[[:space:]]*=[[:space:]]*)true|\1false|' "\$f" > "\$f.tmp"
     mv "\$f.tmp" "\$f"
@@ -1355,6 +1438,7 @@ fi
 echo "[test task \$TASK] done: \$(date)"
 EOF
 chmod +x "$SLURM_TEST"
+rm -f "$GPU_PREAMBLE_FILE"
 
 # ------------------------------------------------------------------ report ---
 echo
@@ -1369,39 +1453,39 @@ echo "  check node-> $CHECK_NODE_ARMS   (no-CER baseline: $INCLUDE_NOCER)"
 echo "  optimizer -> $OPTIMIZER_ARMS"
 echo "  layers    -> loss_layer_selection=$LOSS_LAYER_SELECTION  commit_layer_rule=$COMMIT_LAYER_RULE"
 echo "  cluster   -> $CLUSTER_NAME"
-echo "  train     -> $ACCOUNT_CPU: array 0-$((TRAIN_ARRAY-1)) ($TRAIN_ARRAY x $TRAIN_CPUS cpu x $TRAIN_MEM = $(( TRAIN_TOTAL_MB / 1024 ))G/node), $TRAIN_WALL"
+echo "  network   -> $NLAYERS layers (fixed), manual_backprop = true (hand-written gradient)"
+echo "  train     -> $ACCOUNT_GPU: array 0-$((TRAIN_ARRAY-1)) ($TRAIN_ARRAY tasks x ${N_GPUS}x $GPU_TYPE, $TRAIN_CPUS cpu,"
+echo "               --mem-per-gpu=$MEM_PER_GPU host ram), $TRAIN_JOBS trainings at a time per card, USE_GPU=1, $TRAIN_WALL"
 echo "  test      -> $ACCOUNT_GPU: array 0-$((TEST_ARRAY-1)) ($TEST_ARRAY tasks x ${N_GPUS}x $GPU_TYPE (${VRAM_PER_GPU}G vram), $TEST_CPUS cpu),"
-echo "               --mem-per-gpu=$MEM_PER_GPU host ram, GPU_MEMORY=${GPU_MEMORY_MB}M, $TEST_JOBS at a time"
+echo "               --mem-per-gpu=$MEM_PER_GPU host ram, GPU_MEMORY=${GPU_MEMORY_MB}M, $TEST_JOBS at a time, USE_GPU=1, $TEST_WALL"
 echo "  commands  -> $TRAIN_CMDS"
 echo "               $TEST_CMDS"
 echo
-# The two jobs are SEPARATE submissions on DIFFERENT accounts: training is
-# CPU-only on $ACCOUNT_CPU, testing needs a GPU on $ACCOUNT_GPU. Nothing is
-# submitted automatically.
+# The two jobs are SEPARATE submissions, both on GPU nodes on $ACCOUNT_GPU:
+# training, then testing chained on it with afterok. Nothing is submitted
+# automatically.
 # Must match emit_point's tag exactly, or the check reads a path that was never
 # written and reports a missing file instead of a weights spread. This is the
 # CER arm of the first dataset, seed and optimizer tag.
 FIRST_OPTIMIZER_TAG=""
 if ! { [ "$N_OPTIMIZER_ARMS" -eq 1 ] && [ "$OPTIMIZER_ARMS" = "base" ]; }; then
-    FIRST_OPTIMIZER_TAG="_$(echo "$OPTIMIZER_ARMS" | awk '{print $1}' | sed 's/:.*//')"
+    # OPTIMIZER_ARMS is one arm per LINE (quoted_list), so take the first line:
+    # awk alone printed the first field of every line, and the suggested check
+    # command ended up with a newline in the middle of its path.
+    FIRST_OPTIMIZER_TAG="_$(echo "$OPTIMIZER_ARMS" | head -1 | awk '{print $1}' | sed 's/:.*//')"
 fi
 FIRST_MODEL="neuralbp_weights_nlayers_${NLAYERS}_epochs_$(grep -E '^[[:space:]]*n_epochs' "$MODELS_DIR/$BASE_HP" | head -1 | sed -E 's/[^0-9]*([0-9]+).*/\1/')_trained_using_train_$(echo $DATASETS | awk '{print $1}')_cer${FIRST_OPTIMIZER_TAG}_seed_$(echo $SEEDS | awk '{print $1}').json"
-echo "submit — TRAIN first (CPU, $ACCOUNT_CPU), then TEST (GPU, $ACCOUNT_GPU):"
+echo "submit — TRAIN, then TEST chained on it (both GPU, $ACCOUNT_GPU):"
 echo
-echo "  # 1. training"
-echo "  sbatch $SLURM_TRAIN"
-echo
-echo "  # 2. when it finishes, CHECK THE MODELS TRAINED before spending a GPU:"
-echo "  julia -e 'using JSON, Statistics; w=JSON.parsefile(\"$MODELS_DIR/$FIRST_MODEL\");"
-echo "            println(std(vcat(w[\"weights_c2v_v2c\"],w[\"weights_llrs\"],w[\"weights_c2v_readout\"])))'"
-echo "  # 0.058 => never trained (every batch NaN-skipped); larger => trained."
-echo
-echo "  # 3. testing"
-echo "  sbatch $SLURM_TEST"
-echo
-echo "  To chain them without the check instead:"
 echo "    TRAIN_ID=\$(sbatch --parsable $SLURM_TRAIN)"
 echo "    sbatch --dependency=afterok:\$TRAIN_ID --kill-on-invalid-dep=yes $SLURM_TEST"
+echo
+echo "  Or one at a time, checking the models trained before testing them:"
+echo "    sbatch $SLURM_TRAIN"
+echo "    julia -e 'using JSON, Statistics; w=JSON.parsefile(\"$MODELS_DIR/$FIRST_MODEL\");"
+echo "              println(std(vcat(w[\"weights_c2v_v2c\"],w[\"weights_llrs\"],w[\"weights_c2v_readout\"])))'"
+echo "    # ~ initial_conditions_scale / sqrt(3) => never trained; larger => trained."
+echo "    sbatch $SLURM_TEST"
 echo
 echo "  afterok on an array is ALL-OR-NOTHING: every one of the $TRAIN_ARRAY train tasks must"
 echo "  exit 0, so one failed point stops all $N_TEST_POINTS tests. --kill-on-invalid-dep=yes"
@@ -1426,11 +1510,11 @@ if [ "$LOCAL" -eq 1 ]; then
           "$DATA/correlated_weights/correlated_weights_${SMOKE_KEY}.txt"
 
     SMOKE_HP="hyperparams_hp_smoke.toml"
-    grep -vE '^[[:space:]]*(retrain|run_tag|use_CER|seed|single_qubit_rescale|require_correlations|check_node|coupling_scale_init|coupling_scale_learnable|coupling_schedule|coupling_schedule_layer_init|coupling_schedule_width_init|coupling_schedule_learnable|n_epochs|n_gradient_updates_per_epoch|sparsity_importance|syndrome_gate_threshold|correlation_certainty_threshold|correlation_weight|correlation_importance|certainty_penalty|certainty_hinge_width|certainty_syndrome_gate_threshold|syndrome_gate_mode|syndrome_gate_rate|correlation_form|correlation_agreement_floor|llr_certainty_importance)[[:space:]]*=' \
+    grep -vE '^[[:space:]]*(retrain|run_tag|use_CER|seed|single_qubit_rescale|require_correlations|check_node|coupling_scale_init|coupling_scale_learnable|coupling_schedule|coupling_schedule_layer_init|coupling_schedule_width_init|coupling_schedule_learnable|manual_backprop|n_epochs|n_gradient_updates_per_epoch|sparsity_importance|syndrome_gate_threshold|correlation_certainty_threshold|correlation_weight|correlation_importance|certainty_penalty|certainty_hinge_width|certainty_syndrome_gate_threshold|syndrome_gate_mode|syndrome_gate_rate|correlation_form|correlation_agreement_floor|llr_certainty_importance)[[:space:]]*=' \
         "$MODELS_DIR/$BASE_HP" > "$MODELS_DIR/$SMOKE_HP"
-    # The smoke test exercises the enriched check node with a LEARNED alpha,
-    # which is the arm with the most code on its path: the logistic link, the
-    # extra Duplicated argument and the decay-free optimiser leaf.
+    # The smoke test runs what the cluster jobs run: the CER arm with the tanh
+    # check node, trained by the hand-written backward pass on the GPU
+    # (USE_GPU=1 below, Metal on a Mac) and tested on it.
     {
         echo ""
         echo "# smoke test: 1 epoch, 20 updates — enough to exercise every code path."
@@ -1442,9 +1526,8 @@ if [ "$LOCAL" -eq 1 ]; then
         echo "n_gradient_updates_per_epoch = 20"
         echo "single_qubit_rescale = ${RESCALE}"
         echo "require_correlations = true"
-        echo "check_node = \"enriched\""
-        echo "coupling_scale_init = 0.503"
-        echo "coupling_scale_learnable = true"
+        echo "check_node = \"tanh\""
+        echo "manual_backprop = true"
     } >> "$MODELS_DIR/$SMOKE_HP"
 
     SMOKE_CMD="julia --project=\"./../\" neural_bp_experiments.jl --workdir $WORKDIR --codename $CODENAME \
@@ -1452,10 +1535,10 @@ if [ "$LOCAL" -eq 1 ]; then
 --quiet false --isdebug true --train train_${SMOKE_KEY}.txt --test test_${SMOKE_KEY}.txt"
 
     echo
-    echo "local smoke test — enriched check node, learned alpha from 0.503, $SMOKE_N samples, 1 epoch:"
+    echo "local smoke test — CER arm, tanh check node, hand-written gradient on the GPU, $SMOKE_N samples, 1 epoch:"
     echo "  cd $SCRIPT_DIR"
     echo "  rm -f $DATA/results/simulation_results_*_smoke_seed_1.csv"
-    echo "  USE_GPU=0 $SMOKE_CMD"
+    echo "  USE_GPU=1 $SMOKE_CMD"
     echo
     echo "  It should train 20 batches and then test. What to check afterwards:"
     echo "    - the run completes without 'killed'"
@@ -1464,5 +1547,5 @@ if [ "$LOCAL" -eq 1 ]; then
     echo "        julia -e 'using JSON; w=JSON.parsefile(\"$DATA/models/neuralbp_weights_nlayers_${NLAYERS}_epochs_1_trained_using_train_${SMOKE_KEY}_smoke_seed_1.json\");"
     echo "                  v=vcat(w[\"weights_c2v_v2c\"],w[\"weights_llrs\"],w[\"weights_c2v_readout\"]);"
     echo "                  using Statistics; println(\"sd = \", std(v))'"
-    echo "      sd ~ 0.058 means it never trained; anything larger means it did."
+    echo "      sd ~ initial_conditions_scale / sqrt(3) means it never trained; larger means it did."
 fi

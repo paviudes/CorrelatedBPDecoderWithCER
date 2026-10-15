@@ -7,7 +7,6 @@
 #   bash misc/run_local.sh --test-only      skip training (weights must exist)
 #   bash misc/run_local.sh --jobs 2         concurrent training processes (default 4)
 #   bash misc/run_local.sh --samples 500000 samples per dataset (default 200000)
-#   bash misc/run_local.sh --layers 50      unrolled BP layers (default 90; 50 measured worse)
 #   bash misc/run_local.sh --warmup 10      layers hidden from the loss, design A /
 #                                           softmin arms only (default 0)
 #   bash misc/run_local.sh --design ramp    optimizer arms: pair (default: design A +
@@ -15,7 +14,7 @@
 #                                           all (the three)
 #   bash misc/run_local.sh --ramp-warmup 5 --ramp-sharpness 3
 #                                           the ramp's own warmup and k (defaults)
-#   bash misc/run_local.sh --design baseloss --layers 50
+#   bash misc/run_local.sh --design baseloss
 #                                           the residue A/B: {softmin, ramp} x
 #                                           {sin_residue, smooth_loss} x {no-CER, CER}
 #                                           x 2 seeds = 16 trainings / 64 tests, both
@@ -33,7 +32,7 @@
 #                                           (deterministic, same filenames). With any
 #                                           other --design the two values, when given,
 #                                           are applied to every arm.
-#   bash misc/run_local.sh --design icscale --layers 50 --jobs 8
+#   bash misc/run_local.sh --design icscale --jobs 8
 #                                           ramp + last-layer commit + smooth_loss, with
 #                                           initial_conditions_scale swept over --scales
 #                                           (default 0.1,0.3), x {no-CER, CER} x 2 seeds
@@ -49,38 +48,41 @@
 # to 0 is the fix for the SOFTMIN arm, which was scoring layers 11-90 while
 # first-to-clear commits at layer 1.2-3.0.
 #
-# LAYERS is in every weights and results filename (`nlayers_<N>`), so two layer
-# counts coexist without collision -- and the globs below are layer-aware so a
-# mixed run directory cannot be miscounted.
+# LAYERS is FIXED at 90, as in sweep_hyperparams.sh (50 was worse on every arm,
+# 2026-10-08), so there is no option for it. It is in every weights and results
+# filename (`nlayers_<N>`), and the globs below are layer-aware so a directory
+# holding older 50-layer runs cannot be miscounted.
 #
 # WHAT THIS RUNS, and why it is not the cluster sweep
 # ---------------------------------------------------
 # With --design pair (the default): 4 arms x 2 seeds = 8 trainings, 32 tests. The
-# arms are no-CER and CER-enriched, each under both layer designs:
+# arms are no-CER and CER, both with the standard (tanh) check node, each under
+# both layer designs:
 #
 #            | design A (last/last) | historical (softmin/first)
 #   no-CER   |          x           |            x
-#   enriched |          x           |            x
+#   CER      |          x           |            x
 #
 # --design ramp swaps in the ramp loss alone (4 trainings, 16 tests);
 # --design all runs the three optimizer arms together (12 trainings, 48 tests).
 #
-# The cluster sweep is 6 arms x 5 seeds = 30 trainings / 120 tests. Dropped here:
-# the CER-tanh arm, and three seeds.
+# TANH ONLY (2026-10-15): training uses the hand-written backward pass
+# (manual_backprop = true in the baseline TOML, which the generator requires),
+# and that covers the tanh check node only, so the CER arm is CER-tanh. The
+# cluster sweep runs the same arms with five seeds instead of two.
 #
 # Consequences, stated plainly:
-#   - Without the CER-tanh arm, "no-CER vs enriched" conflates the PRIORS with the
-#     CHECK NODE. Earlier measurements put those at -20% and -10% separately; this
-#     run cannot separate them again.
 #   - Two seeds give a difference, not an error bar. Seed sd was ~10%, so a layer-
 #     design gap smaller than that is not resolvable here.
 # Treat the output as a direction to iterate on, not as the verdict.
 #
-# WHY TRAINING IGNORES THE GPU
-# ----------------------------
-# Enzyme cannot differentiate through device-array allocation, so the training
-# forward pass is always the CPU one (src/train.jl:20). Metal does nothing for it.
-# Training therefore runs USE_GPU=0, $JOBS processes wide; only testing uses Metal.
+# WHY TRAINING STAYS ON THE CPU HERE
+# ---------------------------------
+# Training uses the hand-written backward pass (manual_backprop = true), which
+# can run on Metal with USE_GPU=1 -- the cluster jobs do the same on CUDA. On
+# this laptop one training took about as long on Metal as on the CPU (2026-10-15,
+# ~10 min at 50 layers), and $JOBS processes on $JOBS CPU cores do not contend for
+# one GPU, so training runs USE_GPU=0, $JOBS processes wide; testing uses Metal.
 #
 # WHY 4 CONCURRENT AND NOT 8
 # --------------------------
@@ -137,8 +139,9 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --jobs)       JOBS="${2:-}"; shift ;;
         --jobs=*)     JOBS="${1#*=}" ;;
-        --layers)     LAYERS="${2:-}"; shift ;;
-        --layers=*)   LAYERS="${1#*=}" ;;
+        --layers|--layers=*)
+            echo "--layers was removed: the network is unrolled to 90 layers, always (as in sweep_hyperparams.sh)." >&2
+            exit 2 ;;
         --warmup)     WARMUP="${2:-}"; shift ;;
         --warmup=*)   WARMUP="${1#*=}" ;;
         --design)     DESIGN="${2:-}"; DESIGN_GIVEN=1; shift ;;
@@ -282,7 +285,7 @@ case "$DESIGN" in
         N_OPT_ARMS=$N_ICSCALE_ARMS ;;
     *) echo "--design must be pair, ramp, all, baseloss, sampling or icscale (got '$DESIGN')" >&2; exit 1 ;;
 esac
-# 2 check-node arms (no-CER, CER-enriched) x optimizer arms x 2 seeds; x 4 test sets.
+# 2 prior arms (no-CER, CER) x optimizer arms x 2 seeds; x 4 test sets.
 N_TRAIN_EXPECTED=$(( 2 * N_OPT_ARMS * 2 ))
 N_TEST_EXPECTED=$(( N_TRAIN_EXPECTED * 4 ))
 
@@ -295,7 +298,7 @@ if [ "$DESIGN" = "icscale" ]; then
 else
     echo "  layers     -> $LAYERS unrolled   warmup $WARMUP (design A / softmin arms)"
 fi
-echo "  arms       -> no-CER + CER-enriched(0.42, learned), x $ARMS_LABEL"
+echo "  arms       -> no-CER + CER (tanh check node), x $ARMS_LABEL"
 if [ "$DESIGN_GIVEN" -eq 0 ]; then
     echo "                (--design not given: this is the default 'pair', design A + softmin."
     echo "                 The RAMP loss runs only with --design ramp or --design all;
@@ -318,7 +321,7 @@ elif [ "$DESIGN" != "sampling" ]; then
     fi
 fi
 echo "  seeds      -> 1 2        => $N_TRAIN_EXPECTED training point(s), $N_TEST_EXPECTED test point(s)"
-echo "  training   -> CPU (USE_GPU=0), $JOBS concurrent, --heap-size-hint=2G"
+echo "  training   -> CPU (USE_GPU=0), hand-written gradient (manual_backprop), $JOBS concurrent, --heap-size-hint=2G"
 echo "  testing    -> Metal (USE_GPU=1), sequential with live output, GPU_MEMORY=$GPU_MEM"
 
 # ----------------------------------------------------------- cut datasets ---
@@ -384,38 +387,38 @@ datasets         = ["${SRC_TRAIN_KEY}${SUFFIX}"]
 ref_datasets     = []
 test_keys        = [$TEST_KEYS_TOML]
 base_hyperparams = "hyperparams_baseline.toml"
-n_hidden_layers  = $LAYERS
 seeds            = [1, 2]
 include_nocer    = true
 single_qubit_rescale = 0.1
 loss_layer_selection = "last"
 commit_layer_rule    = "last"
-# ONE check-node arm. The no-CER baseline is emitted separately (it has no
-# couplings to enrich), so this yields 4 arms, not 2.
-check_node_arms  = ["enriched:0.42:learn"]
+# ONE check-node arm, tanh: the hand-written gradient covers no other. The no-CER
+# baseline is emitted separately, so this yields 4 arms, not 2.
+check_node_arms  = ["tanh"]
 # warmup_layers is stated on BOTH arms rather than inherited from the baseline
 # TOML, so the run does not silently change when that file is edited. It is a
 # tag-neutral override (only loss_layer_selection and commit_layer_rule reach the
 # filename), so the four arm tags are unchanged.
 optimizer_arms   = [$OPTIMIZER_ARMS_TOML]
 cluster_name     = "narval"
-account_cpu      = "def-jemerson"
 account_gpu      = "def-jemerson_gpu"
 email            = "dsannamo@uwaterloo.ca"
 julia_module     = "julia/1.12.5"
 cuda_module      = "cuda"
 heap_size_hint   = "2G"
 train_array_tasks = 1
+train_jobs       = $JOBS
 train_cpus       = $JOBS
-train_mem_per_cpu = "2G"
-cpu_node_memory_mb = 16384
 train_wall_time  = "24:00:00"
 test_array_tasks = 1
 gpu_type         = "a100"
 gpu_request_style = "auto"
 n_gpus_per_node  = 1
 test_jobs        = 1
-mem_per_gpu      = "$GPU_MEM"
+# Host RAM of the "allocation": this machine's 16 GB. The generator checks
+# train_jobs x heap_size_hint (2G) against it. Not the GPU_MEMORY budget, which
+# comes from vram_per_gpu below.
+mem_per_gpu      = "16G"
 # Stated explicitly rather than inferred from gpu_type: "a100" would infer 40 GB
 # and the generator would print a GPU_MEMORY this machine does not have. Only the
 # printed summary and the ignored SLURM script use it -- the real run exports
@@ -425,7 +428,7 @@ vram_per_gpu     = "${GPU_MEM%G}"
 test_cpus        = $JOBS
 test_wall_time   = "24:00:00"
 seconds_per_test = 129
-seconds_per_train_point = 6600
+seconds_per_train_point = 1800
 job_startup_seconds = 900
 EOF
 echo
@@ -588,5 +591,5 @@ ls -1 "$DATA"/results/simulation_results_*nlayers_"${LAYERS}"_*"${SUFFIX}"*_seed
 echo
 echo "  next: check the arms actually trained before reading the numbers —"
 echo "    bash misc/check_training_health.sh $CODENAME"
-echo "  rollbacks are per-arm and were 8/20 on the enriched arms last time, so"
-echo "  confirm the completed-epoch count matches across arms before comparing."
+echo "  an epoch with too many non-finite gradients is rolled back, so confirm the"
+echo "  completed-epoch count matches across arms before comparing."

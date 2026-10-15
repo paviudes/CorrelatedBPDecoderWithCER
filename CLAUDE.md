@@ -114,6 +114,35 @@ end
 
 ## Cluster notes (Narval)
 
+- **Training runs on GPU nodes (`sweep_hyperparams.sh`, 2026-10-15).** Both jobs are
+  GPU array jobs on `account_gpu`, one card per task (`gpu_type`, `n_gpus_per_node`,
+  `mem_per_gpu`), chained with afterok: training (`train_wall_time = "1:00:00"`),
+  then testing (`test_wall_time = "4:00:00"`, unchanged).
+  - Training uses the hand-written backward pass with USE_GPU=1. The base TOML
+    **must** say `manual_backprop = true` (the generator refuses otherwise: Enzyme
+    cannot use the GPU, and ~6600 s/point on the allocation's few cores would blow
+    the 1 h wall), and every point's TOML states it. `check_node_arms` is `["tanh"]`;
+    an enriched arm is refused before anything is written.
+  - `train_jobs = 4` trainings share the task's card (GNU parallel, the test job's
+    card-assignment line). Safe for TRAINING — a CUDA context plus batches of 20,
+    well under 1 GB of VRAM each — unlike testing, which sizes its batch to the card
+    and stays at one process per card. Host RAM is the limit: the generator refuses
+    `train_jobs × heap_size_hint > n_gpus_per_node × mem_per_gpu` (4 × 4G ≤ 32G),
+    `train_cpus < train_jobs`, and `train_cpus > test_cpus × n_gpus_per_node` (an old
+    CPU-node value like 54). `account_cpu`, `train_mem_per_cpu`, `cpu_node_memory_mb`
+    are ignored, with a note.
+  - **The network is fixed at 90 layers** in the generator (`NLAYERS=90`); a settings
+    file naming another `n_hidden_layers` is refused. `run_local.sh` lost `--layers`.
+  - `seconds_per_train_point = 1800` is an ESTIMATE (laptop: ~10 min/point at 50
+    layers, GPU or CPU, so ~18 min at 90 alone; four sharing an A100 is unmeasured).
+    The preflight puts 4 points/task at 45 min of the 1 h wall (75%, "tight"). Each
+    point now prints `Training: N gradients (...) in X s ...` to its stdout under
+    `cluster/logs/hp_<ts>_train_task<t>/`; replace the estimate with that.
+  - Verified 2026-10-15 by executing both generated scripts with stub
+    `julia`/`parallel`/`module` and fake `SLURM_*`: all 5 train and 8 test tasks exit
+    0 (lock owner + waiting siblings, 20 models and 80 results staged out); a failing
+    point exits 1; the TERM handler stages out the finished point and exits 1; a CUDA
+    gate failing twice exits 1. Not yet run on Narval.
 - **Warm the Julia depot on a LOGIN node** before `sbatch`: `bash misc/precompile_depot.sh`.
   Compute nodes have no internet, and array tasks share one Lustre depot — in-job
   `Pkg.instantiate()`/`Pkg.precompile()` can stall for the whole walltime.
@@ -136,9 +165,13 @@ end
   race read a half-written `.ji` and die with `ArgumentError: No value arguments
   present` after "CUDA Being precompiled by another machine". That, not walltime, is
   what cost 105 of 280 results on 2026-10-01 (3 of 8 tasks died at the gate; the 5
-  survivors each did 35 tests in 75 min, 37% of a 4 h budget). The test job now takes
-  an `mkdir` lock, one task rebuilds and touches a `.done` sentinel, the rest poll for
-  it (1800 s), and `CUDA.functional()` is re-checked once after 60 s.
+  survivors each did 35 tests in 75 min, 37% of a 4 h budget). Both jobs now include
+  ONE generated preamble (modules, depot, rebuild, gate) that takes an `mkdir` lock:
+  one task rebuilds and touches a `.done` sentinel, the rest poll for it (1800 s). The
+  lock is per generation and shared by the two jobs, so the training job rebuilds and
+  the test job finds the sentinel and goes straight to the gate. The rebuild is still
+  needed because the LOGIN-node precompile has no driver. `CUDA.functional()` runs
+  once, and a second time only after a failure (60 s later).
 - `sweep_hyperparams.sh` **refuses to write a job that cannot finish**: a preflight
   multiplies `seconds_per_test` / `seconds_per_train_point` / `job_startup_seconds`
   (measured, in the settings file) against the array width and exits 1 with the
@@ -755,7 +788,8 @@ Pooled over 4 test sets × 2 seeds, 800k per arm. 0 of 16 rolled back.
   keys (`correlation_importance`, `correlation_weight`, `llr_certainty_importance`,
   `sparsity_importance`) are gone, and `loss_layer_temperature` is marked
   softmin-only.
-- `run_local.sh --design icscale --layers 50 --jobs 8`: ramp + last + smooth_loss
+- `run_local.sh --design icscale --jobs 8` (run at `--layers 50` on 2026-10-09; the
+  option was removed 2026-10-15, 90 is fixed): ramp + last + smooth_loss
   with `initial_conditions_scale` over `--scales` (0.1,0.3), and everything else —
   warmup, k, training set — from the baseline TOML. The ramp-at-warmup-0 note
   prints once, not per point.
@@ -996,11 +1030,12 @@ means here:
   the mean of the rest. Test (`test_gradient.jl`, not yet run): two Adam steps on
   the two-check graph from one seed, with Enzyme, manual CPU and manual GPU, must
   agree to 1e-5; plus the validation and the enriched refusal.
-  - **Expect the CPU, not the GPU, to be fastest at `batch_size = 20`**: the GPU
-    gradient rebuilds and re-uploads every dense per-layer weight matrix and
-    selector each step and is launch-bound at that size. Caching the
-    model-independent parts of the two states across steps is the first
-    optimisation, larger batches the second.
+  - **Measured 2026-10-15 (laptop, M-series, 50 layers): GPU and CPU about the same,
+    ~10 min per training point.** At `batch_size = 20` the GPU gradient rebuilds and
+    re-uploads every dense per-layer weight matrix and selector each step and is
+    launch-bound. Caching the model-independent parts of the two states across steps
+    is the first optimisation, larger batches the second. The cluster sweep trains on
+    the GPU anyway (see the cluster notes), four points sharing a card.
 
 ## Run tags (changed 2026-10-09)
 
@@ -1011,11 +1046,10 @@ means here:
   settings a sweep holds fixed now live in the TOML and the results CSV, not the
   name. Consequently two points that would share a filename (two check-node
   arms in one sweep, say) are refused by the generator rather than merged.
-  **This includes the generator's own cluster default**, `check_node_arms =
-  ["tanh", "enriched:0.42:learn"]`: both are CER arms, both get `_cer_<opt>`, and
-  `bash sweep_hyperparams.sh --no-edit` exits 1 (verified 2026-10-11). Give the
-  sweep one CER check-node arm, as `run_local.sh` does, until the check node is
-  put back into the arm name.
+  This included the generator's old cluster default, `check_node_arms =
+  ["tanh", "enriched:0.42:learn"]` (both CER arms, both `_cer_<opt>`; refused,
+  verified 2026-10-11). Since 2026-10-15 the default is `["tanh"]` and enriched arms
+  are refused outright (training is the hand-written gradient, tanh only).
 - Not part of the tag, and unchanged: the code's own `_no_cer` infix on a no-CER
   run (so `..._200000_no_cer_nocer_init_0p1_seed_1.json`), and the weights
   filename's `nlayers_<N>_epochs_<n>_trained_using_<training file>` fields.
@@ -1045,10 +1079,11 @@ means here:
 
 - **Metal does nothing for training under Enzyme.** Enzyme cannot differentiate
   through device-array allocation, so its training forward pass is always the CPU
-  one. A local run is therefore CPU training (`USE_GPU=0`) plus Metal testing
-  (`USE_GPU=1`) — unless `manual_backprop = true`, in which case USE_GPU=1 also
-  puts training's gradient on Metal (tanh check node only; see the hand-written
-  backward pass section).
+  one. With `manual_backprop = true` USE_GPU=1 puts training's gradient on Metal
+  too (tanh check node only), but `run_local.sh` still trains with USE_GPU=0 — the
+  hand-written gradient on the CPU, as fast per point on the laptop and with no
+  sharing of one GPU between its concurrent trainings — and tests on Metal. The
+  cluster sweep trains on the GPU.
 - **Testing is the cost, not training.** A test point is ~129 s on an A100; an
   M-series GPU has roughly 1/15th the memory bandwidth for a workload bound by it.
   The lever is the sample count, and there is no CLI flag for it — `--n_samples` is
