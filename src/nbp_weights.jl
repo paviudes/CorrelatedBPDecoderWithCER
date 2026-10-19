@@ -42,6 +42,9 @@ function load_trained_weights(weights_filename::String)::Dict{String, Any}
     # Which check-node rule the weights were trained under; files older than
     # the enriched rule were necessarily trained with the standard one.
     formatted_weights["check_node"] = String(get(weights_data, "check_node", "tanh"))
+    # Which log-weight table the enriched node carried; files older than the
+    # Bethe table (2026-10-19) were trained with the pairwise one.
+    formatted_weights["enriched_table"] = String(get(weights_data, "enriched_table", ENRICHED_TABLE_PAIRWISE))
 
     close(fp)
     return formatted_weights

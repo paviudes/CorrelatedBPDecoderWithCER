@@ -8,16 +8,20 @@ function load_base_BP_model(
     single_qubit_rescale::Float32=0f0,
     require_correlations::Bool=false,
     check_node::String="tanh",
+    enriched_table::String=ENRICHED_TABLE_PAIRWISE,
 )::NeuralBPBase
     """
     Load the base BP model from the parity check matrix and logical operators files.
 
     `check_node` selects the check-to-variable rule: "tanh" (the standard rule,
-    the default, reproducing every earlier run) or "enriched" (the CER
-    couplings inside each check factor, scaled by one α shared by every layer;
+    the default, reproducing every earlier run) or "enriched" (a log-weight
+    table inside each check factor, scaled by one α shared by every layer;
     see soft_constraints.jl). "enriched" requires two-qubit couplings and
     therefore `use_cer = true` and a CER file with pairs; `NeuralBPBase`
-    refuses otherwise.
+    refuses otherwise. `enriched_table` picks the table: "pairwise" (the
+    couplings as Ising terms) or "bethe" (the check's joint over its marginals,
+    read from `bethe_table_path(cer_data_file)`, the file
+    misc/build_bethe_tables.py writes next to the CER file).
     The parity check matrix file is a text file where each line corresponds to a row of the parity check matrix, and the entries are separated by spaces.
     The logical operators file is a text file where each line corresponds to a logical operator, and the entries are separated by spaces.
     The function will read these files, construct the parity check matrix and logical operators, and return a NeuralBPBase model.
@@ -119,6 +123,16 @@ function load_base_BP_model(
         initial_llrs = clamp.(initial_llrs, -prior_llr_clip, prior_llr_clip)
     end
 
+    # The Bethe table, when the enriched node asks for it: a file next to the
+    # CER file, keyed like it, so a test distribution's table sits next to its
+    # priors. Read here, before the base is built, so a missing file fails with
+    # its own message.
+    validated_table::String = enriched_table_kind(enriched_table)
+    bethe_log_weights::Dict{Int, Vector{Float32}} = Dict{Int, Vector{Float32}}()
+    if check_node_code(check_node) == CHECK_NODE_ENRICHED && validated_table == ENRICHED_TABLE_BETHE
+        bethe_log_weights = read_bethe_log_weights(bethe_table_path(cer_data_file))
+    end
+
     # Construct the NeuralBPBase model
     base::NeuralBPBase = NeuralBPBase(
         parity_check_matrix,
@@ -128,6 +142,8 @@ function load_base_BP_model(
         connectivity=connectivity_matrix,
         correlation_strengths=correlation_strengths,
         check_node=check_node,
+        enriched_table=validated_table,
+        bethe_log_weights=bethe_log_weights,
     )
     if base.check_node_kind == CHECK_NODE_ENRICHED
         print_info("Enriched check node: $(describe_soft_check_tables(base.soft_check_tables)).")
@@ -157,6 +173,15 @@ function load_trained_neuralbp_model(weights_filename::String, bpnn::NachmaniNeu
         @warn "load_trained_neuralbp_model: $(weights_filename) was trained with " *
               "check_node = \"$(recorded_check_node)\" but is being loaded into a " *
               "model with check_node = \"$(active_check_node)\"."
+    end
+    # Same for the enriched node's table: a file without the key predates the
+    # Bethe table and was trained with the pairwise one.
+    recorded_table::String = String(get(weights_data, "enriched_table", ENRICHED_TABLE_PAIRWISE))
+    active_table::String = bpnn.base.soft_check_tables.table_kind
+    if active_check_node == "enriched" && recorded_table != active_table
+        @warn "load_trained_neuralbp_model: $(weights_filename) was trained with " *
+              "enriched_table = \"$(recorded_table)\" but is being loaded into a " *
+              "model with enriched_table = \"$(active_table)\"."
     end
     # A model trained with the layer schedule on α (removed 2026-10-11) used a
     # different α in every layer; this decoder uses one α for all of them, so
@@ -222,6 +247,7 @@ function save_trained_neuralbp_model(
     weights_data["coupling_logit"] = vec(bpnn.coupling_logit)
     weights_data["coupling_scale"] = Float64[effective_coupling_scale(bpnn)]
     weights_data["check_node"] = check_node_name(bpnn.base.check_node_kind)
+    weights_data["enriched_table"] = bpnn.base.soft_check_tables.table_kind
     if seed !== nothing
         weights_data["seed"] = seed
     end

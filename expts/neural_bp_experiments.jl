@@ -105,12 +105,14 @@ if abspath(PROGRAM_FILE) == @__FILE__
     check_node_kind::Int = check_node_code(check_node)
     # Which gradient training uses (Enzyme, or `manual_backprop = true`: the
     # hand-written backward pass, on the GPU under USE_GPU=1). Checked here as
-    # well, so a bad value or an enriched run asking for it fails before any
-    # data is read.
+    # well, so a bad value fails before any data is read.
     manual_backprop_setting(hyperparams, check_node_kind)
+    # Which log-weight table the enriched node carries; validated here for the
+    # same reason. The Bethe table file sits next to the CER file.
+    enriched_table::String = enriched_table_kind(String(get(hyperparams, "enriched_table", ENRICHED_TABLE_PAIRWISE)))
     coupling_scale_init::Float32 = Float32(get(hyperparams, "coupling_scale_init", 1.0f0))
     if check_node == "enriched"
-        print_info("[check_node=enriched] couplings enter the check factor with " *
+        print_info("[check_node=enriched] the $(enriched_table) table enters the check factor with " *
                    "α = $(coupling_scale_init) " *
                    "($(Bool(get(hyperparams, "coupling_scale_learnable", true)) ? "learnable" : "fixed")).")
         # Neither the weights nor the results filename carries a check-node tag
@@ -134,6 +136,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
         single_qubit_rescale=Float32(get(hyperparams, "single_qubit_rescale", 0.0f0)),
         require_correlations=Bool(get(hyperparams, "require_correlations", false)),
         check_node=check_node,
+        enriched_table=enriched_table,
     )
     initial_conditions::Dict{String, Vector{Float32}} = Dict{String, Vector{Float32}}(
         "weights_c2v_v2c" => random_values_around_one([base.nb_weights_c2v_v2c * base.n_layers]; scale=hyperparams["initial_conditions_scale"]),
@@ -285,6 +288,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     # backward pass (true). They agree to Float32 round-off, not bit for bit.
     push!(extra_result_columns, "manual_backprop" => manual_backprop_setting(hyperparams, check_node_kind))
     push!(extra_result_columns, "check_node" => check_node)
+    push!(extra_result_columns, "enriched_table" => enriched_table)
     push!(extra_result_columns, "coupling_scale" => effective_coupling_scale(bpnn))
     push!(extra_result_columns, "coupling_logit" => bpnn.coupling_logit[1])
 

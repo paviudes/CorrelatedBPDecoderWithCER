@@ -176,8 +176,14 @@ commit_layer_rule    = "last"
 # filename stays valid). "enriched:<alpha>:<fixed|learn>" puts the CER couplings
 # inside each check factor (src/soft_constraints.jl) with alpha as the scale on
 # J: "fixed" holds it there, "learn" trains it from that start alongside the
-# message weights. Tag _cnenr<alpha>F / _cnenr<alpha>L. alpha is one value
-# shared by every layer (the layer schedule on alpha was removed 2026-10-11).
+# message weights. "bethe:<alpha>:<fixed|learn>" is the same node with the
+# Bethe table instead (ln P_c / prod p_u, from correlated_weights/bethe_table_
+# <key>.txt, built by misc/build_bethe_tables.py for EVERY key the sweep tests
+# on; alpha = 1 is exact at the first layer). A non-tanh arm puts its node in
+# the run tag, _<arm>_<enr|bethe>_<optimizer tag>, so it never collides with
+# the tanh arm's files; alpha is not in the name, so two arms of one node need
+# different optimizer tags. alpha is one value shared by every layer (the layer
+# schedule on alpha was removed 2026-10-11).
 #
 # WHY alpha = 0.503 HERE. alpha is not a fitted number: single_qubit_rescale
 # maps the MEDIAN single-qubit rate to 0.1 and leaves J untouched, so the pair
@@ -195,11 +201,8 @@ commit_layer_rule    = "last"
 # failures, paired McNemar z = 21). Enriched arms are emitted for CER arms only
 # (the no-CER baseline has no couplings to enrich; NeuralBPBase refuses).
 #
-# TANH ONLY FOR NOW (2026-10-15). Training runs on GPUs with the hand-written
-# backward pass (manual_backprop = true), which covers the tanh check node only;
-# an enriched arm needs Enzyme, which cannot use the GPU, so the generator
-# refuses one. (Two CER arms would also collide: only the arm and the optimizer
-# tag reach the filename.)
+# Training runs on GPUs with the hand-written backward pass (manual_backprop =
+# true), which covers both nodes since 2026-10-19 (backward_enriched_checks!).
 check_node_arms  = ["tanh"]
 
 # --- optimizer axis: a COORDINATE sweep around the base TOML -----------------
@@ -321,8 +324,8 @@ heap_size_hint   = "4G"
 # process sizes its batch to fill the card. Host RAM is the limit: each training
 # reads the 1e6-sample file (~2 GB with readdlm's intermediates) on top of Julia
 # and CUDA, so the generator refuses train_jobs x heap_size_hint above
-# n_gpus_per_node x mem_per_gpu. How well 4 trainings share one card is
-# UNMEASURED; seconds_per_train_point below allows for it.
+# n_gpus_per_node x mem_per_gpu. 4 trainings sharing one card finished in
+# ~12 min on 2026-10-15 (seconds_per_train_point below).
 #   20 points / 5 tasks = 4 per task = one wave of train_jobs = 4.
 train_array_tasks = 5
 train_jobs       = 4                 # trainings at a time on the task's card
@@ -361,19 +364,20 @@ test_wall_time   = "4:00:00"
 #                         julia+CUDA load GNU parallel pays for every point)
 #   startup       up to 370 s of precompile, plus stage-in and three julia
 #                 invocations -> 900 s is a safe allowance
-# ESTIMATED, not yet measured on Narval (2026-10-15):
-#   per train pt  1800 s  one training point while train_jobs = 4 share the card.
-#                 A laptop point took ~10 min at 50 layers (hand-written backward
-#                 pass, GPU and CPU alike), so ~18 min at 90 layers on its own;
-#                 the cost of sharing a card is unknown. After the first sweep,
-#                 replace this with what the points report: each prints a
-#                 "Training: ... in <s> s" line, kept in its stdout under
-#                 cluster/logs/hp_<ts>_train_task<t>/.
+# MEASURED on Narval (2026-10-15 sweep, tanh check node, 90 layers, a100):
+#   per train pt  720 s   the wall time of ONE WAVE of train_jobs = 4 points
+#                 sharing the card: every task of 4 points took ~12 min after
+#                 the CUDA_Runtime_jll rebuild (~5 min, inside the startup
+#                 allowance). The enriched check node does ~10x the check-node
+#                 arithmetic (64 configurations per check instead of a product
+#                 of 6 tanh's), so an enriched or bethe sweep may need more;
+#                 each point prints a "Training: ... in <s> s" line, kept in
+#                 its stdout under cluster/logs/hp_<ts>_train_task<t>/.
 # The generator multiplies these out against the array width and refuses to
 # write a job that cannot finish. Raise them if the code or the sample count
 # grows; they are estimates, not promises.
 seconds_per_test = 129
-seconds_per_train_point = 1800
+seconds_per_train_point = 720
 job_startup_seconds = 900
 EOF
 echo "[hp_sweep] wrote defaults to: $SETTINGS_FILE"
@@ -455,14 +459,15 @@ CHECK_NODE_ARMS=$(list check_node_arms)
 if [ -z "$CHECK_NODE_ARMS" ]; then
     CHECK_NODE_ARMS="tanh"
 fi
-# Checked here, before any file is written; emit_point refuses it again.
+# Checked here, before any file is written; emit_point parses each spec again.
 for check_node_arm in $CHECK_NODE_ARMS; do
-    if [ "${check_node_arm%%:*}" != "tanh" ]; then
-        echo "check_node_arms: '$check_node_arm' -- training runs the hand-written backward pass" >&2
-        echo "  (manual_backprop = true, on the GPU), which covers the tanh check node only." >&2
-        echo "  Set check_node_arms = [\"tanh\"]." >&2
-        exit 1
-    fi
+    case "${check_node_arm%%:*}" in
+        tanh|enriched|bethe) ;;
+        *)
+            echo "check_node_arms: '$check_node_arm' -- use tanh, enriched:<alpha>:<fixed|learn>" >&2
+            echo "  or bethe:<alpha>:<fixed|learn>." >&2
+            exit 1 ;;
+    esac
 done
 OPTIMIZER_ARMS=$(quoted_list optimizer_arms)
 if [ -z "$OPTIMIZER_ARMS" ]; then
@@ -629,6 +634,23 @@ for key in $TEST_KEYS; do
         fi
     done
 done
+# A Bethe arm reads bethe_table_<key>.txt next to every CER file it uses: the
+# training key's and every test key's. The table is built from the training
+# data of that key, offline, by misc/build_bethe_tables.py.
+NEEDS_BETHE_TABLES=0
+for check_node_arm in $CHECK_NODE_ARMS; do
+    if [ "${check_node_arm%%:*}" = "bethe" ]; then
+        NEEDS_BETHE_TABLES=1
+    fi
+done
+if [ "$NEEDS_BETHE_TABLES" -eq 1 ]; then
+    for key in $(printf "%s\n" $DATASETS $REF_DATASETS $TEST_KEYS | sort -u); do
+        required="correlated_weights/bethe_table_${key}.txt"
+        if [ ! -f "$WORKDIR/$CODENAME/$required" ]; then
+            MISSING_INPUTS="${MISSING_INPUTS}\n    $required   (python3 misc/build_bethe_tables.py --workdir $CODENAME --key $key)"
+        fi
+    done
+fi
 if [ -n "$MISSING_INPUTS" ]; then
     echo "missing dataset input(s) under $WORKDIR/$CODENAME:" >&2
     printf "%b\n" "$MISSING_INPUTS" >&2
@@ -667,22 +689,48 @@ emit_point() {   # <key> <seed> <use_cer> <check_node_spec> <optimizer_spec>
         arm="nocer"
         require="false"
     fi
-    # Check node: "tanh" only. Training runs the hand-written backward pass on
-    # the GPU, which covers the tanh check node only (an enriched model would be
-    # refused by the Julia side at its first point, after the queue wait). The
-    # enriched spec was "enriched:<alpha>:<fixed|learn>"; it needs Enzyme, and
-    # so a CPU training job, which this generator no longer writes. α stays at
-    # its inert defaults below, as on every tanh point before.
-    local check_node="${check_node_spec%%:*}"
+    # Check node. "enriched:<alpha>:<fixed|learn>" -> check_node enriched with
+    # the pairwise table, "bethe:<alpha>:<fixed|learn>" -> check_node enriched
+    # with the Bethe table; coupling_scale_init alpha, learnable per the third
+    # field. Fields are split on ":" one at a time with ${var%%:*} / ${var#*:},
+    # so a spec with too few fields leaves the remainder EQUAL to the last field
+    # rather than empty -- every branch tests the field it expects.
+    local check_node_name="${check_node_spec%%:*}"
+    local check_node="tanh"
+    local enriched_table="pairwise"
+    local check_node_tag=""
     local coupling_scale_init="1.0"
     local coupling_scale_learnable="false"
-    if [ "$check_node" = "enriched" ]; then
-        echo "emit_point: check node '$check_node_spec': training runs the hand-written backward pass" >&2
-        echo "  (manual_backprop = true, on the GPU), which covers the tanh check node only." >&2
-        echo "  Set check_node_arms = [\"tanh\"]." >&2
-        exit 1
-    elif [ "$check_node" != "tanh" ]; then
-        echo "emit_point: unknown check node '$check_node' (tanh)." >&2
+    if [ "$check_node_name" = "enriched" ] || [ "$check_node_name" = "bethe" ]; then
+        if [ "$use_cer" = "false" ]; then
+            echo "emit_point: a $check_node_name check node needs couplings; refusing to emit it on the no-CER arm." >&2
+            exit 1
+        fi
+        check_node="enriched"
+        check_node_tag="_enr"
+        if [ "$check_node_name" = "bethe" ]; then
+            enriched_table="bethe"
+            check_node_tag="_bethe"
+        fi
+        local check_node_rest="${check_node_spec#*:}"
+        if [ "$check_node_rest" = "$check_node_spec" ]; then
+            echo "emit_point: check node spec '$check_node_spec' needs :<alpha>:<fixed|learn> after the name." >&2
+            exit 1
+        fi
+        coupling_scale_init="${check_node_rest%%:*}"
+        local learn_spec="${check_node_rest#*:}"
+        if [ "$learn_spec" = "$check_node_rest" ]; then
+            echo "emit_point: check node spec '$check_node_spec' needs :fixed or :learn after <alpha>." >&2
+            exit 1
+        fi
+        if [ "$learn_spec" = "learn" ]; then
+            coupling_scale_learnable="true"
+        elif [ "$learn_spec" != "fixed" ]; then
+            echo "emit_point: check node spec '$check_node_spec' must end in :fixed or :learn, got '$learn_spec'." >&2
+            exit 1
+        fi
+    elif [ "$check_node_name" != "tanh" ]; then
+        echo "emit_point: unknown check node '$check_node_name' (tanh, enriched:<alpha>:<fixed|learn> or bethe:<alpha>:<fixed|learn>)." >&2
         exit 1
     fi
 
@@ -827,13 +875,15 @@ emit_point() {   # <key> <seed> <use_cer> <check_node_spec> <optimizer_spec>
     fi
 
     # The run tag: `_<arm>_<optimizer tag>`, e.g. _cer_init_0p1 -- or `_<arm>`
-    # alone for a lone, untagged `base` arm. Nothing else reaches the filename
-    # (2026-10-09): the settings a sweep holds fixed are in the TOML, not the
-    # name. Two points that would share a filename are refused, since no other
-    # part of the name could tell them apart.
-    local run_tag="_${arm}"
+    # alone for a lone, untagged `base` arm. A non-tanh check node adds its
+    # token after the arm (`_cer_enr_<opt>`, `_cer_bethe_<opt>`), so it never
+    # overwrites the tanh arm's files in the same directory. Nothing else
+    # reaches the filename (2026-10-09): the settings a sweep holds fixed are
+    # in the TOML, not the name. Two points that would share a filename are
+    # refused, since no other part of the name could tell them apart.
+    local run_tag="_${arm}${check_node_tag}"
     if [ "$tag_the_optimizer" -eq 1 ]; then
-        run_tag="_${arm}_${optimizer_tag}"
+        run_tag="_${arm}${check_node_tag}_${optimizer_tag}"
     fi
     # The TOML keeps the `hyperparams_hp_` prefix: cleanup.py and the local
     # runner find sweep TOMLs by it.
@@ -850,7 +900,7 @@ emit_point() {   # <key> <seed> <use_cer> <check_node_spec> <optimizer_spec>
     # removed loss terms and of the removed layer schedule (coupling_schedule*)
     # are stripped too: the code ignores them now (and refuses a "step"
     # schedule), so a generated file should not carry them.
-    grep -vE '^[[:space:]]*(retrain|run_tag|use_CER|seed|single_qubit_rescale|require_correlations|check_node|coupling_scale_init|coupling_scale_learnable|coupling_schedule|coupling_schedule_layer_init|coupling_schedule_width_init|coupling_schedule_learnable|manual_backprop|loss_layer_selection|commit_layer_rule|loss_layer_ramp_sharpness|base_loss|training_samples|failure_weight_boundary|warmup_layers|adam_eps|weight_decay|initial_conditions_scale|learning_rate|sparsity_importance|syndrome_gate_threshold|correlation_certainty_threshold|correlation_weight|correlation_importance|certainty_penalty|certainty_hinge_width|certainty_syndrome_gate_threshold|syndrome_gate_mode|syndrome_gate_rate|correlation_form|correlation_agreement_floor|llr_certainty_importance)[[:space:]]*=' \
+    grep -vE '^[[:space:]]*(retrain|run_tag|use_CER|seed|single_qubit_rescale|require_correlations|check_node|enriched_table|coupling_scale_init|coupling_scale_learnable|coupling_schedule|coupling_schedule_layer_init|coupling_schedule_width_init|coupling_schedule_learnable|manual_backprop|loss_layer_selection|commit_layer_rule|loss_layer_ramp_sharpness|base_loss|training_samples|failure_weight_boundary|warmup_layers|adam_eps|weight_decay|initial_conditions_scale|learning_rate|sparsity_importance|syndrome_gate_threshold|correlation_certainty_threshold|correlation_weight|correlation_importance|certainty_penalty|certainty_hinge_width|certainty_syndrome_gate_threshold|syndrome_gate_mode|syndrome_gate_rate|correlation_form|correlation_agreement_floor|llr_certainty_importance)[[:space:]]*=' \
         "$MODELS_DIR/$BASE_HP" > "$MODELS_DIR/$hp"
     {
         echo ""
@@ -865,6 +915,7 @@ emit_point() {   # <key> <seed> <use_cer> <check_node_spec> <optimizer_spec>
         echo "single_qubit_rescale = ${RESCALE}"
         echo "require_correlations = ${require}"
         echo "check_node = \"${check_node}\""
+        echo "enriched_table = \"${enriched_table}\""
         echo "coupling_scale_init = ${coupling_scale_init}"
         echo "coupling_scale_learnable = ${coupling_scale_learnable}"
         echo "loss_layer_selection = \"${loss_layer_selection_value}\""
@@ -1471,7 +1522,14 @@ if ! { [ "$N_OPTIMIZER_ARMS" -eq 1 ] && [ "$OPTIMIZER_ARMS" = "base" ]; }; then
     # command ended up with a newline in the middle of its path.
     FIRST_OPTIMIZER_TAG="_$(echo "$OPTIMIZER_ARMS" | head -1 | awk '{print $1}' | sed 's/:.*//')"
 fi
-FIRST_MODEL="neuralbp_weights_nlayers_${NLAYERS}_epochs_$(grep -E '^[[:space:]]*n_epochs' "$MODELS_DIR/$BASE_HP" | head -1 | sed -E 's/[^0-9]*([0-9]+).*/\1/')_trained_using_train_$(echo $DATASETS | awk '{print $1}')_cer${FIRST_OPTIMIZER_TAG}_seed_$(echo $SEEDS | awk '{print $1}').json"
+# The check-node token of the first check-node arm, as emit_point puts it in the
+# run tag: nothing for tanh, _enr or _bethe otherwise.
+FIRST_CHECK_NODE_TAG=""
+case "$(echo $CHECK_NODE_ARMS | awk '{print $1}' | sed 's/:.*//')" in
+    enriched) FIRST_CHECK_NODE_TAG="_enr" ;;
+    bethe)    FIRST_CHECK_NODE_TAG="_bethe" ;;
+esac
+FIRST_MODEL="neuralbp_weights_nlayers_${NLAYERS}_epochs_$(grep -E '^[[:space:]]*n_epochs' "$MODELS_DIR/$BASE_HP" | head -1 | sed -E 's/[^0-9]*([0-9]+).*/\1/')_trained_using_train_$(echo $DATASETS | awk '{print $1}')_cer${FIRST_CHECK_NODE_TAG}${FIRST_OPTIMIZER_TAG}_seed_$(echo $SEEDS | awk '{print $1}').json"
 echo "submit — TRAIN, then TEST chained on it (both GPU, $ACCOUNT_GPU):"
 echo
 echo "    TRAIN_ID=\$(sbatch --parsable $SLURM_TRAIN)"
@@ -1507,7 +1565,7 @@ if [ "$LOCAL" -eq 1 ]; then
           "$DATA/correlated_weights/correlated_weights_${SMOKE_KEY}.txt"
 
     SMOKE_HP="hyperparams_hp_smoke.toml"
-    grep -vE '^[[:space:]]*(retrain|run_tag|use_CER|seed|single_qubit_rescale|require_correlations|check_node|coupling_scale_init|coupling_scale_learnable|coupling_schedule|coupling_schedule_layer_init|coupling_schedule_width_init|coupling_schedule_learnable|manual_backprop|n_epochs|n_gradient_updates_per_epoch|sparsity_importance|syndrome_gate_threshold|correlation_certainty_threshold|correlation_weight|correlation_importance|certainty_penalty|certainty_hinge_width|certainty_syndrome_gate_threshold|syndrome_gate_mode|syndrome_gate_rate|correlation_form|correlation_agreement_floor|llr_certainty_importance)[[:space:]]*=' \
+    grep -vE '^[[:space:]]*(retrain|run_tag|use_CER|seed|single_qubit_rescale|require_correlations|check_node|enriched_table|coupling_scale_init|coupling_scale_learnable|coupling_schedule|coupling_schedule_layer_init|coupling_schedule_width_init|coupling_schedule_learnable|manual_backprop|n_epochs|n_gradient_updates_per_epoch|sparsity_importance|syndrome_gate_threshold|correlation_certainty_threshold|correlation_weight|correlation_importance|certainty_penalty|certainty_hinge_width|certainty_syndrome_gate_threshold|syndrome_gate_mode|syndrome_gate_rate|correlation_form|correlation_agreement_floor|llr_certainty_importance)[[:space:]]*=' \
         "$MODELS_DIR/$BASE_HP" > "$MODELS_DIR/$SMOKE_HP"
     # The smoke test runs what the cluster jobs run: the CER arm with the tanh
     # check node, trained by the hand-written backward pass on the GPU

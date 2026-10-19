@@ -206,20 +206,19 @@ end
 
 function manual_backprop_setting(hyperparameters::Dict, check_node_kind::Int)::Bool
     """
-    The `manual_backprop` hyperparameter, validated: it must be a Bool, and it
-    may be true only with the standard (tanh) check node, the one the
-    hand-written backward pass covers. An enriched run asking for it is
-    refused rather than quietly trained with Enzyme.
+    The `manual_backprop` hyperparameter, validated: it must be a Bool. The
+    hand-written backward pass covers both check nodes (the enriched one since
+    2026-10-19, `backward_enriched_checks!`), so `check_node_kind` no longer
+    restricts it; it stays an argument so every caller states which rule the
+    gradient is for.
     """
     requested_manual_backprop::Any = get(hyperparameters, "manual_backprop", false)
     if !(requested_manual_backprop isa Bool)
         throw(ArgumentError(
             "manual_backprop = $(repr(requested_manual_backprop)) must be true or false."))
     end
-    if requested_manual_backprop && check_node_kind == CHECK_NODE_ENRICHED
-        throw(ArgumentError(
-            "manual_backprop = true covers the standard (tanh) check node only, and this run has " *
-            "check_node = \"enriched\". Train it with manual_backprop = false (Enzyme)."))
+    if check_node_kind != CHECK_NODE_TANH && check_node_kind != CHECK_NODE_ENRICHED
+        throw(ArgumentError("manual_backprop_setting: unknown check node code $(check_node_kind)."))
     end
     manual_backprop::Bool = requested_manual_backprop
     return manual_backprop

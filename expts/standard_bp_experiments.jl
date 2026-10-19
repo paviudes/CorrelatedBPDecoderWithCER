@@ -78,9 +78,10 @@ if abspath(PROGRAM_FILE) == @__FILE__
     # default "tanh" rule they play no part here at all.
     check_node::String = String(get(hyperparameters, "check_node", "tanh"))
     check_node_code(check_node)
+    enriched_table::String = enriched_table_kind(String(get(hyperparameters, "enriched_table", ENRICHED_TABLE_PAIRWISE)))
     coupling_scale::Float32 = Float32(get(hyperparameters, "coupling_scale_init", 1.0f0))
     if check_node == "enriched"
-        print_info("[check_node=enriched] couplings enter the check factor with fixed α = $(coupling_scale).")
+        print_info("[check_node=enriched] the $(enriched_table) table enters the check factor with fixed α = $(coupling_scale).")
         # The results filename carries no check-node tag (only `run_tag` may
         # extend a name), so without one an enriched run would find the tanh
         # run's results file and "skip the decode" with the wrong numbers.
@@ -101,6 +102,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
         single_qubit_rescale = Float32(get(hyperparameters, "single_qubit_rescale", 0.0f0)),
         require_correlations = Bool(get(hyperparameters, "require_correlations", false)),
         check_node = check_node,
+        enriched_table = enriched_table,
     )
 
     results_directory::String = "$(prefix)/results"
@@ -183,6 +185,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     extra_result_columns::Vector{Pair{String, Any}} = Pair{String, Any}[]
     push!(extra_result_columns, "commit_layer_rule" => commit_layer_rule_name(commit_layer_rule))
     push!(extra_result_columns, "check_node" => check_node)
+    push!(extra_result_columns, "enriched_table" => enriched_table)
     push!(extra_result_columns, "coupling_scale" => coupling_scale)
     if diagnosis !== nothing
         push!(extra_result_columns, "num_syndrome_cleared" => diagnosis.n_syndrome_cleared)

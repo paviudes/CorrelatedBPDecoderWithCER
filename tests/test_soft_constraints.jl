@@ -27,6 +27,10 @@ using DelimitedFiles   # readdlm, for the LX file the coset-failure planting nee
 #   7. The weights file round-trips alpha and stays readable without it; a
 #      model or TOML asking for the removed layer schedule on alpha is refused.
 #   8. The commit rule (first vs last), at the end of the file.
+#   9. (2026-10-19) The per-check kernel `message_check_to_vertex_enriched!`
+#      and its adjoint against Enzyme and finite differences; the Bethe table
+#      (file round trip, exact first-layer posterior, refusals); the dense
+#      (GPU) adjoint against the loop one.
 # =============================================================================
 
 function debug_data_directory()::String
@@ -90,6 +94,51 @@ function two_check_base(check_node::String)::NeuralBPBase
         check_node = check_node,
     )
     return base
+end
+
+function bethe_two_check_like_bb_base(pairwise_base::NeuralBPBase)::NeuralBPBase
+    """
+    The BB base again, with a Bethe table in place of the pairwise one: random
+    log-weights for every check, built through the same keywords
+    `load_base_BP_model` uses, without a table file.
+    """
+    bethe_log_weights::Dict{Int, Vector{Float32}} = Dict{Int, Vector{Float32}}()
+    for check in pairwise_base.soft_check_tables.enriched_check_ids
+        bethe_log_weights[check] = 0.5f0 .* randn(Float32, pairwise_base.soft_check_tables.n_configurations)
+    end
+    bethe_base::NeuralBPBase = NeuralBPBase(
+        Matrix{Int}(pairwise_base.parity_check_matrix), Matrix{Int}(pairwise_base.parity_check_matrix_dual),
+        pairwise_base.initial_llrs, pairwise_base.n_layers;
+        connectivity = pairwise_base.connectivity,
+        correlation_strengths = pairwise_base.correlation_strengths,
+        check_node = "enriched",
+        enriched_table = ENRICHED_TABLE_BETHE,
+        bethe_log_weights = bethe_log_weights,
+    )
+    return bethe_base
+end
+
+function bethe_table_from_joint(joint::Vector{Float64}, degree::Int)::Vector{Float32}
+    """
+    ln P(k) − Σ_u ln p_u(b_u(k)) for a joint over 2^degree configurations in the
+    kernel's configuration order, with p_u the joint's own marginals.
+    """
+    n_configurations::Int = 2^degree
+    bits::Matrix{Float64} = [Float64((k - 1) >> (slot - 1) & 1) for k in 1:n_configurations, slot in 1:degree]
+    marginals::Vector{Float64} = [sum(joint .* bits[:, slot]) for slot in 1:degree]
+    table::Vector{Float32} = zeros(Float32, n_configurations)
+    for k in 1:n_configurations
+        log_independent::Float64 = 0.0
+        for slot in 1:degree
+            if bits[k, slot] == 1.0
+                log_independent += log(marginals[slot])
+            else
+                log_independent += log(1.0 - marginals[slot])
+            end
+        end
+        table[k] = Float32(log(joint[k]) - log_independent)
+    end
+    return table
 end
 
 function brute_force_posterior_llr(
@@ -166,11 +215,12 @@ end
     @test tables.n_configurations == 64
     @test tables.n_pairs_assigned == size(base.connectivity, 1) == 540
     @test tables.n_pairs_unassigned == 0
-    @test size(tables.pair_energy) == (64, 36)
+    @test size(tables.log_weight_table) == (64, 36)
+    @test tables.table_kind == ENRICHED_TABLE_PAIRWISE
     @test size(tables.edge_neurons) == (6, 36)
 
     # Configuration 1 is all zeros: no coupling is active.
-    @test all(iszero, tables.pair_energy[1, :])
+    @test all(iszero, tables.log_weight_table[1, :])
     # Configuration 64 is all ones: every coupling inside the check is active,
     # so the energy is the plain sum of that check's J values.
     for (enriched_index, check) in enumerate(tables.enriched_check_ids)
@@ -181,7 +231,7 @@ end
                 expected_total += base.correlation_strengths[pair_index]
             end
         end
-        @test isapprox(tables.pair_energy[64, enriched_index], expected_total; atol = 1e-4)
+        @test isapprox(tables.log_weight_table[64, enriched_index], expected_total; atol = 1e-4)
         # Slots point at the neurons of (check, support[slot]).
         for slot in 1:6
             @test base.neuron_to_check_variable[tables.edge_neurons[slot, enriched_index]] == (check, support[slot])
@@ -368,6 +418,241 @@ end
     @test grad_alpha[1] != 0.0f0
 end
 
+@testset "The per-check kernel: batch kernel, tanh rule at a zero table, adjoint vs Enzyme" begin
+    Random.seed!(29)
+    base::NeuralBPBase = two_check_base("enriched")
+    tables::SoftCheckTables = base.soft_check_tables
+    n_neurons::Int = base.nb_neurons_per_layer
+    n_samples::Int = 3
+    messages_v2c::Matrix{Float32} = 1.5f0 .* randn(Float32, n_neurons, n_samples)
+    syndromes_batch::Matrix{Bool} = rand(Bool, base.code_n_checks, n_samples)
+    seed_messages::Matrix{Float32} = randn(Float32, n_neurons, n_samples)
+    alpha::Float32 = 0.8f0
+
+    # (a) The batch function is the per-check kernel on every (check, sample).
+    batch_messages::Matrix{Float32} = copy(seed_messages)
+    apply_enriched_checks!(batch_messages, messages_v2c, syndromes_batch, Float32[alpha], tables)
+    workspace::EnrichedKernelWorkspace = enriched_kernel_workspace(tables)
+    for sample in 1:n_samples
+        for slot in 1:tables.check_degree
+            workspace.incoming_messages[slot] = messages_v2c[tables.edge_neurons[slot, 1], sample]
+        end
+        message_check_to_vertex_enriched!(
+            workspace, Float32(syndromes_batch[1, sample]), tables.log_weight_table, 1, alpha, tables)
+        for slot in 1:tables.check_degree
+            @test workspace.outgoing_messages[slot] == batch_messages[tables.edge_neurons[slot, 1], sample]
+        end
+    end
+
+    # (b) A zero table is the tanh rule, whatever alpha.
+    standard_messages::Matrix{Float32} = standard_check_messages(messages_v2c, syndromes_batch, base)
+    zero_table::Matrix{Float32} = zeros(Float32, tables.n_configurations, 1)
+    for sample in 1:n_samples
+        for slot in 1:tables.check_degree
+            workspace.incoming_messages[slot] = messages_v2c[tables.edge_neurons[slot, 1], sample]
+        end
+        message_check_to_vertex_enriched!(workspace, Float32(syndromes_batch[1, sample]), zero_table, 1, alpha, tables)
+        for slot in 1:tables.check_degree
+            @test isapprox(workspace.outgoing_messages[slot], standard_messages[tables.edge_neurons[slot, 1], sample];
+                           atol = 1e-3, rtol = 1e-4)
+        end
+    end
+
+    # (c) The hand-written adjoint equals Enzyme's gradient of the probe loss,
+    #     with respect to the incoming messages and to alpha. The probe is the
+    #     adjoint of the outgoing messages; rows of the uncoupled check 2 pass
+    #     through, so the batch adjoint leaves their incoming edges at zero.
+    probe::Matrix{Float32} = randn(Float32, n_neurons, n_samples)
+    coupling_scale::Vector{Float32} = Float32[alpha]
+    gradient_coupling_scale::Vector{Float32} = zeros(Float32, 1)
+    gradient_messages::Matrix{Float32} = zeros(Float32, n_neurons, n_samples)
+    Enzyme.autodiff(
+        Enzyme.ReverseWithPrimal,
+        enriched_probe_loss,
+        Enzyme.Duplicated(coupling_scale, gradient_coupling_scale),
+        Enzyme.Duplicated(messages_v2c, gradient_messages),
+        Enzyme.Const(seed_messages),
+        Enzyme.Const(syndromes_batch),
+        Enzyme.Const(tables),
+        Enzyme.Const(probe)
+    )
+    adjoint_messages_v2c::Matrix{Float32} = zeros(Float32, n_neurons, n_samples)
+    adjoint_log_weight_table::Matrix{Float32} = zeros(Float32, size(tables.log_weight_table))
+    adjoint_alpha::Float32 = backward_enriched_checks!(
+        adjoint_messages_v2c, adjoint_log_weight_table, probe, batch_messages, messages_v2c,
+        syndromes_batch, alpha, tables)
+    @test all(isfinite, adjoint_messages_v2c)
+    @test all(isapprox.(adjoint_messages_v2c, gradient_messages; atol = 1e-4, rtol = 1e-3))
+    @test isapprox(adjoint_alpha, gradient_coupling_scale[1]; atol = 1e-4, rtol = 1e-3)
+    # The table's gradient against central differences on the probe loss.
+    finite_difference_step::Float32 = 1.0f-2
+    for configuration_index in (1, 4, 7)
+        shifted_up::Matrix{Float32} = copy(tables.log_weight_table)
+        shifted_up[configuration_index, 1] += finite_difference_step / alpha
+        shifted_down::Matrix{Float32} = copy(tables.log_weight_table)
+        shifted_down[configuration_index, 1] -= finite_difference_step / alpha
+        tables_up::SoftCheckTables = SoftCheckTables(
+            tables.n_enriched_checks, tables.check_degree, tables.n_configurations, tables.enriched_check_ids,
+            tables.edge_neurons, tables.configuration_bits, tables.configuration_parity, tables.table_kind,
+            shifted_up, tables.n_pairs_assigned, tables.n_pairs_unassigned)
+        tables_down::SoftCheckTables = SoftCheckTables(
+            tables.n_enriched_checks, tables.check_degree, tables.n_configurations, tables.enriched_check_ids,
+            tables.edge_neurons, tables.configuration_bits, tables.configuration_parity, tables.table_kind,
+            shifted_down, tables.n_pairs_assigned, tables.n_pairs_unassigned)
+        finite_difference::Float32 = (
+            enriched_probe_loss(coupling_scale, messages_v2c, seed_messages, syndromes_batch, tables_up, probe) -
+            enriched_probe_loss(coupling_scale, messages_v2c, seed_messages, syndromes_batch, tables_down, probe)
+        ) / (2.0f0 * finite_difference_step)
+        @test isapprox(adjoint_log_weight_table[configuration_index, 1], finite_difference; atol = 2e-3, rtol = 2e-2)
+    end
+
+    # (d) A clamped message has a zero adjoint, and everything stays finite.
+    saturated_v2c::Matrix{Float32} = copy(messages_v2c)
+    saturated_v2c[tables.edge_neurons[1, 1], 1] = 60.0f0
+    saturated_v2c[tables.edge_neurons[2, 1], 1] = 60.0f0
+    saturated_messages::Matrix{Float32} = copy(seed_messages)
+    apply_enriched_checks!(saturated_messages, saturated_v2c, syndromes_batch, Float32[alpha], tables)
+    @test abs(saturated_messages[tables.edge_neurons[3, 1], 1]) == ENRICHED_MESSAGE_CAP
+    fill!(adjoint_messages_v2c, 0.0f0)
+    fill!(adjoint_log_weight_table, 0.0f0)
+    saturated_alpha_adjoint::Float32 = backward_enriched_checks!(
+        adjoint_messages_v2c, adjoint_log_weight_table, probe, saturated_messages, saturated_v2c,
+        syndromes_batch, alpha, tables)
+    @test isfinite(saturated_alpha_adjoint)
+    @test all(isfinite, adjoint_messages_v2c)
+    @test all(abs.(adjoint_messages_v2c) .<= sum(abs, probe))
+end
+
+@testset "The Bethe table: file round trip, first-layer posterior, refusals" begin
+    Random.seed!(31)
+    # (a) The kernel with a Bethe table built from a joint P over check 1's three
+    #     bits, run on the marginals' prior LLRs, returns the exact posterior
+    #     under P: prior + message = ln P(x_v = 0 | s) / P(x_v = 1 | s).
+    degree::Int = 3
+    n_configurations::Int = 2^degree
+    joint::Vector{Float64} = rand(n_configurations) .^ 3 .+ 0.01
+    joint ./= sum(joint)
+    table::Vector{Float32} = bethe_table_from_joint(joint, degree)
+    pairwise_base::NeuralBPBase = two_check_base("enriched")
+    bethe_base::NeuralBPBase = NeuralBPBase(
+        Matrix{Int}(pairwise_base.parity_check_matrix), Matrix{Int}(pairwise_base.parity_check_matrix_dual),
+        pairwise_base.initial_llrs, 1;
+        connectivity = pairwise_base.connectivity,
+        correlation_strengths = pairwise_base.correlation_strengths,
+        check_node = "enriched",
+        enriched_table = ENRICHED_TABLE_BETHE,
+        bethe_log_weights = Dict{Int, Vector{Float32}}(1 => table),
+    )
+    tables::SoftCheckTables = bethe_base.soft_check_tables
+    @test tables.table_kind == ENRICHED_TABLE_BETHE
+    @test tables.log_weight_table[:, 1] == table
+    bits::Matrix{Float64} = [Float64((k - 1) >> (slot - 1) & 1) for k in 1:n_configurations, slot in 1:degree]
+    marginals::Vector{Float64} = [sum(joint .* bits[:, slot]) for slot in 1:degree]
+    workspace::EnrichedKernelWorkspace = enriched_kernel_workspace(tables)
+    for syndrome_bit in (0, 1)
+        for slot in 1:degree
+            workspace.incoming_messages[slot] = Float32(log((1.0 - marginals[slot]) / marginals[slot]))
+        end
+        message_check_to_vertex_enriched!(workspace, Float32(syndrome_bit), tables.log_weight_table, 1, 1.0f0, tables)
+        for slot in 1:degree
+            posterior_zero::Float64 = 0.0
+            posterior_one::Float64 = 0.0
+            for k in 1:n_configurations
+                if Int(sum(bits[k, :])) % 2 == syndrome_bit
+                    if bits[k, slot] == 0.0
+                        posterior_zero += joint[k]
+                    else
+                        posterior_one += joint[k]
+                    end
+                end
+            end
+            exact_posterior::Float64 = log(posterior_zero / posterior_one)
+            @test isapprox(Float64(workspace.incoming_messages[slot]) + Float64(workspace.outgoing_messages[slot]),
+                           exact_posterior; atol = 1e-3)
+        end
+    end
+
+    # (b) The file format round-trips, through the path `load_base_BP_model` derives.
+    table_file::String = tempname() * ".txt"
+    open(table_file, "w") do io
+        println(io, "# a comment")
+        println(io, "1 : " * join(string.(table), " "))
+        println(io, "2 : " * join(string.(zeros(Float32, n_configurations)), " "))
+    end
+    read_back::Dict{Int, Vector{Float32}} = read_bethe_log_weights(table_file)
+    @test read_back[1] == table
+    @test read_back[2] == zeros(Float32, n_configurations)
+    @test bethe_table_path("/some/dir/correlated_weights_p_0.0015_sig_0.0015_s_1.txt") ==
+          "/some/dir/bethe_table_p_0.0015_sig_0.0015_s_1.txt"
+    @test_throws ArgumentError bethe_table_path("/some/dir/other_name.txt")
+    @test_throws ArgumentError read_bethe_log_weights(tempname() * ".txt")
+    rm(table_file)
+
+    # (c) Refusals: a missing row, a row of the wrong length, an unknown table name.
+    @test_throws ArgumentError NeuralBPBase(
+        Matrix{Int}(pairwise_base.parity_check_matrix), Matrix{Int}(pairwise_base.parity_check_matrix_dual),
+        pairwise_base.initial_llrs, 1;
+        connectivity = pairwise_base.connectivity, correlation_strengths = pairwise_base.correlation_strengths,
+        check_node = "enriched", enriched_table = ENRICHED_TABLE_BETHE,
+        bethe_log_weights = Dict{Int, Vector{Float32}}(2 => table))
+    @test_throws ArgumentError NeuralBPBase(
+        Matrix{Int}(pairwise_base.parity_check_matrix), Matrix{Int}(pairwise_base.parity_check_matrix_dual),
+        pairwise_base.initial_llrs, 1;
+        connectivity = pairwise_base.connectivity, correlation_strengths = pairwise_base.correlation_strengths,
+        check_node = "enriched", enriched_table = ENRICHED_TABLE_BETHE,
+        bethe_log_weights = Dict{Int, Vector{Float32}}(1 => table[1:4]))
+    @test_throws ArgumentError enriched_table_kind("ising")
+    @test enriched_table_kind(" Bethe ") == ENRICHED_TABLE_BETHE
+
+    # (d) On the BB code, the Bethe base runs through the whole forward pass,
+    #     CPU and GPU, and describes itself.
+    bb_base::NeuralBPBase = bethe_two_check_like_bb_base(load_bb_base("enriched", 2))
+    @test occursin("bethe", describe_soft_check_tables(bb_base.soft_check_tables))
+    bpnn::NachmaniNeuralBP = unit_weight_neuralbp(bb_base; coupling_scale = 1.0f0)
+    n_samples::Int = 4
+    syndromes::BitMatrix = BitMatrix(rand(Bool, bb_base.code_n_checks, n_samples))
+    llrs_batch::Matrix{Float32} = repeat(bb_base.initial_llrs, 1, n_samples)
+    cpu_posteriors::Array{Float32, 3} = forward_pass_with_weights(bpnn, llrs_batch, syndromes)
+    gpu_posteriors::Array{Float32, 3} = forward_pass_gpu(bpnn, llrs_batch, syndromes)
+    @test all(isfinite, cpu_posteriors)
+    @test all(isapprox.(gpu_posteriors, cpu_posteriors; atol = 5e-2, rtol = 1e-3))
+end
+
+@testset "Dense adjoint equals the loop adjoint" begin
+    Random.seed!(43)
+    base::NeuralBPBase = load_bb_base("enriched", 2)
+    tables::SoftCheckTables = base.soft_check_tables
+    n_neurons::Int = base.nb_neurons_per_layer
+    n_samples::Int = 5
+    alpha::Float32 = 0.6f0
+    messages_v2c::Matrix{Float32} = 2.0f0 .* randn(Float32, n_neurons, n_samples)
+    syndromes_batch::Matrix{Bool} = rand(Bool, base.code_n_checks, n_samples)
+    messages_c2v::Matrix{Float32} = standard_check_messages(messages_v2c, syndromes_batch, base)
+    apply_enriched_checks!(messages_c2v, messages_v2c, syndromes_batch, Float32[alpha], tables)
+    adjoint_messages_c2v::Matrix{Float32} = randn(Float32, n_neurons, n_samples)
+
+    loop_adjoint_v2c::Matrix{Float32} = zeros(Float32, n_neurons, n_samples)
+    loop_adjoint_table::Matrix{Float32} = zeros(Float32, size(tables.log_weight_table))
+    loop_adjoint_alpha::Float32 = backward_enriched_checks!(
+        loop_adjoint_v2c, loop_adjoint_table, adjoint_messages_c2v, messages_c2v, messages_v2c,
+        syndromes_batch, alpha, tables)
+
+    forward_state::GPUSoftCheckState = build_gpu_soft_check_state(tables, syndromes_batch, n_neurons, identity)
+    backward_state::GPUEnrichedBackwardState = build_gpu_enriched_backward_state(tables, n_neurons, n_samples, identity)
+    dense_adjoints::Tuple{AbstractMatrix{Float32}, Float32} = backward_enriched_checks_gpu(
+        adjoint_messages_c2v, messages_c2v, messages_v2c, alpha, forward_state, backward_state)
+    @test all(isapprox.(dense_adjoints[1], loop_adjoint_v2c; atol = 1e-4, rtol = 1e-3))
+    @test isapprox(dense_adjoints[2], loop_adjoint_alpha; atol = 1e-3, rtol = 1e-3)
+    @test all(isapprox.(backward_state.adjoint_log_weight_table, loop_adjoint_table; atol = 1e-4, rtol = 1e-3))
+    # Every BB check is enriched, so the dense result has no untouched row.
+    @test all(forward_state.keep_mask .== 0.0f0)
+    # A second call accumulates the table's gradient and nothing else.
+    second_adjoints::Tuple{AbstractMatrix{Float32}, Float32} = backward_enriched_checks_gpu(
+        adjoint_messages_c2v, messages_c2v, messages_v2c, alpha, forward_state, backward_state)
+    @test isapprox(second_adjoints[2], loop_adjoint_alpha; atol = 1e-3, rtol = 1e-3)
+    @test all(isapprox.(backward_state.adjoint_log_weight_table, 2.0f0 .* loop_adjoint_table; atol = 2e-4, rtol = 1e-3))
+end
+
 @testset "Dense formulation equals the loop kernel; GPU forward pass equals CPU" begin
     Random.seed!(37)
     base::NeuralBPBase = load_bb_base("enriched", 3)
@@ -430,6 +715,7 @@ end
     @test loaded.weights_llrs == bpnn.weights_llrs
     saved_contents::Dict{String, Any} = JSON.parsefile(weights_file)
     @test saved_contents["check_node"] == "enriched"
+    @test saved_contents["enriched_table"] == "pairwise"
     @test saved_contents["seed"] == 3
 
     # A file written before the enriched node existed has neither key.
@@ -445,6 +731,10 @@ end
     # that the weights were trained under the other rule.
     loaded_legacy::NachmaniNeuralBP = @test_logs (:warn, r"trained with check_node") load_trained_neuralbp_model(legacy_file, bpnn)
     @test isapprox(effective_coupling_scale(loaded_legacy), 1.0f0; atol = 1e-5)
+    # A pairwise-table model loaded into a Bethe-table model warns about the table.
+    bethe_base::NeuralBPBase = bethe_two_check_like_bb_base(base)
+    bethe_bpnn::NachmaniNeuralBP = unit_weight_neuralbp(bethe_base; coupling_scale = 0.7f0)
+    @test_logs (:warn, r"trained with enriched_table") load_trained_neuralbp_model(weights_file, bethe_bpnn)
     rm(weights_file)
     rm(legacy_file)
 end

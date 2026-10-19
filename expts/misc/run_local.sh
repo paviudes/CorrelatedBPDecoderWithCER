@@ -32,6 +32,16 @@
 #                                           (deterministic, same filenames). With any
 #                                           other --design the two values, when given,
 #                                           are applied to every arm.
+#   bash misc/run_local.sh --check-node bethe:1:learn
+#                                           the CER arm's check node: tanh (default),
+#                                           enriched:<alpha>:<fixed|learn> (the CER
+#                                           couplings as pair terms) or
+#                                           bethe:<alpha>:<fixed|learn> (the check's
+#                                           joint over its marginals; the table files
+#                                           are built here from the FULL training
+#                                           files of the training and test keys and
+#                                           copied under the cut keys). Run tags gain
+#                                           _enr / _bethe after the arm.
 #   bash misc/run_local.sh --design icscale --jobs 8
 #                                           ramp + last-layer commit + smooth_loss, with
 #                                           initial_conditions_scale swept over --scales
@@ -130,6 +140,8 @@ TRAINING_SAMPLES=0
 FAILURE_WEIGHT_BOUNDARY=0
 # For --design icscale: the initial_conditions_scale values, comma-separated.
 SCALES="0.1,0.3"
+# The CER arm's check node (sweep_hyperparams.sh check_node_arms spec).
+CHECK_NODE="tanh"
 DRY_RUN=0
 DO_TRAIN=1
 DO_TEST=1
@@ -158,6 +170,8 @@ while [ $# -gt 0 ]; do
         --training-samples=*) TRAINING_SAMPLES="${1#*=}" ;;
         --failure-weight-boundary)   FAILURE_WEIGHT_BOUNDARY="${2:-}"; shift ;;
         --failure-weight-boundary=*) FAILURE_WEIGHT_BOUNDARY="${1#*=}" ;;
+        --check-node)   CHECK_NODE="${2:-}"; shift ;;
+        --check-node=*) CHECK_NODE="${1#*=}" ;;
         --scales)     SCALES="${2:-}"; shift ;;
         --scales=*)   SCALES="${1#*=}" ;;
         --samples)    SAMPLES="${2:-}"; shift ;;
@@ -298,7 +312,7 @@ if [ "$DESIGN" = "icscale" ]; then
 else
     echo "  layers     -> $LAYERS unrolled   warmup $WARMUP (design A / softmin arms)"
 fi
-echo "  arms       -> no-CER + CER (tanh check node), x $ARMS_LABEL"
+echo "  arms       -> no-CER + CER ($CHECK_NODE check node), x $ARMS_LABEL"
 if [ "$DESIGN_GIVEN" -eq 0 ]; then
     echo "                (--design not given: this is the default 'pair', design A + softmin."
     echo "                 The RAMP loss runs only with --design ramp or --design all;
@@ -364,6 +378,23 @@ for k in $SRC_TRAIN_KEY $SRC_TEST_KEYS; do
     fi
 done
 
+# A Bethe arm reads bethe_table_<key>.txt next to each CER file. Built from the
+# FULL training file of each key (the table is a property of the distribution,
+# not of the cut), then copied under the cut key like the CER files.
+if [ "${CHECK_NODE%%:*}" = "bethe" ]; then
+    for k in $SRC_TRAIN_KEY $SRC_TEST_KEYS; do
+        src="$DATA/correlated_weights/bethe_table_${k}.txt"
+        dst="$DATA/correlated_weights/bethe_table_${k}${SUFFIX}.txt"
+        if [ ! -f "$src" ]; then
+            echo "[run_local] building $src"
+            python3 "$SCRIPT_DIR/build_bethe_tables.py" --workdir "$CODENAME" --key "$k"
+        fi
+        if [ ! -f "$dst" ]; then
+            cp -f "$src" "$dst"
+        fi
+    done
+fi
+
 TEST_KEYS_TOML=""
 for k in $SRC_TEST_KEYS; do
     if [ -n "$TEST_KEYS_TOML" ]; then TEST_KEYS_TOML="$TEST_KEYS_TOML, "; fi
@@ -392,9 +423,9 @@ include_nocer    = true
 single_qubit_rescale = 0.1
 loss_layer_selection = "last"
 commit_layer_rule    = "last"
-# ONE check-node arm, tanh: the hand-written gradient covers no other. The no-CER
+# ONE check-node arm for the CER side (--check-node; tanh by default). The no-CER
 # baseline is emitted separately, so this yields 4 arms, not 2.
-check_node_arms  = ["tanh"]
+check_node_arms  = ["$CHECK_NODE"]
 # warmup_layers is stated on BOTH arms rather than inherited from the baseline
 # TOML, so the run does not silently change when that file is edited. It is a
 # tag-neutral override (only loss_layer_selection and commit_layer_rule reach the

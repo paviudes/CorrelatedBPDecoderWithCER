@@ -151,7 +151,13 @@ export CHECK_NODE_TANH, CHECK_NODE_ENRICHED, check_node_code, check_node_name, S
        apply_enriched_checks_gpu, ENRICHED_MESSAGE_CAP, enriched_kernel_bytes_per_sample,
        cap_batch_size_for_enriched_kernel, release_device_array!, release_gpu_soft_check_state!,
        ENRICHED_KERNEL_MEMORY_BUDGET_BYTES,
-       coupling_scale_from_logit, logit_from_coupling_scale, COUPLING_SCALE_LINK_MARGIN
+       coupling_scale_from_logit, logit_from_coupling_scale, COUPLING_SCALE_LINK_MARGIN,
+       ENRICHED_TABLE_PAIRWISE, ENRICHED_TABLE_BETHE, enriched_table_kind, bethe_table_path,
+       read_bethe_log_weights, EnrichedKernelWorkspace, enriched_kernel_workspace,
+       enriched_class_sums!, message_check_to_vertex_enriched!,
+       backward_message_check_to_vertex_enriched!, backward_enriched_checks!,
+       GPUEnrichedBackwardState, build_gpu_enriched_backward_state,
+       release_gpu_enriched_backward_state!, backward_enriched_checks_gpu
 
 # Neural belief propagation
 include("neuralbase.jl")

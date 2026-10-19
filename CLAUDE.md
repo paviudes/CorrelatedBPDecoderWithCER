@@ -121,8 +121,12 @@ end
   - Training uses the hand-written backward pass with USE_GPU=1. The base TOML
     **must** say `manual_backprop = true` (the generator refuses otherwise: Enzyme
     cannot use the GPU, and ~6600 s/point on the allocation's few cores would blow
-    the 1 h wall), and every point's TOML states it. `check_node_arms` is `["tanh"]`;
-    an enriched arm is refused before anything is written.
+    the 1 h wall), and every point's TOML states it. `check_node_arms` takes `tanh`,
+    `enriched:<α>:<fixed|learn>` and `bethe:<α>:<fixed|learn>` (since 2026-10-19; the
+    hand-written gradient covers the enriched node). A non-tanh arm's run tag is
+    `_<arm>_<enr|bethe>_<opt>`, so it never overwrites the tanh arm's files; a bethe
+    arm needs `correlated_weights/bethe_table_<key>.txt` for the training key and
+    every test key (the preflight lists the missing ones with the command).
   - `train_jobs = 4` trainings share the task's card (GNU parallel, the test job's
     card-assignment line). Safe for TRAINING — a CUDA context plus batches of 20,
     well under 1 GB of VRAM each — unlike testing, which sizes its batch to the card
@@ -133,11 +137,12 @@ end
     are ignored, with a note.
   - **The network is fixed at 90 layers** in the generator (`NLAYERS=90`); a settings
     file naming another `n_hidden_layers` is refused. `run_local.sh` lost `--layers`.
-  - `seconds_per_train_point = 1800` is an ESTIMATE (laptop: ~10 min/point at 50
-    layers, GPU or CPU, so ~18 min at 90 alone; four sharing an A100 is unmeasured).
-    The preflight puts 4 points/task at 45 min of the 1 h wall (75%, "tight"). Each
-    point now prints `Training: N gradients (...) in X s ...` to its stdout under
-    `cluster/logs/hp_<ts>_train_task<t>/`; replace the estimate with that.
+  - `seconds_per_train_point = 720` is the MEASURED wall time of one wave of
+    `train_jobs = 4` points sharing an A100 (2026-10-15, tanh: ~12 min per task of 4);
+    the test job used 21–27 min of its 4 h. Each point prints `Training: N gradients
+    (...) in X s ...` to its stdout under `cluster/logs/hp_<ts>_train_task<t>/`. The
+    enriched node does ~10× the check-node arithmetic, so raise the value if an
+    enriched/bethe sweep's points report more.
   - Verified 2026-10-15 by executing both generated scripts with stub
     `julia`/`parallel`/`module` and fake `SLURM_*`: all 5 train and 8 test tasks exit
     0 (lock owner + waiting siblings, 20 models and 80 results staged out); a failing
@@ -285,6 +290,142 @@ end
   (Float32 emulation, incoming (−110, 1, 1): GPU −16.6, CPU 0.30; the CPU kernel
   stabilises each class separately). Exact while every |m_v2c| < ~70; at unit
   weights a BB v2c message is at most 2 × 16.6 + |l|, so it needs weights above ~2.
+
+### The pairwise factor is mis-specified on this data (measured 2026-10-15)
+
+Checked on `p_0.0015_sig_0.0015_s_1`: H_Z, the CER file, and the 1e6-sample training file.
+
+- The 540 CER pairs are exactly the 15 pairs inside each of the 36 checks (each pair
+  shares one check, none dropped). 287 are strong (|J| > 1, max 4.43); 225 are noise
+  (|J| < 0.2). Inside a check the strong pairs are triangle-free and most qubits have
+  3 strong partners; across its 3 checks a qubit has 6–9. The file's J and rates
+  equal the training data's MARGINAL pair log-odds ratios and flip rates exactly.
+- The check's local model built from them (α = 1, raw rates) against the true
+  distribution of the check's 6 bits: 0 flips 80.6% vs 94.1%; 3 flips 1.15% vs 0.049%
+  (26× on triples where one qubit has two strong partners); 4–6 flips 9.7% vs 0.005%.
+  Marginal J's compound in the product (e^{J_uv + J_vw}); they are not Ising couplings.
+- First-layer messages (incoming = priors) against the true joint's: satisfied check
+  true +0.76 (median), tanh +2.75, α = 0.5 +1.71, α = 0.75 +0.79, α = 1 **−1.47**
+  (wrong sign); violated check true −2.71, tanh −2.75, α = 1 −4.12. So tanh overstates
+  a satisfied check by ~2 nats (correlated pairs flip without violating it), and α = 1
+  overcorrects past zero. One α scales every coupling, so it can fix the average, not
+  the shape.
+- Also: 61% (median) of a qubit's flips come with a strong partner, so the marginal-rate
+  fields double count the pair events that e^J adds again; the data has 3-qubit
+  mechanisms (the CER "block" patterns: (3,23,69) all flip ~3,000 times per 1e6,
+  (2,24,54) ~4,000), whose pairs straddle two checks; and 185 of the 472 strongly
+  correlated pairs in the data share no check, so no check factor can carry them
+  ((3,23) has J = 3.8 and is absent from the file).
+- The general replacement within a check is the true local joint over the product of
+  marginals, f_c(x) = 1[parity] · P_c(x) / Π_u p_u(x_u): one log-weight per
+  configuration, now the `"bethe"` table (below), exact at the first layer by construction.
+  Cross-check correlations need mechanism variables (DEM-style columns) instead.
+- **Per-coupling α does not recover it** (each check's factor fitted by maximum
+  likelihood to its true 6-bit joint; message errors RMS over the 216 slots, first layer):
+
+  | factor | KL (nats) | msg err, satisfied | violated |
+  |---|---|---|---|
+  | α = 1 | 0.126 | 2.36 | 1.73 |
+  | one α = 0.75 | 0.013 | 0.09 | 0.49 |
+  | per-coupling α ∈ [0, 1] | 0.012 | 0.25 | 0.45 |
+  | per-coupling, unbounded | 0.009 | 0.03 | 0.41 |
+  | couplings + per-(check, qubit) field corrections | 0.0008 | 0.07 | 0.04 |
+
+  The fitted per-coupling α's cluster at 0.59–0.76 (median 0.70, none at a bound), so
+  they buy almost nothing over one α. The residual is the FIELDS: the single-qubit
+  factors come from the marginal rates, which include the pair events, and α cannot
+  touch them. The last row is the max-ent pairwise model (matches every single rate and
+  pair table inside the check), computable from the CER file alone (p_i, p_k and J_ik
+  fix each 2×2 table): a 21-parameter convex fit per check over 64 configurations, and
+  it fits the existing per-configuration table with the field corrections folded in.
+  Within a check, three-body terms are then negligible (KL 0.0008). Raw rates here;
+  the runs rescale the priors, so 0.70 is not directly the α to use there.
+- **Where the correlations come from** (`refs/72q_BB_code_data_gen.py`): a cascade on
+  a ladder lattice, not on the checks. Each qubit flips independently with p; then
+  each lattice neighbour of a flipped qubit flips with a per-pair q ~ N(q_mean, 0.2)
+  (one step, no chain reactions; OR, not XOR). So the strong pairs are lattice
+  neighbours and "siblings" (two neighbours of one seed), and a seed with two
+  neighbours is the 3-qubit block pattern. Their overlap with check supports is
+  incidental, which is why 185 of 472 strong pairs sit in no check. The exact factor
+  graph for this model has pure-parity checks plus mechanism variables (seed z_i,
+  induced y_{i→j}, both columns of H on the qubit they flip) tied by degree-2
+  factors P(y_{i→j} = 1 | z_i) = q_{ij} z_i; a check factor can only ever see the
+  within-check part. (The repo's `p_0.0015_sig_0.0015` filenames do not match this
+  script's p/q naming, so the exact generating version is unconfirmed.)
+### Enriched check node: the table-driven implementation (2026-10-19)
+
+- **One node, two tables.** `ψ_c(x) = 1[⊕x = s_c] · exp(α T_c(x))` with
+  `SoftCheckTables.log_weight_table` (was `pair_energy`) holding T_c and
+  `table_kind` saying which: `enriched_table = "pairwise"` (default, T = Σ J x x,
+  every earlier enriched run) or `"bethe"` (T = ln P_c − Σ ln p_u, read from
+  `correlated_weights/bethe_table_<key>.txt` next to the CER file, the path
+  `bethe_table_path` derives). `check_node` stays `"tanh" | "enriched"`; the table
+  kind is a second TOML key, recorded in the weights JSON (`enriched_table`; loading a
+  file trained with the other table warns) and the results CSV. α multiplies either
+  table; α = 1 is the Bayesian value of both.
+- **Forward** (`message_check_to_vertex_enriched!`, one check and one sample, on an
+  `EnrichedKernelWorkspace`; `apply_enriched_checks!` loops it): the softplus terms
+  of ln q_u cancel, so `LW(k) = α T_c(k) − b(k)·m`, `S_v^e` = LSE of LW over the class
+  {parity = s_c, b_v = e}, stabilised by the class's own maximum, and
+  `m_{c→v} = S_v^0 − S_v^1 − m_v`, capped. Same message as the old kernel, fewer
+  operations (so enriched runs before this date are not bit-reproducible, only
+  equal to Float32 round-off); Enzyme still differentiates it (the oracle in the
+  tests). The dense GPU forward (`apply_enriched_checks_gpu`) is unchanged apart
+  from the rename.
+- **Adjoint** (`backward_message_check_to_vertex_enriched!`, `backward_enriched_checks!`;
+  `backward_enriched_checks_gpu` with a `GPUEnrichedBackwardState` sized for the
+  training batch, built and freed per gradient call): recompute LW and the class
+  sums, then with π_v^e the class softmax and a_v = ∂L/∂m_{c→v} (0 where the
+  forward's message sits on the cap, read off the tape's outgoing messages):
+  ω(k) = Σ_v a_v [π_v^0(k) − π_v^1(k)], ∂L/∂m_u = −Σ_k ω(k) b_u(k) − a_u (exactly 0
+  for u = v), ∂L/∂(αT)(k) = ω(k) (accumulated in `adjoint_log_weight_table`, not a
+  parameter yet), ∂L/∂α = Σ_k ω(k) T_c(k), and dL/dθ = dL/dα · α(1−α) through the
+  logistic link. The device version stabilises each class by its own maximum, so it
+  has no "exact while |m| < ~70" limit. Prototyped against central finite
+  differences in float64 and Float32 (outputs/proto/enriched_table_node.py).
+- **Where it plugs in.** In both reverse sweeps the tanh chain runs on every row as
+  before, and the enriched checks' v2c edges are then OVERWRITTEN with the table
+  node's adjoint (CPU) or masked with `keep_mask` and added (GPU): those edges feed
+  no other check, so the chain's share there is wrong and discarded whole. The GPU
+  tape copies each layer's outgoing c2v messages under the enriched node (the kernel
+  returns a buffer it rewrites). `manual_backprop = true` now runs with
+  `check_node = "enriched"`, on the CPU and under USE_GPU=1.
+- **Building a Bethe table**: `python3 misc/build_bethe_tables.py --workdir <codename>
+  --key <key>` reads `code/HZ.txt` and `training_data/train_<key>.txt` (0.6 s per
+  1e6 samples) and writes one line per check, `c : T(1) … T(2^d)`, in
+  `configuration_table`'s order. P_c = counts/N; a configuration never seen gets the
+  floor 0.5/N and then at most T = 0, so it is never promoted above independence,
+  while one that independence expects and the data never shows keeps its negative
+  value. On `p_0.0015_sig_0.0015_s_1`: KL(joint‖independent) 0.030–0.050 nats per
+  check, 446 of 2304 configurations unseen (2e-6 of a check's independent mass).
+  `run_local.sh --check-node bethe:1:learn` builds the tables for the training and
+  test keys from the FULL files and copies them under the cut keys.
+- **Sweep settings files live in `expts/sweeps/`** (tracked; `expts/scripts/` is the
+  generator's per-run copy and is ignored). `sweeps/enriched_vs_nocer.toml`
+  (2026-10-19): `["enriched:0.503:learn"]` + no-CER × `softmin_first` (softmin +
+  first, warmup 0; the 2026-10-15 sweep's histpair) / `ramp_last` (ramp + last,
+  warmup 5, k = 3) × 5 seeds, 20 points, 80 tests. Every arm names its whole layer
+  pair, warmup and sharpness in `optimizer_arms`, so the file sets no top-level
+  `loss_layer_selection` / `commit_layer_rule` (those would only be the default
+  for an arm that names neither; the generator's own default is softmin + first).
+  `train_wall_time = "3:00:00"` against a guessed `seconds_per_train_point = 1500`
+  (one wave of 4 per task, est 40 min, 22%): the enriched node's cost on an A100
+  is unmeasured (~2× the kernel launches of tanh), so the wall carries the margin.
+  Run with `bash sweep_hyperparams.sh --settings sweeps/enriched_vs_nocer.toml
+  --no-edit` (verified with stubs: 5 train + 8 test tasks exit 0, 20 models, 80
+  results); the report's weights-spread check names the first arm's file with its
+  `_enr`/`_bethe` token.
+- **Tests** (not yet run — Julia is unavailable here; syntax checked with tree-sitter):
+  `test_soft_constraints.jl` — the per-check kernel equals the batch kernel, a zero
+  table is the tanh rule, the adjoint equals Enzyme on the probe loss (messages and
+  α) and finite differences on the table, a clamped slot has a zero adjoint, the
+  Bethe table gives the exact first-layer posterior of a random 3-bit joint, file
+  round trip and refusals, the dense adjoint equals the loop one on plain Arrays, the
+  JSON carries `enriched_table`; `test_gradient.jl` — manual vs Enzyme on the enriched
+  two-check graph (every mode, θ's gradient non-zero and compared) and the enriched BB
+  code at the CER priors, GPU vs CPU for both, and training with Enzyme / manual CPU /
+  manual GPU agreeing on θ as well as the weights. The two "refuses the enriched
+  node" testsets became these.
 
 ## α: one value for every layer (the layer schedule was removed 2026-10-11)
 
@@ -985,17 +1126,14 @@ means here:
 - Validated before transcription by a float64 numpy prototype against central
   finite differences: every layer rule × residue × warmup × temperature, ≤ 1e-6
   relative (Richardson), including saturated regimes.
-- **Scope: the tanh check node only (decided 2026-10-13).** An enriched adjoint
-  (CPU and GPU) was written on 2026-10-12 and removed the next day, to keep the
-  gradient simple while the tanh version is tested. Both wrappers refuse an
-  enriched base; Enzyme stays the path for `check_node = "enriched"`. For the
-  record: with π_vᵉ(k) the softmax of the configuration log-weights within the
-  class {k : b_v(k) = e, parity = s_c}, a_v = m̄_{c→v} (0 where the cap clamped)
-  and ω(k) = Σ_v a_v [π_v⁰(k) 1{b_v(k)=0} − π_v¹(k) 1{b_v(k)=1}], the adjoint is
-  m̄_u = −Σ_k ω(k) b_u(k) − a_u and ᾱ = Σ_k ω(k) E(k), equal to the tanh chain's at
-  α = 0; it matched Enzyme on the CPU (≤ 2.5e-5) and the GPU matched the CPU.
+- **The enriched check node is covered too (2026-10-19; it was tanh-only from
+  2026-10-13 to then).** `backward_enriched_checks!` (CPU) and
+  `backward_enriched_checks_gpu` (device) are the adjoint of the table node; see
+  "Enriched check node: the table-driven implementation" below for the formulas
+  and where they plug into the sweep. Under tanh α is never read and its gradient
+  is exactly zero, as before.
 - **The GPU gradient, `compute_loss_and_gradients_gpu` (`src/gradient_gpu.jl`,
-  2026-10-12, tanh only)**: same arguments and result as the CPU wrapper, message
+  2026-10-12; both nodes since 2026-10-19)**: same arguments and result as the CPU wrapper, message
   passing in both directions on `ArrayT` (Metal on a Mac **whether or not
   `USE_GPU` is set**, CUDA on Linux, plain Arrays otherwise).
   - **The posteriors are not enough for the gradient.** `forward_pass_gpu` already
@@ -1055,9 +1193,9 @@ means here:
   `compute_loss_and_gradients` in `train_neuralbp_enzyme!` in place of
   `Enzyme.autodiff` — or `compute_loss_and_gradients_gpu` when `gpu_active()`
   (USE_GPU=1, the same switch testing reads); the optimiser, clipping, NaN guard
-  and rollback are unchanged. `manual_backprop_setting` validates it (a Bool; an
-  enriched run asking for it is refused, not quietly given Enzyme), called by the
-  training function and, before any data is read, by `neural_bp_experiments.jl`.
+  and rollback are unchanged. `manual_backprop_setting` validates it (a Bool; both
+  check nodes since 2026-10-19), called by the training function and, before any
+  data is read, by `neural_bp_experiments.jl`.
   Recorded in the results CSV as `manual_backprop` (TOML value; whether it ran on
   the GPU is not recorded — that is USE_GPU at TRAINING time). With `--quiet false`
   training prints which gradient it uses, and always prints one summary line:
@@ -1072,6 +1210,51 @@ means here:
     is the first optimisation, larger batches the second. The cluster sweep trains on
     the GPU anyway (see the cluster notes), four points sharing a card.
 
+## Measured 2026-10-15: the first GPU-trained cluster sweep (Narval, `hp_2026-10-15_02-38-18`)
+
+CER arm = single-qubit priors with the TANH check node (no couplings); no-CER = uniform
+priors. design A (last/last) and histpair (softmin + first, warmup 0) × 5 seeds × 4 test
+sets × 1e6 samples, 90 layers, manual backprop on the GPU. The training set was the
+Poisson(3) 10k subset (`training_samples = 10000`, `failure_weight_boundary = 3`,
+inherited from `hyperparams_baseline.toml`).
+
+- **Run health**: 20/20 trainings and 80/80 tests exited 0; 0 rollbacks; weight sd 0.173
+  → 0.178–0.181 (moved, as before). Training took ~12 min per task (4 points sharing an
+  A100, after a 5 min CUDA_Runtime_jll rebuild) against the 45 min estimate; a 1e6 test
+  decodes in 96–107 s, ~2.4 min per test with startup. ~46 min from the first task to
+  the last test.
+- Pooled failures, 20M samples per row (per-seed CV of the total in brackets):
+
+  | arm | total | coset | conv |
+  |---|---|---|---|
+  | CER, histpair | **19409** (5.8%) | 9743 | 9666 |
+  | CER, design A | 22957 (6.8%) | 8836 | 14121 |
+  | no-CER, histpair | 22931 (2.7%) | 9021 | 13910 |
+  | no-CER, design A | 27945 (4.1%) | 7756 | 20189 |
+
+- **Single-qubit priors alone are a real effect**: −17.8% (design A) and −15.4%
+  (histpair), 5/5 seeds, paired t = −8.7 / −10.2 (df 4). All of it is convergence
+  (−30%); coset rises +14% / +8% (higher in 5/5 seeds). The same per DISTINCT failing
+  pattern (−18% / −15%), and on every test set (−13% to −24% per pattern).
+- histpair beats design A again: −15.5% (CER), −17.9% (no-CER), 5/5 seeds; convergence
+  −31%, coset +10% / +16%.
+- Coset failures barely depend on the seed (CV 2–3.5%); convergence failures carry the
+  seed variance, and in the CER arms much of it is **blocks**: 5 cells, all CER, where
+  one frequent weight-3 pattern fails on every occurrence — (3,23,69) 424× on the
+  training distribution, (11,27,57) 386×, (16,36,46) 272×, (2,24,54) 175×, one more
+  97× — each failed by that one model only. 3% of CER failures; none in no-CER. Weight 3
+  is the only weight where CER can be worse (training set, design A: 0.39% vs 0.23%;
+  p = .0007: 0.37–0.50% vs 0.07–0.09%, nearly all convergence); at weights 4–12 CER is
+  lower at every weight.
+- On the SAME samples as the 2026-10-08 local run (first 200k of each set, seeds 1–2):
+  no-CER design A 2290 (local 2331) and histpair 1830 (local 1898), so the GPU-trained
+  decoders on the Poisson(3) set match the Enzyme-trained whole-file ones within 2–4%.
+  CER priors (tanh) 1870 / 1535 against CER + couplings (enriched, local) 1481 / 1413:
+  the couplings added −21% under design A (~3σ) and −8% under histpair (~1.5σ), almost
+  all in convergence (1179 → 518, 786 → 417), and nearly all of the coset penalty
+  (691 / 749 with priors only, 963 / 996 with couplings; no-CER 592 / 692).
+- Under a perfect OSD only the coset column counts, and there no-CER design A is best.
+
 ## Run tags (changed 2026-10-09)
 
 - **The run tag is `_<arm>_<optimizer tag>` and nothing else** — `_cer_init_0p1`,
@@ -1083,8 +1266,9 @@ means here:
   arms in one sweep, say) are refused by the generator rather than merged.
   This included the generator's old cluster default, `check_node_arms =
   ["tanh", "enriched:0.42:learn"]` (both CER arms, both `_cer_<opt>`; refused,
-  verified 2026-10-11). Since 2026-10-15 the default is `["tanh"]` and enriched arms
-  are refused outright (training is the hand-written gradient, tanh only).
+  verified 2026-10-11). Since 2026-10-19 a non-tanh arm carries `_enr` / `_bethe`
+  after the arm name in the run tag, so one sweep can hold tanh and one enriched
+  node side by side (`["tanh", "bethe:1:learn"]`: 30 points, verified with stubs).
 - Not part of the tag, and unchanged: the code's own `_no_cer` infix on a no-CER
   run (so `..._200000_no_cer_nocer_init_0p1_seed_1.json`), and the weights
   filename's `nlayers_<N>_epochs_<n>_trained_using_<training file>` fields.
@@ -1106,7 +1290,7 @@ means here:
 - **Metal does nothing for training under Enzyme.** Enzyme cannot differentiate
   through device-array allocation, so its training forward pass is always the CPU
   one. With `manual_backprop = true` USE_GPU=1 puts training's gradient on Metal
-  too (tanh check node only), but `run_local.sh` still trains with USE_GPU=0 — the
+  too (both check nodes since 2026-10-19), but `run_local.sh` still trains with USE_GPU=0 — the
   hand-written gradient on the CPU, as fast per point on the laptop and with no
   sharing of one GPU between its concurrent trainings — and tests on Metal. The
   cluster sweep trains on the GPU.

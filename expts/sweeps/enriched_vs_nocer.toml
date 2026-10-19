@@ -1,0 +1,341 @@
+# =============================================================================
+# enriched_vs_nocer.toml -- the enriched check node against the no-CER baseline,
+# under softmin + first and ramp + last, on Narval GPU nodes (2026-10-19).
+#
+#     cd expts
+#     bash sweep_hyperparams.sh --settings sweeps/enriched_vs_nocer.toml --no-edit
+#
+# ARMS (x 5 seeds, every model scored on the 4 test sets, 1e6 samples each):
+#   _cer_enr_softmin_first   CER priors + the pairwise coupling table inside each
+#                            check factor (check_node = "enriched", enriched_table =
+#                            "pairwise"), alpha starting at 0.503 and TRAINED;
+#                            softmin loss over layers 1-90 (warmup 0), commit at
+#                            the first layer that clears the syndrome.
+#   _cer_enr_ramp_last       the same node; ramp loss (zero weight through layer
+#                            5, tanh ramp with k = 3 to weight 1 at layer 90),
+#                            commit at layer 90.
+#   _nocer_softmin_first     uniform priors, tanh check node; softmin + first.
+#   _nocer_ramp_last         uniform priors, tanh check node; ramp + last.
+# 20 training points, 80 tests. There is no CER-tanh arm: the 2026-10-15 sweep
+# holds CER-tanh under softmin + first as _cer_histpair (same seeds, same
+# training set), so priors-only vs priors + couplings is those files plus this
+# sweep's softmin_first arms. (Add "tanh" to check_node_arms to get both CER-tanh
+# arms here: 30 points, 2 waves per task, which the preflight accepts.)
+#
+# The layer pair (loss_layer_selection, commit_layer_rule) is set PER ARM inside
+# `optimizer_arms` below, so it is not set at the top level of this file.
+#
+# WHY alpha = 0.503. single_qubit_rescale = 0.1 maps the median single-qubit rate
+# to 0.1 and leaves J untouched, so the pair term must be softened by the same
+# ratio: alpha* = log(9) / log((1-m)/m) = 0.503 on these files (CLAUDE.md,
+# "alpha: one value for every layer"). It is the START of a learned alpha, with
+# the logistic link keeping it inside (0, 1).
+#
+# Everything else -- the Poisson(3) 10k training set, lr 1e-3, 5 epochs of 500
+# updates at batch 20, manual_backprop = true -- comes from
+# hyperparams_baseline.toml, as in the 2026-10-15 sweep, so _nocer_softmin_first
+# is that sweep's _nocer_histpair point under its proper name.
+#
+# WALLTIME. The enriched node is unmeasured on Narval. A tanh wave of 4 points on
+# one A100 took ~12 min (720 s); the enriched node roughly doubles the kernel
+# launches per layer (64 configurations per check, forward and backward), so the
+# ESTIMATE (seconds_per_train_point) is 1500 and the wall is 3:00:00 -- one wave
+# per task, estimated 40 min, with the rest as margin for an unmeasured kernel.
+# Read the "Training: ... in <s> s" lines in cluster/logs/hp_<ts>_train_task<t>/
+# afterwards and put the measured number here.
+# =============================================================================
+
+workdir          = "./../data"
+# Reuses the trainable_alpha run directory: with more than one optimizer arm
+# every point is tagged `_opt<arm>`, including the baseline, so nothing here
+# collides with the results already in it.
+codename         = "72q_BB_cycles_1_trainable_alpha"
+
+# Dataset keys: train_<key>.txt, test_<key>.txt, correlated_weights_<key>.txt
+# KEEP EACH ARRAY ON ONE LINE: the reader below is grep | head -1, so a wrapped
+# array silently loses everything after the first line.
+#
+# p = 0.0015 sig = 0.0015: 61% identity errors (vs 80% at p = 0.0005), which is
+# what took the fraction of gradient updates with every scored layer at exactly
+# zero loss from 87% to ~0. The cross-index probe (2026-09-21) showed the sample
+# index does not matter to the decoder, so one index per configuration suffices
+# for a scan; three are kept here because they are the replicate axis.
+# ONE index here, not three: the cross-index probe (2026-09-21) found transfer
+# between sample indices free (penalty -0.4% to +4.0%, every CI straddling 0),
+# so the index is not a replicate axis worth paying for. Seed variance is
+# (sd ~10-15% of the mean), and that is what `seeds` covers.
+datasets         = ["p_0.0015_sig_0.0015_s_1"]
+# These get only the CER tanh arm and the no-CER baseline, not the check-node
+# arms, and always the BASELINE optimizer arm.
+ref_datasets     = []
+
+# TEST sets. Empty = test each model on the set matching its training key (the
+# historical 1:1 behaviour). Non-empty = score EVERY trained model on EVERY set
+# listed, which is how "train at one rate, test across the range" is run. The
+# results filename carries both the test and the training source, so nothing
+# collides. Note this multiplies the TEST point count by the list length while
+# leaving the training count alone, so narrow `optimizer_arms` first.
+# Four rungs, not fourteen: the head-to-head needs the in-distribution point
+# plus enough of the ladder to see whether the designs rank differently off
+# distribution. 2 designs x 4 arms x 5 seeds x 4 test sets = 160 tests, which
+# fits the 5 h wall that 280 did not.
+test_keys        = ["p_0.0015_sig_0.0015_s_1", "p_0.0007_sig_0.001_s_1", "p_0.0005_sig_0.001_s_1", "p_0.0005_sig_0.0005_s_1"]
+
+base_hyperparams = "hyperparams_baseline.toml"
+# Layers: FIXED at 90 in the generator, not a setting (2026-10-15). 50 was worse
+# on every arm (2026-10-08: +11% to +83% failures), so there is nothing to choose.
+# A settings file that still names another count is refused.
+# Network seeds, on EVERY cell. Seed variance has been the binding error bar
+# throughout (sd up to 1000 failures at a fixed configuration), so nothing is
+# read off fewer than five.
+seeds            = [1, 2, 3, 4, 5]
+
+# --- sweep axes -------------------------------------------------------------
+# The loss is the base loss alone (softmin over layers of the residue against
+# [H; L]; see src/loss.jl), so the only arms are the prior and the check node:
+#
+#   no-CER    flat p = 0.1 priors, standard check node        (the baseline)
+#   CER       CER single-qubit priors, check node per `check_node_arms`
+#
+# The auxiliary loss terms and their axes (lambda, sparsity, tau, gate modes,
+# certainty penalties, correlation forms) were removed on 2026-09-16; the L3
+# programme they served never produced a coupling effect through the loss,
+# while the same couplings inside the check node's forward pass cut the
+# classical failure rate in half with nothing trained.
+include_nocer    = true              # emit the no-CER baseline arm
+single_qubit_rescale = 0.1
+
+# --- how layers are scored, and which layer the decoder commits to -----------
+# Two keys, `loss_layer_selection` (which layers the TRAINING loss scores) and
+# `commit_layer_rule` (which layer the TESTED decoder reads its answer from).
+# They must agree, or the objective and the metric look at different layers.
+#
+#   loss_layer_selection   "softmin"  softmin over the scored layers (warmup+1..90)
+#                          "last"     the final layer only
+#                          "ramp"     weighted mean, w_t = tanh(k u)/tanh(k) with
+#                                     u = (t - warmup)/(90 - warmup): zero through
+#                                     warmup_layers, exactly 1 at layer 90; k is
+#                                     loss_layer_ramp_sharpness
+#                          "mean"     every layer equally (measured to be bad)
+#   commit_layer_rule      "first"    the first layer whose residual clears the
+#                                     syndrome
+#                          "last"     always layer 90
+#
+# The generator writes these keys into every point's TOML. A top-level value
+# here would be the DEFAULT for an arm that does not name them (the generator's
+# own default is softmin + first); every arm in `optimizer_arms` below names
+# both, so no top-level value is set. Under "ramp", warmup_layers is where the
+# ramp starts (part of the loss); under "softmin" it is the number of leading
+# layers dropped from scoring (0 since the 2026-10-08 fix).
+
+# --- check node: the FORWARD-PASS rule --------------------------------------
+# "tanh" is the standard check-to-variable rule (untagged; every historical
+# filename stays valid). "enriched:<alpha>:<fixed|learn>" puts the CER couplings
+# inside each check factor (src/soft_constraints.jl) with alpha as the scale on
+# J: "fixed" holds it there, "learn" trains it from that start alongside the
+# message weights. "bethe:<alpha>:<fixed|learn>" is the same node with the
+# Bethe table instead (ln P_c / prod p_u, from correlated_weights/bethe_table_
+# <key>.txt, built by misc/build_bethe_tables.py for EVERY key the sweep tests
+# on; alpha = 1 is exact at the first layer). A non-tanh arm puts its node in
+# the run tag, _<arm>_<enr|bethe>_<optimizer tag>, so it never collides with
+# the tanh arm's files; alpha is not in the name, so two arms of one node need
+# different optimizer tags. alpha is one value shared by every layer (the layer
+# schedule on alpha was removed 2026-10-11).
+#
+# WHY alpha = 0.503 HERE. alpha is not a fitted number: single_qubit_rescale
+# maps the MEDIAN single-qubit rate to 0.1 and leaves J untouched, so the pair
+# term must be softened by the same ratio, alpha* = log(9) / log((1-m)/m) with m
+# the median raw rate. That is 0.426 on the p = 0.0005 sig = 0.001 files (where
+# "0.42" came from) and 0.503 on the p = 0.0015 sig = 0.0015 files used here.
+# Every earlier run on this dataset used 0.42, i.e. ran ~20% under the
+# consistent value; the learned alpha drifted UP toward 0.50 (0.42 -> 0.45,
+# sd 0.07) before the loss lost its grip on it.
+#
+# CLASSICAL RESULT (2026-09-16, standard BP, no training, p = 5e-4, 3 devices):
+# alpha = 1 is 10x WORSE than tanh (convergence failures on w2/w3 errors: the
+# priors are softened 17x by single_qubit_rescale but J is not, so pairs cost
+# barely more than singles). alpha = 0.42 was 50% BETTER than tanh (1980 -> 989
+# failures, paired McNemar z = 21). Enriched arms are emitted for CER arms only
+# (the no-CER baseline has no couplings to enrich; NeuralBPBase refuses).
+#
+# Training runs on GPUs with the hand-written backward pass (manual_backprop =
+# true), which covers both nodes since 2026-10-19 (backward_enriched_checks!).
+check_node_arms  = ["enriched:0.503:learn"]
+
+# --- optimizer axis: a COORDINATE sweep around the base TOML -----------------
+# Each entry is  <tag>[:<key>=<value>[,<key>=<value>...]]. An entry with no
+# overrides uses whatever the base TOML says; the tag enters `run_tag` and every
+# filename, so two settings can never share a weights or results file. Only
+# adam_eps, weight_decay, initial_conditions_scale, learning_rate,
+# warmup_layers, loss_layer_selection, commit_layer_rule,
+# loss_layer_ramp_sharpness, base_loss, training_samples and
+# failure_weight_boundary may be overridden — anything else is a typo and the
+# generator refuses it.
+#
+# training_samples=<N> trains on a set of N samples drawn from the training file
+# (0 = the whole file); failure_weight_boundary=<lambda> draws that set so its
+# error weights follow Poisson(lambda) instead of the file's own distribution
+# (src/sample_selection.jl). Tags _ts<N> and _fwb<lambda>, only when non-zero.
+#
+# WHAT THE 2026-09-24 COORDINATE SWEEP SETTLED (140 points, s_1, 5 seeds):
+#
+#   adam_eps        INERT. The tanh arms were BIT-IDENTICAL across 1e-4, 1e-6
+#                   and 1e-8 — a 10000x change moving not one failure. So
+#                   sqrt(v) >> eps already and the eps-domination theory was
+#                   wrong. Held at the base value from here on.
+#   weight_decay    No consistent effect; wd = 0 and wd = 1e-3 both land inside
+#                   the seed noise. Held at the base value.
+#   init cond scale THE ONE THAT MATTERS. 0.3 took no-CER from 4692 to 3322
+#                   failures (-29%, 5/5 seeds, no overlap with the baseline's
+#                   range) and CER tanh from 2792 to 2664. It did NOT move the
+#                   enriched arms: those sit at ~2320-2360 at every setting, and
+#                   the apparent "base is worse" was one outlier seed (3134
+#                   against four in 2306-2411).
+#
+# Two things make this worth a proper scan. The weights barely move during
+# training (final sd 0.1785 against an untrained 0.1732 at scale 0.3), so this
+# is an INFERENCE-time effect of the random initialisation, not a training one —
+# the same pattern as the priors and the couplings. And 0.3 was the edge of the
+# grid, so the optimum may be past it.
+#
+# It also revises a headline: at the old scale of 0.1 the CER priors looked like
+# -40.5% against no-CER, but at 0.3 that falls to -19.8%. Half of the measured
+# advantage was the BASELINE being badly initialised. Whatever scale this scan
+# picks, the priors number has to be re-quoted there.
+#
+# `random_values_around_one` is uniform on 1 +- scale, so scale 0.8 means
+# weights in [0.2, 1.8]; at scale 1.0 they would reach 0 and flip sign, which is
+# why the scan stops at 0.8.
+#
+# Tags are `scale0pN`, not `ic0pN`: the 2026-09-24 sweep already wrote
+# `_optic0p05` and `_optic0p3` into this codename and those must not be
+# overwritten.
+# --- the axis: the two LAYER DESIGNS, trained head to head -------------------
+# Both arms are trained from scratch under their own objective, same seeds,
+# same data, same initial-conditions scale, in ONE job. Each arm names its
+# whole layer pair, its warmup and (for the ramp) its sharpness, so the point
+# TOMLs state everything and nothing depends on hyperparams_baseline.toml's
+# values of these keys:
+#
+#   softmin_first  softmin over layers 1-90 (warmup 0) + commit at the first
+#                  clearing layer. The best arm of every local run since the
+#                  2026-10-08 warmup fix, and the 2026-10-15 sweep's "histpair".
+#   ramp_last      ramp loss, zero weight through layer 5 (warmup 5, the
+#                  measured knee: layers 1-5 are the BP transient, 35 / 7.5 /
+#                  1.1 / 0.24 / 0.12 on solved batches), tanh ramp k = 3 to
+#                  weight 1 at layer 90; commit at layer 90, the layer the ramp
+#                  emphasises. Locally (2026-10-08, 90 layers) it lost to
+#                  softmin_first by 13% on both CER and no-CER at 2 seeds; this
+#                  is its first run at 5 seeds, on the GPU, and with the
+#                  enriched node.
+#
+# initial_conditions_scale is pinned at 0.3 for both: the 8-point scan found the
+# optimum at 0.3-0.4 (U-shaped, 75% worse by 0.8) and 0.3 won the seed-paired
+# comparison against 0.4 on both enriched arms. That scan was run under the
+# historical pair, so if the ramp wins here the scale should be re-scanned
+# under it before the number is quoted.
+#
+# WHAT THE SCAN ALSO ESTABLISHED, and why expectations should be low: the loss
+# tracks the failure count well (r = +0.98 within an arm) but with elasticity
+# ~0.38 (failures ~ loss^0.38), and five epochs move the loss only 2-13%. So
+# training buys ~1-5% in failures either way. The layer design changes WHICH
+# layer gets that small reduction; it does not change its size.
+optimizer_arms   = ["softmin_first:loss_layer_selection=softmin,commit_layer_rule=first,warmup_layers=0,initial_conditions_scale=0.3", "ramp_last:loss_layer_selection=ramp,commit_layer_rule=last,warmup_layers=5,loss_layer_ramp_sharpness=3.0,initial_conditions_scale=0.3"]
+
+# --- cluster ----------------------------------------------------------------
+# ACTIVE: NARVAL. Two profiles are kept here; switching is the five values marked
+# [PROFILE]. Nothing else in this file is cluster-specific.
+#
+#   NARVAL (Calcul Quebec)           NIBI (SHARCNET)
+#   GPU  4x A100 40GB, 48 cores      GPU  8x H100 SXM 80GB NVLink
+#   MIG  a100_Ng.Mgb                 MIG  h100_1g.10gb / 2g.20gb / 3g.40gb
+#   requests --gpus-per-node=        MIG requests --gpus=   (auto handles both)
+#   compute nodes: NO internet       compute nodes: internet
+#
+#   [PROFILE]             narval           nibi
+#   gpu_type              a100             h100_3g.40gb
+#   train_cpus            12               14
+#   test_cpus             12               14
+#   train_array_tasks     5                5
+#   test_array_tasks      8                8
+cluster_name     = "narval"
+account_gpu      = "def-jemerson_gpu"
+email            = "pavithran.sridhar@gmail.com"
+julia_module     = "julia/1.12.5"
+cuda_module      = "cuda"
+heap_size_hint   = "4G"
+
+# Job arrays. Each array task is an INDEPENDENT allocation running an
+# interleaved slice of the point list (task t takes lines t, t+K, t+2K, ...), so
+# K tasks cut the wall time by ~K without any task needing a bigger node. Slurm
+# schedules small allocations sooner, so more/smaller tasks generally start
+# earlier than one large one. Both jobs ask for the same allocation: ONE card per
+# array task (gpu_type, n_gpus_per_node, mem_per_gpu below) on account_gpu.
+#
+# TRAINING: `train_jobs` trainings share the task's card (USE_GPU=1, the
+# hand-written backward pass; the base TOML must say manual_backprop = true).
+# Sharing a card is safe here, unlike in testing: a training process holds a
+# CUDA context and batches of 20 -- well under 1 GB of VRAM -- where a test
+# process sizes its batch to fill the card. Host RAM is the limit: each training
+# reads the 1e6-sample file (~2 GB with readdlm's intermediates) on top of Julia
+# and CUDA, so the generator refuses train_jobs x heap_size_hint above
+# n_gpus_per_node x mem_per_gpu. 4 trainings sharing one card finished in
+# ~12 min on 2026-10-15 (seconds_per_train_point below).
+#   20 points / 5 tasks = 4 per task = one wave of train_jobs = 4.
+# The wall is 3 h for the whole task (its one wave of 4 points): the enriched
+# node's training time on an A100 is unmeasured and the estimate below is a
+# guess, so the wall carries the margin. The TERM handler (--signal=B:TERM@600)
+# still stages out every finished point if the wall is hit.
+train_array_tasks = 5
+train_jobs       = 4                 # trainings at a time on the task's card
+train_cpus       = 12                # 48 cores / 4 GPUs on a Narval GPU node; >= train_jobs
+train_wall_time  = "3:00:00"
+
+# TESTING. ONE PROCESS PER CARD: a 1-GPU request schedules far sooner than a
+# whole 4-GPU node, and the no-sharing rule (see below) is satisfied trivially
+# rather than by arithmetic. Scale throughput with test_array_tasks, NOT with
+# processes per card.
+#   80 points / 8 tasks = 10 per task x 129 s (measured, below) = ~22 min.
+#
+# NEVER put two TEST processes on one unpartitioned card: the real footprint is
+# ~1.5x the nominal GPU_MEMORY, so two on a 40 GB a100 overcommit and die
+# stochastically at OOM -- that killed 21/54 tests on 2026-08-28. MIG only worked
+# because MIG is a HARD partition. Sharing is safe only when the hardware
+# partitions it.
+test_array_tasks = 8
+# Full a100 (40GB), one process per card -- the configuration that completed
+# 27/27 and 54/54 clean. a100_3g.20gb schedules sooner when the queue is long but
+# halves GPU_MEMORY, so re-derive the batch budget before switching to it.
+gpu_type         = "a100"
+# "auto" emits --gpus-per-node= for a full card and --gpus= for a MIG slice
+# (which is what Nibi requires). Correct for Narval either way.
+gpu_request_style = "auto"
+n_gpus_per_node  = 1                 # one card per array task, both jobs
+test_jobs        = 1                 # one TEST process on it; do not raise
+mem_per_gpu      = "32G"             # SLURM HOST ram per GPU (not VRAM), both jobs
+vram_per_gpu     = ""                # VRAM in GB for the batch sizer; "" => infer from gpu_type
+test_cpus        = 12   # 48 cores / 4 GPUs on a Narval GPU node
+test_wall_time   = "4:00:00"
+
+# --- walltime preflight ------------------------------------------------------
+# MEASURED on this code and this code size (2026-10-01 run, a100, 1e6 samples):
+#   per test      129 s  (task 0 did 35 tests in 75m12s; that INCLUDES the fresh
+#                         julia+CUDA load GNU parallel pays for every point)
+#   startup       up to 370 s of precompile, plus stage-in and three julia
+#                 invocations -> 900 s is a safe allowance
+# MEASURED on Narval (2026-10-15 sweep, tanh check node, 90 layers, a100):
+#   per train pt  720 s   the wall time of ONE WAVE of train_jobs = 4 points
+#                 sharing the card: every task of 4 points took ~12 min after
+#                 the CUDA_Runtime_jll rebuild (~5 min, inside the startup
+#                 allowance). The enriched check node does ~10x the check-node
+#                 arithmetic (64 configurations per check instead of a product
+#                 of 6 tanh's), so an enriched or bethe sweep may need more;
+#                 each point prints a "Training: ... in <s> s" line, kept in
+#                 its stdout under cluster/logs/hp_<ts>_train_task<t>/.
+# The generator multiplies these out against the array width and refuses to
+# write a job that cannot finish. Raise them if the code or the sample count
+# grows; they are estimates, not promises. 1500 here is a GUESS for the enriched
+# node (about twice tanh); the 3 h train wall above is the margin on it.
+seconds_per_test = 129
+seconds_per_train_point = 1500
+job_startup_seconds = 900

@@ -74,7 +74,9 @@ struct NeuralBPBase <: NeuralBP
         n_layers::Int;
         connectivity::Matrix{Int}=Matrix{Int}(undef, 0, 0),
         correlation_strengths::Vector{Float32}=Float32[],
-        check_node::String="tanh"
+        check_node::String="tanh",
+        enriched_table::String=ENRICHED_TABLE_PAIRWISE,
+        bethe_log_weights::Dict{Int, Vector{Float32}}=Dict{Int, Vector{Float32}}()
     )
         """
         Construct the elements of a `NeuralBPLayer` from a given parity-check matrix.
@@ -222,7 +224,8 @@ struct NeuralBPBase <: NeuralBP
                     "pairs). The enriched check node would equal the standard one."))
             end
             soft_check_tables = build_soft_check_tables(
-                parity_check_matrix, connectivity, correlation_strengths, neuron_to_check_variable
+                parity_check_matrix, connectivity, correlation_strengths, neuron_to_check_variable;
+                table_kind = enriched_table, bethe_log_weights = bethe_log_weights
             )
         end
 

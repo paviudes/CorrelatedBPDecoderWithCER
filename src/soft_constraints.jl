@@ -3,45 +3,86 @@
 # Correlation-adapted check-to-variable messages ("enriched check node").
 #
 # The standard check node treats its variables as independent given the parity
-# constraint. Here each check factor additionally carries the pairwise Ising
-# couplings J_ik (from the CER data) between variables in its support:
+# constraint. Here each check factor carries, beyond the parity, one log-weight
+# per configuration x of its support, the TABLE T_c:
 #
-#     ψ_c(e) = 1[⊕ e = s_c] · exp( α · Σ_{(i,k) ⊂ N(c)} J_ik e_i e_k )
+#     ψ_c(x) = 1[⊕ x = s_c] · exp( α · T_c(x) )
 #
-# and the message to v is the exact marginalisation of that factor:
+# and the message to v is the exact marginalisation of that factor against the
+# incoming messages:
 #
 #     m_{c→v} = ln [ Z_v(0) / Z_v(1) ],
-#     Z_v(e_v) = Σ_{ξ: e_v ⊕ ξ = s_c} Π_{u ≠ v} q_u(ξ_u) · exp(α Σ J e e)   (e_v substituted)
+#     Z_v(e_v) = Σ_{ξ: e_v ⊕ ξ = s_c} Π_{u ≠ v} q_u(ξ_u) · exp(α T_c(e_v, ξ))
 #
 # with q_u(·) the probabilities encoded by the incoming LLR m_{u→c}. See
-# refs/soft_check_nbp.tex for the derivation. At α = 0 (or J = 0) this reduces
-# exactly to the tanh rule 2·atanh[(-1)^{s_c} Π tanh(m/2)].
+# refs/soft_check_nbp.tex for the derivation. Two tables are available
+# (`enriched_table` in the hyperparameters TOML, `SoftCheckTables.table_kind`):
+#
+#   * "pairwise": T_c(x) = Σ_{(i,k) ⊂ N(c)} J_ik x_i x_k, the CER couplings as
+#     Ising pair terms. At α = 0 (or J = 0) the rule reduces exactly to the tanh
+#     rule 2·atanh[(-1)^{s_c} Π tanh(m/2)]. Measured on 2026-10-15 to misstate
+#     the check's joint badly (CLAUDE.md, "The pairwise factor is mis-specified"):
+#     the marginal rates already contain the pair events that e^J adds again.
+#   * "bethe": T_c(x) = ln P_c(x) − Σ_u ln p_u(x_u), the check's true joint over
+#     the product of its marginals, read from a table file built from data
+#     (expts/misc/build_bethe_tables.py). With the marginals as incoming messages
+#     the check's local joint is then P_c itself, and Π_c ψ_c over the checks is
+#     the Bethe approximation of the error model over check regions. α = 1 is
+#     exact at the first layer.
 #
 # Only the check-to-variable rule changes. The variable-to-check rule and the
 # readout, which carry every learnable message weight, are untouched. The one
-# new learnable quantity is the scalar α (`coupling_scale`), shared by all
-# couplings; α = 1 is the Bayesian value for the pairwise prior.
+# new learnable quantity is the scalar α (`coupling_scale`), shared by every
+# entry of the table; α = 1 is the Bayesian value of either table.
 #
-# Implementation: for a check of degree d, enumerate all 2^d configurations
-# ONCE per (check, sample), weight each by Π q_u × exp(α E_c), and bin the
-# weights by (target slot, target bit) with the parity selector applied. Each
-# target's own factor q_v(e_v) is divided out afterwards, which is exactly
-# the subtraction of m_{v→c} in the log domain — so ONE enumeration serves all
-# d targets. Everything is done in log space with a maximum subtracted, because
-# Float32 products of six probabilities times exp(Σ J) under/overflow long
-# before the LLRs saturate.
+# Implementation (`message_check_to_vertex_enriched!`, one check and one
+# sample at a time): the softplus parts of ln q_u are common to every
+# configuration and cancel in the message, so with b(k) the bit vector of
+# configuration k and m the d incoming raw LLRs,
+#
+#     LW(k)   = α T_c(k) − b(k)·m
+#     S_v^e   = log-sum-exp over {k : parity(k) = s_c, b_v(k) = e} of LW(k)
+#     m_{c→v} = S_v^0 − S_v^1 − m_v,  clamped to ±ENRICHED_MESSAGE_CAP.
+#
+# ONE enumeration of the 2^d configurations serves all d targets: each target's
+# own factor is left in LW and divided out by the final subtraction. Each class
+# is stabilised by its own maximum, because Float32 products of six
+# probabilities times exp(α T) under/overflow long before the LLRs saturate.
+#
+# Its adjoint (`backward_message_check_to_vertex_enriched!`) is the derivative
+# of a log-sum-exp, a softmax: with π_v^e the softmax of LW inside class (v, e)
+# and a_v = ∂L/∂m_{c→v} (0 where the cap clamped),
+#
+#     ω(k)        = Σ_v a_v [π_v^0(k) − π_v^1(k)]
+#     ∂L/∂m_u     = −Σ_k ω(k) b_u(k) − a_u          (exactly 0 for u = v: extrinsic)
+#     ∂L/∂(αT)(k) = ω(k),   ∂L/∂α = Σ_k ω(k) T_c(k)
+#
+# Every factor is a convex weight or a bit, so |∂m_{c→v}/∂m_u| ≤ 1 and nothing
+# overflows; the cost equals the forward's; nothing but the layer's incoming
+# messages is needed from the tape. Prototyped against central finite
+# differences (outputs/proto/enriched_table_node.py, 2026-10-19).
 #
 # Two implementations of the same arithmetic live here:
-#   * `apply_enriched_checks!`     CPU, allocation-free loops, Enzyme-friendly
-#                                  (the training path).
-#   * `apply_enriched_checks_gpu`  dense broadcasts and matmuls only, so it
-#                                  runs unchanged on Array, MtlArray and CuArray
-#                                  (the testing path, see forward_gpu.jl).
-# Both consume the same `SoftCheckTables`, built once from (H, connectivity, J).
+#   * `apply_enriched_checks!` / `backward_enriched_checks!`
+#                                  CPU, allocation-free loops; the forward is
+#                                  Enzyme-friendly (Enzyme is the oracle in the
+#                                  tests), the adjoint is the training path.
+#   * `apply_enriched_checks_gpu` / `backward_enriched_checks_gpu`
+#                                  dense broadcasts, reductions and matmuls only,
+#                                  so they run unchanged on Array, MtlArray and
+#                                  CuArray (testing, and training under USE_GPU=1).
+# All consume the same `SoftCheckTables`, built once from (H, connectivity, J)
+# and, for the Bethe table, the table file.
 # ----------------------------------------------------------------------------
 
 const CHECK_NODE_TANH::Int = 0
 const CHECK_NODE_ENRICHED::Int = 1
+
+"Which log-weight table the enriched check node carries (`enriched_table` in the
+hyperparameters TOML): the CER pair couplings as Ising terms, or the check's
+true joint over the product of its marginals (the Bethe factor), from a file."
+const ENRICHED_TABLE_PAIRWISE::String = "pairwise"
+const ENRICHED_TABLE_BETHE::String = "bethe"
 
 "Additive log-domain penalty that excludes a configuration from a log-sum-exp
 class on the GPU path. Finite, so no ±Inf arithmetic anywhere: exp(-1e30 - m)
@@ -180,6 +221,80 @@ function check_node_name(check_node_kind::Int)::String
     return check_node_label
 end
 
+function enriched_table_kind(enriched_table_name::AbstractString)::String
+    """
+    Validate the `enriched_table` hyperparameter string and return it
+    normalised, so an unknown name throws at configuration time.
+    """
+    normalised_name::String = lowercase(strip(String(enriched_table_name)))
+    if normalised_name != ENRICHED_TABLE_PAIRWISE && normalised_name != ENRICHED_TABLE_BETHE
+        throw(ArgumentError(
+            "Unknown enriched_table \"$(enriched_table_name)\". Supported: " *
+            "\"$(ENRICHED_TABLE_PAIRWISE)\" (the CER couplings as Ising pair terms) and " *
+            "\"$(ENRICHED_TABLE_BETHE)\" (the check's joint over its marginals, from a table file)."))
+    end
+    return normalised_name
+end
+
+function bethe_table_path(cer_data_file::AbstractString)::String
+    """
+    The Bethe table file that belongs to a CER file: `bethe_table_<key>.txt`
+    next to `correlated_weights_<key>.txt`, as expts/misc/build_bethe_tables.py
+    writes it. The key is whatever follows `correlated_weights_` in the CER file's
+    name, so the table of a test distribution sits next to its priors.
+    """
+    cer_file_name::String = basename(String(cer_data_file))
+    cer_prefix::String = "correlated_weights_"
+    if !startswith(cer_file_name, cer_prefix)
+        throw(ArgumentError(
+            "bethe_table_path: the CER file \"$(cer_data_file)\" is not named " *
+            "correlated_weights_<key>.txt, so no Bethe table file name follows from it."))
+    end
+    table_file_name::String = "bethe_table_" * cer_file_name[length(cer_prefix) + 1:end]
+    table_path::String = joinpath(dirname(String(cer_data_file)), table_file_name)
+    return table_path
+end
+
+function read_bethe_log_weights(table_file::AbstractString)::Dict{Int, Vector{Float32}}
+    """
+    Read a Bethe table file: one line per check, `<check> : v_1 v_2 ... v_{2^d}`,
+    with `<check>` the 1-based row of H and v_k the log-weight
+    ln P_c(k) − Σ_u ln p_u(b_u(k)) of configuration k, in the order of
+    `configuration_table` (configuration k has bit (k−1) >> (slot−1) & 1 in
+    slot `slot`, slots in increasing qubit order). Blank lines and `#` comments
+    are skipped. Every value must be finite.
+    """
+    if !isfile(table_file)
+        throw(ArgumentError(
+            "read_bethe_log_weights: no Bethe table file at \"$(table_file)\". Build it with " *
+            "python3 misc/build_bethe_tables.py --workdir <codename> --key <key>."))
+    end
+    log_weights::Dict{Int, Vector{Float32}} = Dict{Int, Vector{Float32}}()
+    for (line_number, raw_line) in enumerate(eachline(table_file))
+        line::String = strip(raw_line)
+        if isempty(line) || startswith(line, "#")
+            continue
+        end
+        separator::Union{UnitRange{Int}, Nothing} = findfirst(":", line)
+        if separator === nothing
+            throw(ArgumentError(
+                "read_bethe_log_weights: line $(line_number) of \"$(table_file)\" has no ':'."))
+        end
+        check::Int = parse(Int, strip(line[1:first(separator) - 1]))
+        values::Vector{Float32} = [parse(Float32, token) for token in split(strip(line[last(separator) + 1:end]))]
+        if !all(isfinite, values)
+            throw(ArgumentError(
+                "read_bethe_log_weights: check $(check) in \"$(table_file)\" has a non-finite log-weight."))
+        end
+        if haskey(log_weights, check)
+            throw(ArgumentError(
+                "read_bethe_log_weights: check $(check) appears twice in \"$(table_file)\"."))
+        end
+        log_weights[check] = values
+    end
+    return log_weights
+end
+
 struct SoftCheckTables
     """
     Everything the enriched check-node kernels need, precomputed once.
@@ -201,9 +316,12 @@ struct SoftCheckTables
     - `configuration_bits` (2^d × d): bit of slot j in configuration k, as
       0/1 Float32 so the kernels can use it arithmetically.
     - `configuration_parity` (2^d): parity of configuration k, 0/1 Float32.
-    - `pair_energy` (2^d × n_enriched): E_c(k) = Σ_{pairs ⊂ N(c)} J e_i e_k,
-      the UNSCALED coupling energy of configuration k; α multiplies it at
-      run time.
+    - `table_kind`: ENRICHED_TABLE_PAIRWISE or ENRICHED_TABLE_BETHE, which of
+      the two log-weight tables below is loaded.
+    - `log_weight_table` (2^d × n_enriched): T_c(k), the UNSCALED log-weight of
+      configuration k; α multiplies it at run time. For the pairwise table it is
+      the coupling energy E_c(k) = Σ_{pairs ⊂ N(c)} J e_i e_k; for the Bethe
+      table it is ln P_c(k) − Σ_u ln p_u(b_u(k)) as read from the table file.
     - `n_pairs_assigned`, `n_pairs_unassigned`: bookkeeping for the console
       summary and the tests.
     """
@@ -214,7 +332,8 @@ struct SoftCheckTables
     edge_neurons::Matrix{Int}
     configuration_bits::Matrix{Float32}
     configuration_parity::Vector{Float32}
-    pair_energy::Matrix{Float32}
+    table_kind::String
+    log_weight_table::Matrix{Float32}
     n_pairs_assigned::Int
     n_pairs_unassigned::Int
 end
@@ -229,6 +348,7 @@ function empty_soft_check_tables()::SoftCheckTables
         Matrix{Int}(undef, 0, 0),
         Matrix{Float32}(undef, 0, 0),
         Float32[],
+        ENRICHED_TABLE_PAIRWISE,
         Matrix{Float32}(undef, 0, 0),
         0, 0
     )
@@ -262,6 +382,8 @@ function build_soft_check_tables(
     connectivity::Matrix{Int},
     correlation_strengths::Vector{Float32},
     neuron_to_check_variable::Dict{Int, Tuple{Int, Int}};
+    table_kind::String = ENRICHED_TABLE_PAIRWISE,
+    bethe_log_weights::Dict{Int, Vector{Float32}} = Dict{Int, Vector{Float32}}(),
     verbose::Bool = true
 )::SoftCheckTables
     """
@@ -270,7 +392,15 @@ function build_soft_check_tables(
     `correlation_strengths` the matching J_ik, exactly as `parse_cer_data`
     returns them. `neuron_to_check_variable` is the base's neuron map, used to
     locate the neuron of each (check, variable) edge.
+
+    The enriched checks are those whose support holds at least one pair,
+    whatever the table: the pairs say where the correlations live. With
+    `table_kind = ENRICHED_TABLE_PAIRWISE` the log-weight table is the coupling
+    energy of every configuration. With `ENRICHED_TABLE_BETHE` it is read from
+    `bethe_log_weights` (`read_bethe_log_weights`), which must hold a row of
+    2^d finite values for every enriched check; rows of other checks are ignored.
     """
+    validated_table_kind::String = enriched_table_kind(table_kind)
     n_checks::Int = size(parity_check_matrix, 1)
     n_pairs::Int = size(connectivity, 1)
     if length(correlation_strengths) != n_pairs
@@ -332,23 +462,40 @@ function build_soft_check_tables(
     configuration_parity::Vector{Float32} = configuration_tables[2]
 
     edge_neurons::Matrix{Int} = zeros(Int, check_degree, n_enriched_checks)
-    pair_energy::Matrix{Float32} = zeros(Float32, n_configurations, n_enriched_checks)
+    log_weight_table::Matrix{Float32} = zeros(Float32, n_configurations, n_enriched_checks)
     for (enriched_index, check) in enumerate(enriched_check_ids)
         support::Vector{Int} = findall(parity_check_matrix[check, :])
         slot_of_qubit::Dict{Int, Int} = Dict{Int, Int}(qubit => slot for (slot, qubit) in enumerate(support))
         for (slot, qubit) in enumerate(support)
             edge_neurons[slot, enriched_index] = neuron_of_edge[(check, qubit)]
         end
-        for pair_index in pairs_of_check[check]
-            slot_a::Int = slot_of_qubit[connectivity[pair_index, 1]]
-            slot_b::Int = slot_of_qubit[connectivity[pair_index, 2]]
-            coupling::Float32 = correlation_strengths[pair_index]
-            for configuration_index in 1:n_configurations
-                pair_energy[configuration_index, enriched_index] +=
-                    coupling *
-                    configuration_bits[configuration_index, slot_a] *
-                    configuration_bits[configuration_index, slot_b]
+        if validated_table_kind == ENRICHED_TABLE_PAIRWISE
+            for pair_index in pairs_of_check[check]
+                slot_a::Int = slot_of_qubit[connectivity[pair_index, 1]]
+                slot_b::Int = slot_of_qubit[connectivity[pair_index, 2]]
+                coupling::Float32 = correlation_strengths[pair_index]
+                for configuration_index in 1:n_configurations
+                    log_weight_table[configuration_index, enriched_index] +=
+                        coupling *
+                        configuration_bits[configuration_index, slot_a] *
+                        configuration_bits[configuration_index, slot_b]
+                end
             end
+        else
+            if !haskey(bethe_log_weights, check)
+                throw(ArgumentError(
+                    "build_soft_check_tables: enriched check $(check) has no row in the Bethe " *
+                    "table (rows for $(sort(collect(keys(bethe_log_weights))))). Rebuild the " *
+                    "table file with every check of this parity-check matrix."))
+            end
+            bethe_row::Vector{Float32} = bethe_log_weights[check]
+            if length(bethe_row) != n_configurations
+                throw(ArgumentError(
+                    "build_soft_check_tables: the Bethe table row of check $(check) has " *
+                    "$(length(bethe_row)) entries; a degree-$(check_degree) check needs " *
+                    "$(n_configurations)."))
+            end
+            log_weight_table[:, enriched_index] .= bethe_row
         end
     end
 
@@ -360,7 +507,8 @@ function build_soft_check_tables(
         edge_neurons,
         configuration_bits,
         configuration_parity,
-        pair_energy,
+        validated_table_kind,
+        log_weight_table,
         n_pairs_assigned,
         n_pairs_unassigned
     )
@@ -424,12 +572,233 @@ function describe_soft_check_tables(tables::SoftCheckTables)::String
     description::String =
         "$(tables.n_enriched_checks) enriched checks of degree $(tables.check_degree) " *
         "($(tables.n_configurations) configurations each), " *
-        "$(tables.n_pairs_assigned) couplings assigned, $(tables.n_pairs_unassigned) dropped"
+        "$(tables.n_pairs_assigned) couplings assigned, $(tables.n_pairs_unassigned) dropped, " *
+        "table: $(tables.table_kind)"
     return description
 end
 
 # ----------------------------------------------------------------------------
-# CPU kernel (training path)
+# CPU kernels (training path): one check and one sample at a time
+# ----------------------------------------------------------------------------
+
+struct EnrichedKernelWorkspace
+    """
+    Scratch vectors for `message_check_to_vertex_enriched!` and its adjoint,
+    allocated once per call of the batch-level functions so the per-(check,
+    sample) kernels allocate nothing. Sizes: d for the per-slot vectors, 2^d for
+    the per-configuration ones.
+    """
+    incoming_messages::Vector{Float32}            # m_{u→c}, one per slot
+    outgoing_messages::Vector{Float32}            # m_{c→v}, one per slot
+    configuration_log_weights::Vector{Float32}    # LW(k)
+    class_maximum_zero::Vector{Float32}           # per slot: max of LW over class (v, 0)
+    class_maximum_one::Vector{Float32}            # per slot: max of LW over class (v, 1)
+    class_sum_zero::Vector{Float32}               # per slot: Σ exp(LW − max) over class (v, 0)
+    class_sum_one::Vector{Float32}                # per slot: Σ exp(LW − max) over class (v, 1)
+    adjoint_outgoing_messages::Vector{Float32}    # a_v = ∂L/∂m_{c→v}, one per slot
+    adjoint_incoming_messages::Vector{Float32}    # ∂L/∂m_{u→c}, one per slot
+    adjoint_configuration_weights::Vector{Float32}  # ω(k)
+end
+
+function enriched_kernel_workspace(tables::SoftCheckTables)::EnrichedKernelWorkspace
+    """
+    A workspace sized for `tables`.
+    """
+    check_degree::Int = tables.check_degree
+    n_configurations::Int = tables.n_configurations
+    workspace::EnrichedKernelWorkspace = EnrichedKernelWorkspace(
+        zeros(Float32, check_degree),
+        zeros(Float32, check_degree),
+        zeros(Float32, n_configurations),
+        zeros(Float32, check_degree),
+        zeros(Float32, check_degree),
+        zeros(Float32, check_degree),
+        zeros(Float32, check_degree),
+        zeros(Float32, check_degree),
+        zeros(Float32, check_degree),
+        zeros(Float32, n_configurations)
+    )
+    return workspace
+end
+
+function enriched_class_sums!(
+    workspace::EnrichedKernelWorkspace,
+    syndrome_bit::Float32,
+    log_weight_table::AbstractMatrix{Float32},
+    enriched_index::Int,
+    coupling_scale::Float32,
+    tables::SoftCheckTables
+)::Nothing
+    """
+    The part of the enriched rule the forward and its adjoint share, for one
+    check and one sample, from `workspace.incoming_messages`:
+
+      1. LW(k) = α T_c(k) − Σ_slots b_slot(k) m_slot, every configuration k.
+      2. For each slot v and bit e, the maximum of LW over the class
+         {k : parity(k) = s_c, b_v(k) = e} and the sum of exp(LW − maximum)
+         over it — a log-sum-exp stabilised by the class's own maximum, so no
+         class can underflow to zero: it always holds its maximum, whose term
+         is exactly 1.
+
+    Leaves LW in `configuration_log_weights` and the maxima and sums in the
+    `class_*` vectors. Every class is non-empty for a check of degree ≥ 2
+    (2^(d−2) members), so every maximum is finite.
+    """
+    check_degree::Int = tables.check_degree
+    n_configurations::Int = tables.n_configurations
+
+    @inbounds for configuration_index in 1:n_configurations
+        log_weight::Float32 = coupling_scale * log_weight_table[configuration_index, enriched_index]
+        for slot in 1:check_degree
+            log_weight -= tables.configuration_bits[configuration_index, slot] * workspace.incoming_messages[slot]
+        end
+        workspace.configuration_log_weights[configuration_index] = log_weight
+    end
+
+    @inbounds for slot in 1:check_degree
+        workspace.class_maximum_zero[slot] = -Inf32
+        workspace.class_maximum_one[slot] = -Inf32
+        workspace.class_sum_zero[slot] = 0.0f0
+        workspace.class_sum_one[slot] = 0.0f0
+    end
+    @inbounds for configuration_index in 1:n_configurations
+        if tables.configuration_parity[configuration_index] == syndrome_bit
+            log_weight_of_configuration::Float32 = workspace.configuration_log_weights[configuration_index]
+            for slot in 1:check_degree
+                if tables.configuration_bits[configuration_index, slot] == 0.0f0
+                    workspace.class_maximum_zero[slot] = max(workspace.class_maximum_zero[slot], log_weight_of_configuration)
+                else
+                    workspace.class_maximum_one[slot] = max(workspace.class_maximum_one[slot], log_weight_of_configuration)
+                end
+            end
+        end
+    end
+    @inbounds for configuration_index in 1:n_configurations
+        if tables.configuration_parity[configuration_index] == syndrome_bit
+            log_weight_to_sum::Float32 = workspace.configuration_log_weights[configuration_index]
+            for slot in 1:check_degree
+                if tables.configuration_bits[configuration_index, slot] == 0.0f0
+                    workspace.class_sum_zero[slot] += exp(log_weight_to_sum - workspace.class_maximum_zero[slot])
+                else
+                    workspace.class_sum_one[slot] += exp(log_weight_to_sum - workspace.class_maximum_one[slot])
+                end
+            end
+        end
+    end
+    return nothing
+end
+
+function message_check_to_vertex_enriched!(
+    workspace::EnrichedKernelWorkspace,
+    syndrome_bit::Float32,
+    log_weight_table::AbstractMatrix{Float32},
+    enriched_index::Int,
+    coupling_scale::Float32,
+    tables::SoftCheckTables
+)::Nothing
+    """
+    The enriched check-to-variable rule for ONE check and ONE sample: reads the
+    d incoming raw LLRs m_{u→c} from `workspace.incoming_messages` and writes
+    the d outgoing messages m_{c→v} to `workspace.outgoing_messages`.
+
+    With b(k) the bit vector of configuration k (`tables.configuration_bits`),
+    T_c the check's column of `log_weight_table` and α = `coupling_scale`:
+
+        LW(k)   = α T_c(k) − b(k)·m
+        S_v^e   = log-sum-exp over {k : parity(k) = s_c, b_v(k) = e} of LW(k)
+        m_{c→v} = S_v^0 − S_v^1 − m_v,   clamped to ±ENRICHED_MESSAGE_CAP
+
+    The subtraction of m_v divides out the target's own factor, which LW
+    includes so that one enumeration serves every target; the message does not
+    depend on m_v at all. The softplus terms of ln q_u(·) are omitted from LW
+    because they are the same for every configuration and cancel in the
+    difference. At T_c = 0 (or α = 0) this is the tanh rule.
+    """
+    enriched_class_sums!(workspace, syndrome_bit, log_weight_table, enriched_index, coupling_scale, tables)
+    @inbounds for slot in 1:tables.check_degree
+        log_sum_exp_zero::Float32 = workspace.class_maximum_zero[slot] + log(workspace.class_sum_zero[slot])
+        log_sum_exp_one::Float32 = workspace.class_maximum_one[slot] + log(workspace.class_sum_one[slot])
+        message::Float32 = log_sum_exp_zero - log_sum_exp_one - workspace.incoming_messages[slot]
+        workspace.outgoing_messages[slot] = clamp(message, -ENRICHED_MESSAGE_CAP, ENRICHED_MESSAGE_CAP)
+    end
+    return nothing
+end
+
+function backward_message_check_to_vertex_enriched!(
+    workspace::EnrichedKernelWorkspace,
+    syndrome_bit::Float32,
+    log_weight_table::AbstractMatrix{Float32},
+    enriched_index::Int,
+    coupling_scale::Float32,
+    tables::SoftCheckTables
+)::Float32
+    """
+    The adjoint of `message_check_to_vertex_enriched!` for one check and one
+    sample. Reads the incoming messages m_{u→c} (`workspace.incoming_messages`),
+    the forward's outgoing messages (`workspace.outgoing_messages`, to find the
+    clamped ones) and the adjoint of the outgoing messages a_v = ∂L/∂m_{c→v}
+    (`workspace.adjoint_outgoing_messages`); writes ∂L/∂m_{u→c} to
+    `workspace.adjoint_incoming_messages` and ω(k) = ∂L/∂(α T_c)(k) to
+    `workspace.adjoint_configuration_weights`, and returns Σ_k ω(k) T_c(k), the
+    check's contribution to ∂L/∂α.
+
+    The forward's class log-sum-exps are recomputed here rather than taped
+    (`enriched_class_sums!`, the same cost as the forward). With
+    π_v^e(k) = exp(LW(k) − S_v^e) the softmax inside class (v, e):
+
+        ω(k)      = Σ_v a_v [π_v^0(k) − π_v^1(k)]
+        ∂L/∂m_u   = −Σ_k ω(k) b_u(k) − a_u
+
+    The −a_u removes the u = v term of the sum, which is a_u exactly: the
+    message is extrinsic, so ∂m_{c→v}/∂m_v = 0. A slot whose forward message
+    sat on the cap has a_v = 0: the clamp's derivative is zero there.
+    """
+    check_degree::Int = tables.check_degree
+    n_configurations::Int = tables.n_configurations
+    enriched_class_sums!(workspace, syndrome_bit, log_weight_table, enriched_index, coupling_scale, tables)
+
+    @inbounds for slot in 1:check_degree
+        if abs(workspace.outgoing_messages[slot]) >= ENRICHED_MESSAGE_CAP
+            workspace.adjoint_outgoing_messages[slot] = 0.0f0
+        end
+    end
+    @inbounds for configuration_index in 1:n_configurations
+        workspace.adjoint_configuration_weights[configuration_index] = 0.0f0
+    end
+    @inbounds for configuration_index in 1:n_configurations
+        if tables.configuration_parity[configuration_index] == syndrome_bit
+            log_weight_of_configuration::Float32 = workspace.configuration_log_weights[configuration_index]
+            softmax_difference::Float32 = 0.0f0
+            for slot in 1:check_degree
+                if tables.configuration_bits[configuration_index, slot] == 0.0f0
+                    softmax_difference += workspace.adjoint_outgoing_messages[slot] *
+                        exp(log_weight_of_configuration - workspace.class_maximum_zero[slot]) / workspace.class_sum_zero[slot]
+                else
+                    softmax_difference -= workspace.adjoint_outgoing_messages[slot] *
+                        exp(log_weight_of_configuration - workspace.class_maximum_one[slot]) / workspace.class_sum_one[slot]
+                end
+            end
+            workspace.adjoint_configuration_weights[configuration_index] = softmax_difference
+        end
+    end
+
+    adjoint_coupling_scale::Float32 = 0.0f0
+    @inbounds for slot in 1:check_degree
+        workspace.adjoint_incoming_messages[slot] = -workspace.adjoint_outgoing_messages[slot]
+    end
+    @inbounds for configuration_index in 1:n_configurations
+        configuration_weight::Float32 = workspace.adjoint_configuration_weights[configuration_index]
+        for slot in 1:check_degree
+            workspace.adjoint_incoming_messages[slot] -=
+                configuration_weight * tables.configuration_bits[configuration_index, slot]
+        end
+        adjoint_coupling_scale += configuration_weight * log_weight_table[configuration_index, enriched_index]
+    end
+    return adjoint_coupling_scale
+end
+
+# ----------------------------------------------------------------------------
+# CPU kernels, batch level
 # ----------------------------------------------------------------------------
 
 function apply_enriched_checks!(
@@ -441,7 +810,10 @@ function apply_enriched_checks!(
 )::Nothing
     """
     Overwrite the rows of `messages_c2v` belonging to enriched checks with the
-    correlation-adapted messages, for every sample in the batch.
+    correlation-adapted messages, for every sample in the batch:
+    `message_check_to_vertex_enriched!` per (check, sample), gathering the
+    check's incoming messages by `tables.edge_neurons` and scattering its
+    outgoing ones back.
 
     Inputs:
     - `messages_v2c` (nb_neurons × n_samples): the RAW variable-to-check LLRs
@@ -454,105 +826,91 @@ function apply_enriched_checks!(
     The standard rule is expected to have filled `messages_c2v` already; rows
     of non-enriched checks are left exactly as they were.
 
-    Per (check, sample):
-      1. log q_u(0) = -softplus(-m_u),  log q_u(1) = -m_u - softplus(-m_u).
-      2. LW(k) = α E_c(k) + Σ_slots [log q(0) + bit(k, slot) (log q(1) - log q(0))].
-      3. For each slot v and bit e_v, the log-sum-exp of LW over configurations
-         with bit(k, v) = e_v and parity(k) = s_c, stabilised by that class's
-         own maximum (two passes over the configurations).
-      4. m_{c→v} = LSE_v(0) - LSE_v(1) - m_{v→c}, clamped to ±ENRICHED_MESSAGE_CAP.
-    Step 4's subtraction divides out the target's own factor q_v(e_v), which
-    LW included so that one enumeration serves all d targets.
-
     Plain loops, no allocation inside the sample loop, branches only on
     constant table data: this is what keeps the function differentiable by
     Enzyme in reverse mode alongside the rest of the forward pass.
     """
     n_samples::Int = size(messages_v2c, 2)
     check_degree::Int = tables.check_degree
-    n_configurations::Int = tables.n_configurations
     alpha::Float32 = coupling_scale[1]
-
-    incoming_messages::Vector{Float32} = zeros(Float32, check_degree)
-    log_q_zero::Vector{Float32} = zeros(Float32, check_degree)
-    log_q_one::Vector{Float32} = zeros(Float32, check_degree)
-    configuration_log_weights::Vector{Float32} = zeros(Float32, n_configurations)
-    class_maximum_zero::Vector{Float32} = zeros(Float32, check_degree)
-    class_maximum_one::Vector{Float32} = zeros(Float32, check_degree)
-    class_sum_zero::Vector{Float32} = zeros(Float32, check_degree)
-    class_sum_one::Vector{Float32} = zeros(Float32, check_degree)
+    workspace::EnrichedKernelWorkspace = enriched_kernel_workspace(tables)
 
     @inbounds for sample in 1:n_samples
         for enriched_index in 1:tables.n_enriched_checks
             check::Int = tables.enriched_check_ids[enriched_index]
             syndrome_bit::Float32 = Float32(syndromes_batch[check, sample])
-
-            # 1. Incoming LLRs and their log-probabilities.
             for slot in 1:check_degree
-                neuron::Int = tables.edge_neurons[slot, enriched_index]
-                incoming::Float32 = messages_v2c[neuron, sample]
-                softplus_of_negative::Float32 = softplus(-incoming)
-                incoming_messages[slot] = incoming
-                log_q_zero[slot] = -softplus_of_negative
-                log_q_one[slot] = -incoming - softplus_of_negative
+                workspace.incoming_messages[slot] = messages_v2c[tables.edge_neurons[slot, enriched_index], sample]
             end
-
-            # 2. Log-weight of every configuration.
-            for configuration_index in 1:n_configurations
-                log_weight::Float32 = alpha * tables.pair_energy[configuration_index, enriched_index]
-                for slot in 1:check_degree
-                    log_weight += log_q_zero[slot] +
-                        tables.configuration_bits[configuration_index, slot] *
-                        (log_q_one[slot] - log_q_zero[slot])
-                end
-                configuration_log_weights[configuration_index] = log_weight
-            end
-
-            # 3a. Class maxima over parity-consistent configurations.
+            message_check_to_vertex_enriched!(
+                workspace, syndrome_bit, tables.log_weight_table, enriched_index, alpha, tables)
             for slot in 1:check_degree
-                class_maximum_zero[slot] = -Inf32
-                class_maximum_one[slot] = -Inf32
-                class_sum_zero[slot] = 0.0f0
-                class_sum_one[slot] = 0.0f0
-            end
-            for configuration_index in 1:n_configurations
-                if tables.configuration_parity[configuration_index] == syndrome_bit
-                    log_weight_of_configuration::Float32 = configuration_log_weights[configuration_index]
-                    for slot in 1:check_degree
-                        if tables.configuration_bits[configuration_index, slot] == 0.0f0
-                            class_maximum_zero[slot] = max(class_maximum_zero[slot], log_weight_of_configuration)
-                        else
-                            class_maximum_one[slot] = max(class_maximum_one[slot], log_weight_of_configuration)
-                        end
-                    end
-                end
-            end
-
-            # 3b. Class sums, each stabilised by its own maximum.
-            for configuration_index in 1:n_configurations
-                if tables.configuration_parity[configuration_index] == syndrome_bit
-                    log_weight_to_sum::Float32 = configuration_log_weights[configuration_index]
-                    for slot in 1:check_degree
-                        if tables.configuration_bits[configuration_index, slot] == 0.0f0
-                            class_sum_zero[slot] += exp(log_weight_to_sum - class_maximum_zero[slot])
-                        else
-                            class_sum_one[slot] += exp(log_weight_to_sum - class_maximum_one[slot])
-                        end
-                    end
-                end
-            end
-
-            # 4. Messages: divide out the target's own factor, then cap.
-            for slot in 1:check_degree
-                log_sum_exp_zero::Float32 = class_maximum_zero[slot] + log(class_sum_zero[slot])
-                log_sum_exp_one::Float32 = class_maximum_one[slot] + log(class_sum_one[slot])
-                message::Float32 = log_sum_exp_zero - log_sum_exp_one - incoming_messages[slot]
-                neuron_out::Int = tables.edge_neurons[slot, enriched_index]
-                messages_c2v[neuron_out, sample] = clamp(message, -ENRICHED_MESSAGE_CAP, ENRICHED_MESSAGE_CAP)
+                messages_c2v[tables.edge_neurons[slot, enriched_index], sample] = workspace.outgoing_messages[slot]
             end
         end
     end
     return nothing
+end
+
+function backward_enriched_checks!(
+    adjoint_messages_v2c::AbstractMatrix{Float32},
+    adjoint_log_weight_table::AbstractMatrix{Float32},
+    adjoint_messages_c2v::AbstractMatrix{Float32},
+    messages_c2v::AbstractMatrix{Float32},
+    messages_v2c::AbstractMatrix{Float32},
+    syndromes_batch::AbstractMatrix{Bool},
+    coupling_scale::Float32,
+    tables::SoftCheckTables
+)::Float32
+    """
+    The adjoint of `apply_enriched_checks!` for a batch:
+    `backward_message_check_to_vertex_enriched!` per (check, sample).
+
+    Inputs: `adjoint_messages_c2v` = ∂L/∂m_{c→v} (nb_neurons × n_samples), read
+    on the enriched checks' rows; `messages_c2v`, the forward's OUTGOING
+    messages of this layer (the clamped ones get a zero adjoint);
+    `messages_v2c`, the forward's raw incoming messages; `syndromes_batch`; α.
+
+    Outputs:
+    - `adjoint_messages_v2c`: ∂L/∂m_{u→c}, OVERWRITTEN on the rows of the
+      enriched checks' edges and untouched elsewhere. Those rows receive their
+      whole adjoint here — the tanh chain's contribution to them is wrong (the
+      forward overwrote those checks' messages) and is discarded by the
+      overwrite, which the caller relies on.
+    - `adjoint_log_weight_table` (2^d × n_enriched): ACCUMULATES
+      ∂L/∂(α T_c)(k) summed over the samples.
+    - returns the batch's contribution to ∂L/∂α, Σ_k ω(k) T_c(k) summed over
+      checks and samples.
+    """
+    n_samples::Int = size(messages_v2c, 2)
+    check_degree::Int = tables.check_degree
+    n_configurations::Int = tables.n_configurations
+    workspace::EnrichedKernelWorkspace = enriched_kernel_workspace(tables)
+    adjoint_coupling_scale::Float32 = 0.0f0
+
+    @inbounds for sample in 1:n_samples
+        for enriched_index in 1:tables.n_enriched_checks
+            check::Int = tables.enriched_check_ids[enriched_index]
+            syndrome_bit::Float32 = Float32(syndromes_batch[check, sample])
+            for slot in 1:check_degree
+                neuron::Int = tables.edge_neurons[slot, enriched_index]
+                workspace.incoming_messages[slot] = messages_v2c[neuron, sample]
+                workspace.outgoing_messages[slot] = messages_c2v[neuron, sample]
+                workspace.adjoint_outgoing_messages[slot] = adjoint_messages_c2v[neuron, sample]
+            end
+            adjoint_coupling_scale += backward_message_check_to_vertex_enriched!(
+                workspace, syndrome_bit, tables.log_weight_table, enriched_index, coupling_scale, tables)
+            for slot in 1:check_degree
+                adjoint_messages_v2c[tables.edge_neurons[slot, enriched_index], sample] =
+                    workspace.adjoint_incoming_messages[slot]
+            end
+            for configuration_index in 1:n_configurations
+                adjoint_log_weight_table[configuration_index, enriched_index] +=
+                    workspace.adjoint_configuration_weights[configuration_index]
+            end
+        end
+    end
+    return adjoint_coupling_scale
 end
 
 # ----------------------------------------------------------------------------
@@ -616,7 +974,7 @@ struct GPUSoftCheckState{A2 <: AbstractMatrix{Float32}, A3 <: AbstractArray{Floa
       configurations with bit v = 0, resp. 1. One matmul each gives every
       target's class sum.
     - `slot_sum_row` (1 x d): a row of ones, so a column sum is a matmul.
-    - `configuration_parity` (2^d x 1 x 1), `pair_energy` (2^d x n_enriched x 1).
+    - `configuration_parity` (2^d x 1 x 1), `log_weight_table` (2^d x n_enriched x 1).
     - `syndromes_enriched` (1 x n_enriched x batch).
 
     Working buffers, all written in place, never reallocated:
@@ -636,7 +994,7 @@ struct GPUSoftCheckState{A2 <: AbstractMatrix{Float32}, A3 <: AbstractArray{Floa
     class_mask_one::A2
     slot_sum_row::A2
     configuration_parity::A3
-    pair_energy::A3
+    log_weight_table::A3
     syndromes_enriched::A3
     gathered_messages::A2
     log_q_zero::A2
@@ -700,7 +1058,7 @@ function build_gpu_soft_check_state(
         to_device(Matrix{Float32}(transpose(tables.configuration_bits))),
         to_device(ones(Float32, 1, check_degree)),
         to_device(reshape(tables.configuration_parity, n_configurations, 1, 1)),
-        to_device(reshape(tables.pair_energy, n_configurations, n_enriched_checks, 1)),
+        to_device(reshape(tables.log_weight_table, n_configurations, n_enriched_checks, 1)),
         to_device(syndromes_enriched_cpu),
         to_device(zeros(Float32, n_enriched_edges, n_samples)),
         to_device(zeros(Float32, check_degree, n_columns)),
@@ -761,7 +1119,7 @@ function release_gpu_soft_check_state!(state::GPUSoftCheckState)::Nothing
     release_device_array!(state.class_mask_one)
     release_device_array!(state.slot_sum_row)
     release_device_array!(state.configuration_parity)
-    release_device_array!(state.pair_energy)
+    release_device_array!(state.log_weight_table)
     release_device_array!(state.syndromes_enriched)
     release_device_array!(state.gathered_messages)
     release_device_array!(state.log_q_zero)
@@ -829,7 +1187,7 @@ function apply_enriched_checks_gpu(
         reshape(state.log_weights, n_configurations, n_enriched_checks, n_samples)
     log_weights_3d .= reshape(state.all_zero_log_weight, 1, n_enriched_checks, n_samples) .-
         log_weights_3d .+
-        coupling_scale .* state.pair_energy .+
+        coupling_scale .* state.log_weight_table .+
         abs.(state.configuration_parity .- state.syndromes_enriched) .* EXCLUDED_CONFIGURATION_LOG_WEIGHT
 
     # 3. One stabiliser per (check, sample), then both class sums for every
@@ -854,4 +1212,205 @@ function apply_enriched_checks_gpu(
     mul!(state.updated_messages, state.scatter, state.enriched_messages)
     state.updated_messages .= state.updated_messages .+ messages_c2v .* state.keep_mask
     return state.updated_messages
+end
+# ----------------------------------------------------------------------------
+# GPU adjoint (training under USE_GPU=1). The same dense style as the forward:
+# broadcasts, `maximum!`/`sum!` reductions and matmuls, on whatever array type
+# the state holds. Buffers are sized for the TRAINING batch and allocated once
+# per gradient call in `GPUEnrichedBackwardState`, never per layer.
+#
+# Unlike the forward kernel, every class is stabilised by its OWN maximum (the
+# (2^d × d × n_columns) scratch tensor makes that one `maximum!` per bit value),
+# so a class far below the global maximum keeps its softmax instead of
+# underflowing to 0/0 — the forward's "exact while |m| < ~70" limit does not
+# carry over to the gradient.
+# ----------------------------------------------------------------------------
+
+struct GPUEnrichedBackwardState{A2 <: AbstractMatrix{Float32}, A3 <: AbstractArray{Float32, 3}}
+    """
+    Constant tables and working buffers of `backward_enriched_checks_gpu`, on
+    the device. n_columns = n_enriched × batch.
+
+    Constant tables:
+    - `membership_zero`, `membership_one` (2^d × d × 1): 1 where slot v's bit in
+      configuration k is 0, resp. 1 — the class masks, broadcast over columns.
+    - `configuration_bits_transposed` (d × 2^d): for −Bᵀ ω.
+
+    Working buffers:
+    - `gathered_adjoint`, `gathered_outgoing`, `gathered_incoming`
+      (d·n_enriched × batch): a_v, the forward's m_{c→v}, m_{u→c}.
+    - `log_weights` (2^d × n_columns): LW(k), parity exclusion applied.
+    - `class_scores` (2^d × d × n_columns): the class-masked log-weights, then
+      their class softmaxes times a_v.
+    - `class_maximum`, `class_sum` (1 × d × n_columns).
+    - `configuration_weights_part` (2^d × 1 × n_columns): one bit value's share
+      of ω; `configuration_weights` (2^d × n_columns): ω.
+    - `configuration_weights_batch_sum` (2^d × n_enriched × 1): ω summed over
+      the batch, for the table's and α's gradients.
+    - `adjoint_incoming` (d·n_enriched × batch): ∂L/∂m_{u→c} on the enriched edges.
+    - `adjoint_messages_v2c` (nb_neurons × batch): the same scattered into the
+      full message matrix, zero on every other row.
+    - `adjoint_log_weight_table` (2^d × n_enriched): ACCUMULATES ∂L/∂(αT) over
+      the calls (layers) made with this state.
+    """
+    membership_zero::A3
+    membership_one::A3
+    configuration_bits_transposed::A2
+    gathered_adjoint::A2
+    gathered_outgoing::A2
+    gathered_incoming::A2
+    log_weights::A2
+    class_scores::A3
+    class_maximum::A3
+    class_sum::A3
+    configuration_weights_part::A3
+    configuration_weights::A2
+    configuration_weights_batch_sum::A3
+    adjoint_incoming::A2
+    adjoint_messages_v2c::A2
+    adjoint_log_weight_table::A2
+    n_columns::Int
+end
+
+function build_gpu_enriched_backward_state(
+    tables::SoftCheckTables,
+    nb_neurons::Int,
+    n_samples::Int,
+    to_device::Function
+)::GPUEnrichedBackwardState
+    """
+    Allocate the adjoint's buffers for a batch of `n_samples` and move the
+    constant tables to the device with `to_device` (as `build_gpu_soft_check_state`).
+    """
+    check_degree::Int = tables.check_degree
+    n_enriched_checks::Int = tables.n_enriched_checks
+    n_configurations::Int = tables.n_configurations
+    n_enriched_edges::Int = check_degree * n_enriched_checks
+    n_columns::Int = n_enriched_checks * n_samples
+    membership_one_cpu::Array{Float32, 3} = reshape(copy(tables.configuration_bits), n_configurations, check_degree, 1)
+    membership_zero_cpu::Array{Float32, 3} = 1.0f0 .- membership_one_cpu
+    state::GPUEnrichedBackwardState = GPUEnrichedBackwardState(
+        to_device(membership_zero_cpu),
+        to_device(membership_one_cpu),
+        to_device(Matrix{Float32}(transpose(tables.configuration_bits))),
+        to_device(zeros(Float32, n_enriched_edges, n_samples)),
+        to_device(zeros(Float32, n_enriched_edges, n_samples)),
+        to_device(zeros(Float32, n_enriched_edges, n_samples)),
+        to_device(zeros(Float32, n_configurations, n_columns)),
+        to_device(zeros(Float32, n_configurations, check_degree, n_columns)),
+        to_device(zeros(Float32, 1, check_degree, n_columns)),
+        to_device(zeros(Float32, 1, check_degree, n_columns)),
+        to_device(zeros(Float32, n_configurations, 1, n_columns)),
+        to_device(zeros(Float32, n_configurations, n_columns)),
+        to_device(zeros(Float32, n_configurations, n_enriched_checks, 1)),
+        to_device(zeros(Float32, n_enriched_edges, n_samples)),
+        to_device(zeros(Float32, nb_neurons, n_samples)),
+        to_device(zeros(Float32, n_configurations, n_enriched_checks)),
+        n_columns
+    )
+    return state
+end
+
+function release_gpu_enriched_backward_state!(state::GPUEnrichedBackwardState)::Nothing
+    """
+    Free every device array of a `GPUEnrichedBackwardState`; the state must not
+    be used afterwards.
+    """
+    release_device_array!(state.membership_zero)
+    release_device_array!(state.membership_one)
+    release_device_array!(state.configuration_bits_transposed)
+    release_device_array!(state.gathered_adjoint)
+    release_device_array!(state.gathered_outgoing)
+    release_device_array!(state.gathered_incoming)
+    release_device_array!(state.log_weights)
+    release_device_array!(state.class_scores)
+    release_device_array!(state.class_maximum)
+    release_device_array!(state.class_sum)
+    release_device_array!(state.configuration_weights_part)
+    release_device_array!(state.configuration_weights)
+    release_device_array!(state.configuration_weights_batch_sum)
+    release_device_array!(state.adjoint_incoming)
+    release_device_array!(state.adjoint_messages_v2c)
+    release_device_array!(state.adjoint_log_weight_table)
+    return nothing
+end
+
+function backward_enriched_checks_gpu(
+    adjoint_messages_c2v::AbstractMatrix{Float32},
+    messages_c2v::AbstractMatrix{Float32},
+    messages_v2c::AbstractMatrix{Float32},
+    coupling_scale::Float32,
+    forward_state::GPUSoftCheckState,
+    backward_state::GPUEnrichedBackwardState
+)::Tuple{AbstractMatrix{Float32}, Float32}
+    """
+    `backward_enriched_checks!` on the device, for one layer. Arguments as the
+    CPU function: ∂L/∂m_{c→v} (read on the enriched rows), the forward's
+    outgoing and incoming messages of the layer, α, and the two states.
+
+    Returns (∂L/∂m_{u→c} on the enriched edges scattered into a
+    (nb_neurons × batch) matrix that is zero on every other row, the layer's
+    contribution to ∂L/∂α). The matrix is `backward_state.adjoint_messages_v2c`,
+    overwritten on the next call: consume it before calling again. The table's
+    gradient accumulates in `backward_state.adjoint_log_weight_table`.
+    """
+    check_degree::Int = forward_state.check_degree
+    n_enriched_checks::Int = forward_state.n_enriched_checks
+    n_configurations::Int = forward_state.n_configurations
+    n_samples::Int = size(messages_v2c, 2)
+    n_columns::Int = backward_state.n_columns
+    if n_samples != forward_state.n_samples || n_columns != n_enriched_checks * n_samples
+        throw(DimensionMismatch(
+            "backward_enriched_checks_gpu: the states were built for " *
+            "$(forward_state.n_samples) samples but were given $(n_samples)."))
+    end
+
+    # 1. The enriched edges' values, as (d × n_columns): a_v, with the clamped
+    #    slots' adjoint zeroed; the forward's outgoing messages say which.
+    mul!(backward_state.gathered_adjoint, forward_state.gather, adjoint_messages_c2v)
+    mul!(backward_state.gathered_outgoing, forward_state.gather, messages_c2v)
+    mul!(backward_state.gathered_incoming, forward_state.gather, messages_v2c)
+    adjoint_outgoing::AbstractMatrix{Float32} = reshape(backward_state.gathered_adjoint, check_degree, n_columns)
+    outgoing::AbstractMatrix{Float32} = reshape(backward_state.gathered_outgoing, check_degree, n_columns)
+    incoming::AbstractMatrix{Float32} = reshape(backward_state.gathered_incoming, check_degree, n_columns)
+    adjoint_outgoing .= adjoint_outgoing .* (abs.(outgoing) .< ENRICHED_MESSAGE_CAP)
+
+    # 2. LW(k) = α T_c(k) − b(k)·m, parity-inconsistent configurations excluded.
+    mul!(backward_state.log_weights, forward_state.configuration_bits, incoming)
+    log_weights_3d::AbstractArray{Float32, 3} =
+        reshape(backward_state.log_weights, n_configurations, n_enriched_checks, n_samples)
+    log_weights_3d .= coupling_scale .* forward_state.log_weight_table .- log_weights_3d .+
+        abs.(forward_state.configuration_parity .- forward_state.syndromes_enriched) .* EXCLUDED_CONFIGURATION_LOG_WEIGHT
+
+    # 3. ω(k) = Σ_v a_v [π_v^0(k) − π_v^1(k)], one bit value at a time: mask the
+    #    other class out, stabilise by the class maximum, normalise, weight by a_v.
+    log_weights_columns::AbstractArray{Float32, 3} = reshape(backward_state.log_weights, n_configurations, 1, n_columns)
+    adjoint_columns::AbstractArray{Float32, 3} = reshape(backward_state.gathered_adjoint, 1, check_degree, n_columns)
+    fill!(backward_state.configuration_weights, 0.0f0)
+    for (membership, sign) in ((backward_state.membership_zero, 1.0f0), (backward_state.membership_one, -1.0f0))
+        backward_state.class_scores .= log_weights_columns .+ EXCLUDED_CONFIGURATION_LOG_WEIGHT .* (1.0f0 .- membership)
+        maximum!(backward_state.class_maximum, backward_state.class_scores)
+        backward_state.class_scores .= exp.(backward_state.class_scores .- backward_state.class_maximum)
+        sum!(backward_state.class_sum, backward_state.class_scores)
+        backward_state.class_scores .= backward_state.class_scores ./ backward_state.class_sum .* adjoint_columns
+        sum!(backward_state.configuration_weights_part, backward_state.class_scores)
+        backward_state.configuration_weights .= backward_state.configuration_weights .+
+            sign .* reshape(backward_state.configuration_weights_part, n_configurations, n_columns)
+    end
+
+    # 4. ∂L/∂m_u = −Bᵀ ω − a_u, scattered back into the full message matrix.
+    adjoint_incoming::AbstractMatrix{Float32} = reshape(backward_state.adjoint_incoming, check_degree, n_columns)
+    mul!(adjoint_incoming, backward_state.configuration_bits_transposed, backward_state.configuration_weights)
+    adjoint_incoming .= .-adjoint_incoming .- adjoint_outgoing
+    mul!(backward_state.adjoint_messages_v2c, forward_state.scatter, backward_state.adjoint_incoming)
+
+    # 5. The table's gradient, summed over the batch, and α's.
+    configuration_weights_3d::AbstractArray{Float32, 3} =
+        reshape(backward_state.configuration_weights, n_configurations, n_enriched_checks, n_samples)
+    sum!(backward_state.configuration_weights_batch_sum, configuration_weights_3d)
+    backward_state.adjoint_log_weight_table .= backward_state.adjoint_log_weight_table .+
+        reshape(backward_state.configuration_weights_batch_sum, n_configurations, n_enriched_checks)
+    adjoint_coupling_scale::Float32 = Float32(sum(
+        backward_state.configuration_weights_batch_sum .* forward_state.log_weight_table))
+    return (backward_state.adjoint_messages_v2c, adjoint_coupling_scale)
 end

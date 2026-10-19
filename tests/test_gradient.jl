@@ -44,17 +44,40 @@ function gradient_test_bb_base(n_layers::Int, check_node::String)::NeuralBPBase
     return base
 end
 
-function gradient_test_model(base::NeuralBPBase, scale::Float32)::NachmaniNeuralBP
+function gradient_test_model(base::NeuralBPBase, scale::Float32; coupling_scale::Float32 = 1.0f0)::NachmaniNeuralBP
     """
-    Random weights around one, as training initialises them.
+    Random weights around one, as training initialises them. `coupling_scale`
+    is α of the enriched node (inert under tanh); 0.5 puts θ at 0, where
+    dα/dθ = 1/4 and θ's gradient is a real test rather than ~1e-6 × something.
     """
     bpnn::NachmaniNeuralBP = NachmaniNeuralBP(
         base;
         weights_c2v_v2c = random_values_around_one([base.nb_weights_c2v_v2c * base.n_layers]; scale = scale),
         weights_llrs = random_values_around_one([base.code_n_bits * base.n_layers]; scale = scale),
         weights_c2v_readout = random_values_around_one([base.nb_weights_c2v_readout]; scale = scale),
+        coupling_scale = coupling_scale,
     )
     return bpnn
+end
+
+function gradient_test_two_check_enriched_base(n_layers::Int)::NeuralBPBase
+    """
+    The two-check graph with three couplings inside check 1, so check 1 is
+    enriched and check 2 is not (as `two_check_base` in test_soft_constraints.jl).
+    """
+    parity_check_matrix::Matrix{Int} = [1 1 1 0; 0 0 1 1]
+    parity_check_matrix_dual::Matrix{Int} = [1 1 1 0; 0 0 1 1; 1 0 0 1]
+    error_probabilities::Vector{Float64} = [0.12, 0.05, 0.25, 0.08]
+    initial_llrs::Vector{Float32} = Float32.(log.((1 .- error_probabilities) ./ error_probabilities))
+    connectivity::Matrix{Int} = [1 2; 1 3; 2 3]
+    correlation_strengths::Vector{Float32} = Float32[1.2, -0.7, 0.9]
+    base::NeuralBPBase = NeuralBPBase(
+        parity_check_matrix, parity_check_matrix_dual, initial_llrs, n_layers;
+        connectivity = connectivity,
+        correlation_strengths = correlation_strengths,
+        check_node = "enriched",
+    )
+    return base
 end
 
 function gradient_test_batch(base::NeuralBPBase, n_samples::Int, error_weight::Int)::Tuple{BitMatrix, BitMatrix}
@@ -167,8 +190,9 @@ function check_gradients_agree(
     """
     The loss, and each of the three trained parameter vectors, agree: in norm to
     `norm_tolerance` (relative), and every component to `component_tolerance` ×
-    the largest component of Enzyme's. α's gradient is exactly zero on both
-    sides (the tanh node never reads it). Returns the largest relative norm
+    the largest component of Enzyme's. θ's gradient is exactly zero on both
+    sides under the tanh node (which never reads α) and agrees to
+    `norm_tolerance` under the enriched one. Returns the largest relative norm
     difference, for the summary line.
 
     The loss against ENZYME'S PRIMAL is compared to 1e-5, not exactly: Enzyme
@@ -194,8 +218,14 @@ function check_gradients_agree(
         @test all(abs.(manual_vector .- reference_vector) .<= Float32(component_tolerance) * largest)
         worst = max(worst, difference)
     end
-    @test all(iszero, manual.coupling_logit)
-    @test all(iszero, reference.coupling_logit)
+    if all(iszero, reference.coupling_logit)
+        @test all(iszero, manual.coupling_logit)
+    else
+        @test all(isfinite, manual.coupling_logit)
+        coupling_difference::Float64 = relative_difference(manual.coupling_logit, reference.coupling_logit)
+        @test coupling_difference <= norm_tolerance
+        worst = max(worst, coupling_difference)
+    end
     return worst
 end
 
@@ -304,16 +334,39 @@ end
     println("  BB code, CER priors: largest relative difference, manual vs Enzyme = $(worst)")
 end
 
-@testset "compute_loss_and_gradients refuses the enriched check node" begin
+@testset "compute_loss_and_gradients equals Enzyme: two-check graph, enriched check node" begin
+    # Check 1 carries three couplings and goes through the table node, check 2
+    # through the tanh chain, bit 3 through both: the overwrite of the enriched
+    # edges' adjoint and θ's gradient are both exercised on a graph small enough
+    # for Float32 differences to be clean.
     Random.seed!(35)
+    base::NeuralBPBase = gradient_test_two_check_enriched_base(3)
+    bpnn::NachmaniNeuralBP = gradient_test_model(base, 0.3f0; coupling_scale = 0.5f0)
+    expected::BitMatrix = BitMatrix([1 0 0 1; 0 0 1 0; 0 1 0 0; 0 0 1 1])
+    syndromes::BitMatrix = BitMatrix(mod.(Matrix{Int}(base.parity_check_matrix) * Matrix{Int}(expected), 2) .== 1)
+    llrs_batch::Matrix{Float32} = repeat(base.initial_llrs, 1, 4)
+    worst::Float64 = compare_every_mode(bpnn, llrs_batch, syndromes, expected, [0, 1], 1e-4, 1e-3)
+    println("  two-check graph, enriched: largest relative difference, manual vs Enzyme = $(worst)")
+    # θ really is trained here: its gradient is not zero.
+    reference::LossAndGradients = enzyme_loss_and_gradients(
+        bpnn, 1.0f0, 0, LOSS_LAYERS_LAST, 3.0f0, BASE_LOSS_SIN_RESIDUE, llrs_batch, syndromes, expected)
+    @test reference.coupling_logit[1] != 0.0f0
+end
+
+@testset "compute_loss_and_gradients equals Enzyme: BB code, enriched check node, CER priors" begin
+    # All 36 checks are enriched (every check holds CER pairs), so the whole
+    # c2v adjoint goes through `backward_enriched_checks!`; the priors saturate
+    # within a few layers, as in the tanh test above.
+    Random.seed!(36)
     base::NeuralBPBase = gradient_test_bb_base(3, "enriched")
-    bpnn::NachmaniNeuralBP = gradient_test_model(base, 0.3f0)
-    batch::Tuple{BitMatrix, BitMatrix} = gradient_test_batch(base, 2, 3)
+    bpnn::NachmaniNeuralBP = gradient_test_model(base, 0.3f0; coupling_scale = 0.5f0)
+    n_samples::Int = 6
+    batch::Tuple{BitMatrix, BitMatrix} = gradient_test_batch(base, n_samples, 3)
     expected::BitMatrix = batch[1]
     syndromes::BitMatrix = batch[2]
-    llrs_batch::Matrix{Float32} = repeat(base.initial_llrs, 1, 2)
-    @test_throws ArgumentError manual_loss_and_gradients(
-        bpnn, 1.0f0, 0, LOSS_LAYERS_SOFTMIN, 3.0f0, BASE_LOSS_SIN_RESIDUE, llrs_batch, syndromes, expected)
+    llrs_batch::Matrix{Float32} = repeat(base.initial_llrs, 1, n_samples)
+    worst::Float64 = compare_every_mode(bpnn, llrs_batch, syndromes, expected, [0], 5e-3, 1e-2)
+    println("  BB code, enriched, CER priors: largest relative difference, manual vs Enzyme = $(worst)")
 end
 
 # -----------------------------------------------------------------------------
@@ -334,8 +387,9 @@ function compare_gpu_with_cpu(
     `compute_loss_and_gradients_gpu` against `compute_loss_and_gradients` for every
     layer rule × residue × warmup at T = 1: the loss to `loss_tolerance` and each
     weight gradient to `norm_tolerance` in norm, both relative; θ's gradient is
-    zero on both sides. The two forwards differ only by the device's Float32
-    arithmetic. Returns the largest relative gradient difference.
+    zero on both sides under tanh and held to `norm_tolerance` under the enriched
+    node. The two forwards differ only by the device's Float32 arithmetic.
+    Returns the largest relative gradient difference.
     """
     worst::Float64 = 0.0
     for selection in GRADIENT_TEST_SELECTIONS, residue in GRADIENT_TEST_RESIDUES, warmup in warmups
@@ -357,7 +411,14 @@ function compare_gpu_with_cpu(
             @test difference <= norm_tolerance
             worst = max(worst, difference)
         end
-        @test all(iszero, gpu.coupling_logit)
+        if all(iszero, cpu.coupling_logit)
+            @test all(iszero, gpu.coupling_logit)
+        else
+            @test all(isfinite, gpu.coupling_logit)
+            coupling_difference::Float64 = relative_difference(gpu.coupling_logit, cpu.coupling_logit)
+            @test coupling_difference <= norm_tolerance
+            worst = max(worst, coupling_difference)
+        end
     end
     return worst
 end
@@ -429,18 +490,31 @@ end
     println("  BB code, CER priors: largest relative difference, GPU vs CPU = $(worst)")
 end
 
-@testset "compute_loss_and_gradients_gpu refuses the enriched check node" begin
+@testset "compute_loss_and_gradients_gpu equals the CPU gradient: two-check graph, enriched" begin
     Random.seed!(43)
+    base::NeuralBPBase = gradient_test_two_check_enriched_base(3)
+    bpnn::NachmaniNeuralBP = gradient_test_model(base, 0.3f0; coupling_scale = 0.5f0)
+    expected::BitMatrix = BitMatrix([1 0 0 1; 0 0 1 0; 0 1 0 0; 0 0 1 1])
+    syndromes::BitMatrix = BitMatrix(mod.(Matrix{Int}(base.parity_check_matrix) * Matrix{Int}(expected), 2) .== 1)
+    llrs_batch::Matrix{Float32} = repeat(base.initial_llrs, 1, 4)
+    worst::Float64 = compare_gpu_with_cpu(bpnn, llrs_batch, syndromes, expected, [0, 1], 1e-4, 1e-3)
+    println("  two-check graph, enriched: largest relative difference, GPU vs CPU = $(worst)")
+end
+
+@testset "compute_loss_and_gradients_gpu equals the CPU gradient: BB code, enriched, CER priors" begin
+    # The enriched forward kernels agree to ~1e-3 near saturation (one global
+    # stabiliser on the device, see test_soft_constraints.jl), the same margin
+    # as the tanh test above.
+    Random.seed!(47)
     base::NeuralBPBase = gradient_test_bb_base(3, "enriched")
-    bpnn::NachmaniNeuralBP = gradient_test_model(base, 0.3f0)
-    batch::Tuple{BitMatrix, BitMatrix} = gradient_test_batch(base, 2, 3)
+    bpnn::NachmaniNeuralBP = gradient_test_model(base, 0.3f0; coupling_scale = 0.5f0)
+    n_samples::Int = 6
+    batch::Tuple{BitMatrix, BitMatrix} = gradient_test_batch(base, n_samples, 3)
     expected::BitMatrix = batch[1]
     syndromes::BitMatrix = batch[2]
-    llrs_batch::Matrix{Float32} = repeat(base.initial_llrs, 1, 2)
-    @test_throws ArgumentError compute_loss_and_gradients_gpu(
-        bpnn.weights_c2v_v2c, bpnn.weights_llrs, bpnn.weights_c2v_readout, bpnn.coupling_logit,
-        1.0f0, 0, LOSS_LAYERS_SOFTMIN, 3.0f0, BASE_LOSS_SIN_RESIDUE, base,
-        llrs_batch, syndromes, expected)
+    llrs_batch::Matrix{Float32} = repeat(base.initial_llrs, 1, n_samples)
+    worst::Float64 = compare_gpu_with_cpu(bpnn, llrs_batch, syndromes, expected, [0], 1e-3, 5e-3)
+    println("  BB code, enriched, CER priors: largest relative difference, GPU vs CPU = $(worst)")
 end
 
 # -----------------------------------------------------------------------------
@@ -465,13 +539,12 @@ function training_test_hyperparameters(manual_backprop::Bool)::Dict{String, Any}
     return hyperparameters
 end
 
-@testset "train_neuralbp_enzyme! with manual_backprop follows Enzyme's updates" begin
-    base::NeuralBPBase = gradient_test_two_check_base(3)
-    expected::BitMatrix = BitMatrix([1 0 0 1; 0 0 1 0; 0 1 0 0; 0 0 1 1])
-    syndromes::BitMatrix = BitMatrix(mod.(Matrix{Int}(base.parity_check_matrix) * Matrix{Int}(expected), 2) .== 1)
-    Random.seed!(44)
-    initial::NachmaniNeuralBP = gradient_test_model(base, 0.3f0)
-
+function compare_training_paths(initial::NachmaniNeuralBP, syndromes::BitMatrix, expected::BitMatrix, enriched::Bool)::Nothing
+    """
+    Train `initial` for one epoch of two batches with Enzyme, the hand-written
+    CPU gradient and the hand-written GPU gradient, and check the three land on
+    the same weights — and on the same θ when the node is enriched.
+    """
     trained_models::Dict{String, NachmaniNeuralBP} = Dict{String, NachmaniNeuralBP}()
     for (label, manual_backprop, use_gpu_setting) in (
         ("Enzyme", false, "0"),
@@ -490,6 +563,9 @@ end
     reference::NachmaniNeuralBP = trained_models["Enzyme"]
     # Two updates moved the weights, so agreeing after them means something.
     @test relative_difference(reference.weights_c2v_v2c, initial.weights_c2v_v2c) > 1e-4
+    if enriched
+        @test reference.coupling_logit != initial.coupling_logit
+    end
     for label in ("hand-written, CPU", "hand-written, GPU")
         trained::NachmaniNeuralBP = trained_models[label]
         worst::Float64 = 0.0
@@ -502,24 +578,40 @@ end
             @test difference <= 1e-5
             worst = max(worst, difference)
         end
-        # α is frozen under the tanh node, whichever gradient trains.
-        @test trained.coupling_logit == initial.coupling_logit
-        println("  training, $(label) vs Enzyme: largest relative weight difference after two updates = $(worst)")
+        if enriched
+            # θ moves with the other weights, by the same Adam step.
+            coupling_difference::Float64 = relative_difference(trained.coupling_logit, reference.coupling_logit)
+            @test coupling_difference <= 1e-4
+            worst = max(worst, coupling_difference)
+        else
+            # α is frozen under the tanh node, whichever gradient trains.
+            @test trained.coupling_logit == initial.coupling_logit
+        end
+        println("  training ($(enriched ? "enriched" : "tanh")), $(label) vs Enzyme: " *
+                "largest relative difference after two updates = $(worst)")
     end
+    return nothing
+end
+
+@testset "train_neuralbp_enzyme! with manual_backprop follows Enzyme's updates" begin
+    base::NeuralBPBase = gradient_test_two_check_base(3)
+    expected::BitMatrix = BitMatrix([1 0 0 1; 0 0 1 0; 0 1 0 0; 0 0 1 1])
+    syndromes::BitMatrix = BitMatrix(mod.(Matrix{Int}(base.parity_check_matrix) * Matrix{Int}(expected), 2) .== 1)
+    Random.seed!(44)
+    initial::NachmaniNeuralBP = gradient_test_model(base, 0.3f0)
+    compare_training_paths(initial, syndromes, expected, false)
+
+    # The enriched node: θ is trained too, and the three gradients agree on it.
+    enriched_base::NeuralBPBase = gradient_test_two_check_enriched_base(3)
+    Random.seed!(48)
+    enriched_initial::NachmaniNeuralBP = gradient_test_model(enriched_base, 0.3f0; coupling_scale = 0.5f0)
+    compare_training_paths(enriched_initial, syndromes, expected, true)
 end
 
 @testset "manual_backprop is validated before training" begin
     @test manual_backprop_setting(Dict{String, Any}(), CHECK_NODE_TANH) == false
     @test manual_backprop_setting(Dict{String, Any}("manual_backprop" => true), CHECK_NODE_TANH) == true
+    @test manual_backprop_setting(Dict{String, Any}("manual_backprop" => true), CHECK_NODE_ENRICHED) == true
     @test_throws ArgumentError manual_backprop_setting(Dict{String, Any}("manual_backprop" => "yes"), CHECK_NODE_TANH)
-    # The hand-written gradient does not cover the enriched check node: refused
-    # before the first batch, not trained with Enzyme behind the user's back.
-    Random.seed!(46)
-    base::NeuralBPBase = gradient_test_bb_base(3, "enriched")
-    @test_throws ArgumentError manual_backprop_setting(
-        Dict{String, Any}("manual_backprop" => true), base.check_node_kind)
-    model::NachmaniNeuralBP = gradient_test_model(base, 0.3f0)
-    batch::Tuple{BitMatrix, BitMatrix} = gradient_test_batch(base, 2, 3)
-    @test_throws ArgumentError train_neuralbp_enzyme!(
-        model, batch[2], batch[1], training_test_hyperparameters(true); is_quiet = true)
+    @test_throws ArgumentError manual_backprop_setting(Dict{String, Any}("manual_backprop" => true), 7)
 end

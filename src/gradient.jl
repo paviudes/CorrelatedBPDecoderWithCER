@@ -39,13 +39,18 @@
 #        W̄ᵗ, b̄ᵗ  += rule-2 read-offs                          weight_gradients_c2v_to_v2c!
 #        m̄_c2vᵗ⁻¹ = Wᵗᵀ m̄_v2cᵗ                 (rule 2̄)       backward_c2v_to_v2c!
 #
-# Scope: the standard (tanh) check node. The enriched check node's adjoint, and
-# with it the gradient of α (`coupling_logit`), is not written; an enriched base
-# is refused rather than given a wrong gradient. Under the tanh node α is never
-# read, so its gradient is exactly zero — as Enzyme reports it.
+# With the enriched check node (src/soft_constraints.jl) the forward overwrote
+# the enriched checks' c2v messages, so the three steps across the check node
+# are wrong for exactly those checks' edges. `backward_enriched_checks!` then
+# OVERWRITES m̄_v2cᵗ on the enriched checks' edges with the table node's own
+# adjoint — those edges feed no other check, so the tanh chain's share is
+# discarded whole — and returns the layer's contribution to ∂L/∂α, which the
+# logistic link turns into the gradient of `coupling_logit`. Under the tanh node
+# α is never read, so its gradient is exactly zero — as Enzyme reports it.
 #
 # Prototyped in float64 against central finite differences for every layer rule,
-# residue, warmup and temperature before being written here (2026-10-09).
+# residue, warmup and temperature before being written here (2026-10-09); the
+# enriched adjoint likewise (2026-10-19).
 # =============================================================================
 
 struct ForwardTape
@@ -173,15 +178,11 @@ function compute_loss_and_gradients(
     The training loss and its gradient with respect to `weights_c2v_v2c`,
     `weights_llrs`, `weights_c2v_readout` and `coupling_logit`, without
     automatic differentiation. Arguments as `get_loss_value`, in the same
-    order. See the block above for the three stages; standard (tanh) check
-    node only.
+    order. See the block above for the three stages. Both check nodes: under
+    the enriched one the gradient of `coupling_logit` is non-zero.
     """
-    if base.check_node_kind == CHECK_NODE_ENRICHED
-        throw(ArgumentError(
-            "compute_loss_and_gradients: the hand-written backward pass does not cover the " *
-            "enriched check node (its adjoint, and the gradient of α). Use Enzyme " *
-            "(get_loss_value) for check_node = \"enriched\"."))
-    end
+    enriched::Bool = base.check_node_kind == CHECK_NODE_ENRICHED
+    linked_coupling_scale::Float32 = coupling_scale_from_logit(coupling_logit[1])
     n_layers::Int = base.n_layers
     n_bits::Int = base.code_n_bits
     n_samples::Int = size(llrs_batch, 2)
@@ -215,6 +216,11 @@ function compute_loss_and_gradients(
     adjoint_magnitudes_c2v::Matrix{Float32} = zeros(Float32, n_neurons, n_samples)
     adjoint_magnitudes_v2c::Matrix{Float32} = zeros(Float32, n_neurons, n_samples)
     adjoint_messages_v2c::Matrix{Float32} = zeros(Float32, n_neurons, n_samples)
+    # The enriched check node's own gradients: ∂L/∂(αT) per table entry, summed
+    # over samples and layers (not a trained parameter yet, kept for the record),
+    # and ∂L/∂α summed over layers.
+    adjoint_log_weight_table::Matrix{Float32} = zeros(Float32, size(base.soft_check_tables.log_weight_table))
+    adjoint_coupling_scale::Float32 = 0.0f0
 
     for layer in n_layers:-1:1
         weights_layer::AbstractVector{Float32} =
@@ -245,6 +251,14 @@ function compute_loss_and_gradients(
             tape.activated_c2v_magnitudes[layer], tape.activated_c2v_signs[layer])
         backward_v2c_to_c2v!(adjoint_magnitudes_v2c, adjoint_magnitudes_c2v, base)
         backward_log_tanh_split!(adjoint_messages_v2c, adjoint_magnitudes_v2c, tape.messages_v2c[layer])
+        # The enriched checks' edges: the table node's adjoint replaces the
+        # chain's values on them (see the block above).
+        if enriched
+            adjoint_coupling_scale += backward_enriched_checks!(
+                adjoint_messages_v2c, adjoint_log_weight_table, adjoint_messages_c2v,
+                tape.outgoing_messages_c2v[layer], tape.messages_v2c[layer], syndromes_matrix,
+                linked_coupling_scale, base.soft_check_tables)
+        end
 
         # The variable node: its parameter gradients, then rule 2̄, which leaves
         # m̄_c2vᵗ⁻¹ — rule 2̄'s share for the next step — in `adjoint_messages_c2v`.
@@ -254,12 +268,16 @@ function compute_loss_and_gradients(
         backward_c2v_to_v2c!(adjoint_messages_c2v, adjoint_messages_v2c, weights_layer, base)
     end
 
+    # θ -> α is the logistic link, so dL/dθ = dL/dα · α(1 − α); zero under the
+    # tanh node, where no adjoint was ever added.
+    gradient_coupling_logit::Vector{Float32} =
+        Float32[adjoint_coupling_scale * linked_coupling_scale * (1.0f0 - linked_coupling_scale)]
     result::LossAndGradients = LossAndGradients(
         total_loss,
         gradient_weights_c2v_v2c,
         gradient_weights_llrs,
         gradient_weights_c2v_readout,
-        zeros(Float32, length(coupling_logit)),
+        gradient_coupling_logit,
     )
     return result
 end

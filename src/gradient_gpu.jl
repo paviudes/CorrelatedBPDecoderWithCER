@@ -27,8 +27,11 @@
 # from nb_neurons messages, so the messages cannot be recovered from it; the tape
 # keeps them.
 #
-# Scope: the standard (tanh) check node, as on the CPU; an enriched base is
-# refused. α is never read, so its gradient is exactly zero.
+# Both check nodes, as on the CPU. With the enriched one the tape COPIES each
+# layer's outgoing c2v messages (the kernel returns a buffer it rewrites on the
+# next call), and `backward_enriched_checks_gpu` replaces the chain's adjoint on
+# the enriched checks' edges, exactly as the CPU sweep does. Under the tanh node
+# α is never read, so its gradient is exactly zero.
 # =============================================================================
 
 struct GPUForwardTape
@@ -51,13 +54,14 @@ function forward_pass_gpu_with_tape(
     """
     The GPU forward, layer for layer `_forward_pass_gpu_chunk` (same layer
     function, same order), keeping each layer's values for the backward.
-    Standard (tanh) check node only.
+
+    With the enriched check node the layer's outgoing messages are the enriched
+    kernel's own buffer, rewritten on its next call, so the tape keeps a copy;
+    the tanh node's are fresh arrays and are kept as they are.
     """
     n_samples::Int = size(initial_llrs_gpu, 2)
     n_layers::Int = gpu_state.n_layers
-    if gpu_state.check_node_kind == CHECK_NODE_ENRICHED
-        throw(ArgumentError("forward_pass_gpu_with_tape: standard (tanh) check node only."))
-    end
+    enriched::Bool = gpu_state.check_node_kind == CHECK_NODE_ENRICHED
     if n_samples != gpu_state.n_samples
         throw(DimensionMismatch(
             "forward_pass_gpu_with_tape: state was built for $(gpu_state.n_samples) samples " *
@@ -78,9 +82,13 @@ function forward_pass_gpu_with_tape(
         messages_v2c[layer] = layer_values.messages_v2c
         magnitudes_c2v[layer] = layer_values.magnitudes_c2v
         signs_c2v[layer] = layer_values.signs_c2v
-        outgoing_messages_c2v[layer] = layer_values.messages_c2v
+        layer_outgoing::ArrayT{Float32, 2} = layer_values.messages_c2v
+        if enriched
+            layer_outgoing = copy(layer_values.messages_c2v)
+        end
+        outgoing_messages_c2v[layer] = layer_outgoing
         @views posterior_3d_gpu[:, :, layer] .= layer_values.posterior_llrs
-        messages_c2v = layer_values.messages_c2v
+        messages_c2v = layer_outgoing
     end
     posterior_llrs::Array{Float32, 3} = Array(posterior_3d_gpu)
     release_device_array!(posterior_3d_gpu)
@@ -129,17 +137,14 @@ function compute_loss_and_gradients_gpu(
     """
     `compute_loss_and_gradients` with the forward and the reverse sweep on the
     device: same arguments in the same order, same result. See the block above
-    for the three stages; standard (tanh) check node only.
+    for the three stages. Both check nodes.
 
     Builds the forward and backward states from the weights it is given and
     frees them, with the tape, before returning, so a training loop can call it
     once per step without device memory piling up behind the garbage collector.
     """
-    if base.check_node_kind == CHECK_NODE_ENRICHED
-        throw(ArgumentError(
-            "compute_loss_and_gradients_gpu: the hand-written backward pass does not cover " *
-            "the enriched check node. Use Enzyme (get_loss_value) for check_node = \"enriched\"."))
-    end
+    enriched::Bool = base.check_node_kind == CHECK_NODE_ENRICHED
+    linked_coupling_scale::Float32 = coupling_scale_from_logit(coupling_logit[1])
     n_layers::Int = base.n_layers
     n_bits::Int = base.code_n_bits
     n_samples::Int = size(llrs_batch, 2)
@@ -151,6 +156,11 @@ function compute_loss_and_gradients_gpu(
     gpu_state::GPUState = build_gpu_state(
         base, weights_c2v_v2c, weights_llrs, weights_c2v_readout, coupling_logit, syndromes_bits)
     backward_state::GPUBackwardState = build_gpu_backward_state(base, weights_c2v_v2c, weights_c2v_readout)
+    enriched_backward_state::Union{GPUEnrichedBackwardState, Nothing} = nothing
+    if enriched
+        enriched_backward_state = build_gpu_enriched_backward_state(
+            base.soft_check_tables, base.nb_neurons_per_layer, n_samples, _to_device)
+    end
     initial_llrs_gpu::ArrayT{Float32, 2} = ArrayT{Float32}(llrs_batch)
     tape::GPUForwardTape = forward_pass_gpu_with_tape(gpu_state, initial_llrs_gpu)
 
@@ -172,6 +182,7 @@ function compute_loss_and_gradients_gpu(
     # m̄_c2vᵗ: rule 2̄'s share from layer t+1 (zero at t = T).
     adjoint_messages_c2v_from_above::ArrayT{Float32, 2} =
         ArrayT{Float32}(zeros(Float32, base.nb_neurons_per_layer, n_samples))
+    adjoint_coupling_scale::Float32 = 0.0f0
     for layer in n_layers:-1:1
         # The seed, on the host: zero inside the warmup, c_t · ∂L_t/∂μᵗ after it.
         seed::Matrix{Float32} = zeros(Float32, n_bits, n_samples)
@@ -196,6 +207,15 @@ function compute_loss_and_gradients_gpu(
         adjoint_magnitudes_v2c::ArrayT{Float32, 2} = backward_v2c_to_c2v_gpu(adjoint_magnitudes_c2v, backward_state)
         adjoint_messages_v2c::ArrayT{Float32, 2} =
             backward_log_tanh_split_gpu(adjoint_magnitudes_v2c, tape.messages_v2c[layer])
+        # The enriched checks' edges: the chain's values are dropped (keep_mask
+        # is 0 there) and the table node's adjoint takes their place.
+        if enriched
+            enriched_adjoints::Tuple{AbstractMatrix{Float32}, Float32} = backward_enriched_checks_gpu(
+                adjoint_messages_c2v, tape.outgoing_messages_c2v[layer], tape.messages_v2c[layer],
+                linked_coupling_scale, gpu_state.soft_checks, enriched_backward_state)
+            adjoint_messages_v2c = adjoint_messages_v2c .* gpu_state.soft_checks.keep_mask .+ enriched_adjoints[1]
+            adjoint_coupling_scale += enriched_adjoints[2]
+        end
 
         # The variable node: its parameter gradients (W̄ᵗ, and rule 2's share of
         # b̄ᵗ), then rule 2̄ for the layer below.
@@ -215,17 +235,23 @@ function compute_loss_and_gradients_gpu(
     release_gpu_forward_tape!(tape)
     release_gpu_state!(gpu_state)
     release_gpu_backward_state!(backward_state)
+    if enriched_backward_state !== nothing
+        release_gpu_enriched_backward_state!(enriched_backward_state)
+    end
     release_device_array!(initial_llrs_gpu)
     release_device_array!(gradient_weights_c2v_v2c_device)
     release_device_array!(gradient_weights_llrs_device)
     release_device_array!(gradient_weights_readout_device)
 
+    # θ -> α is the logistic link: dL/dθ = dL/dα · α(1 − α); zero under tanh.
+    gradient_coupling_logit::Vector{Float32} =
+        Float32[adjoint_coupling_scale * linked_coupling_scale * (1.0f0 - linked_coupling_scale)]
     result::LossAndGradients = LossAndGradients(
         total_loss,
         gradient_weights_c2v_v2c,
         gradient_weights_llrs,
         gradient_weights_c2v_readout,
-        zeros(Float32, length(coupling_logit)),
+        gradient_coupling_logit,
     )
     return result
 end
