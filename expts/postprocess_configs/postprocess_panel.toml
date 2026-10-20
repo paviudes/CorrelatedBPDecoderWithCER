@@ -20,7 +20,7 @@
 #   <workdir>/<codename>/results   (inputs and gathered/aggregated outputs)
 #   <workdir>/<codename>/plots      (plot outputs)
 # so filenames below are bare — no paths.
-workdir = "./../data/update_23July2026"
+workdir = "./../data"
 
 # ###### Operations on Standard BP-OSD results ###############################
 # Parse one or more standard-decoder (BP-OSD) failures files and combine them
@@ -30,7 +30,7 @@ run = true
 # error_model: "Ising" (rows have p, q, ...) or "Circuit" (p only)
 error_model = "Circuit"
 # codename directory (its results/ subfolder holds the inputs + output)
-codename = "72q_BB_cycles_1"
+codename = "72q_BB_cycles_1_sweep"
 # one or more standard-BP failures files — bare filenames inside
 # <workdir>/<codename>/results — parsed and stacked into one table
 files = [
