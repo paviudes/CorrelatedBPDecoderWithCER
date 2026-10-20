@@ -5,14 +5,18 @@
 # Trains on ONE dataset and tests every trained model on a LIST of datasets, for
 # a CER arm, a no-CER arm or both, and one model per seed. Datasets are named by
 # key p_<p>_sig_<sigma>_s_<sample> (see submission/batch_commands.jl), and the
-# settings name them by (p, sigma) pairs:
+# settings give the numbers the file names carry:
 #
-#   training   train_pair = [p, sigma], train_sample              -> one key
-#   testing    test_pairs = [[p, sigma], ...], test_sample        -> one key per pair
+#   training   train_instance = [p, sigma, sample]                -> one key
+#   testing    test_pairs = [[p, sigma], ...] at test_samples = [s, ...]
+#                                                                 -> one key per pair and sample
 #
-# sigma is a number or a multiple of p written "p", "2p", "0.5p", so
-#     test_pairs = [[0.0001, 0], [0.0001, "p"], [0.0001, "2p"], [0.0003, 0], ...]
-# Only the listed pairs are tested; nothing is combined into a grid.
+#     test_pairs = [[0.0001, 0.0], [0.0001, 0.0001], [0.0001, 0.0002], ...]
+#     test_samples = [1]
+#
+# Every listed pair is tested at every listed sample; a combination the data does
+# not have (sigma = 0 has samples 1-3 only) is skipped with a warning, and a pair
+# the data has at none of the samples is refused (a mistyped number).
 #
 # On SLURM a walltime preflight estimates every array task from measured timings
 # (see the constants below) and refuses to write a job that cannot finish.
@@ -296,12 +300,11 @@ end
 # ----------------------------------------------------------------------------
 function generate_batch_runs(;
     codenames::AbstractVector{<:AbstractString}=["72q_BB_cycles_1_sweep"],
-    # --- training dataset: one (p, sigma) pair ---
-    train_pair::Union{DatasetPair, Nothing}=nothing,
-    train_sample::Int=1,
-    # --- test datasets: the listed (p, sigma) pairs; none = the training dataset ---
+    # --- training dataset: one (p, sigma, sample) ---
+    train_instance::Union{DatasetInstance, Nothing}=nothing,
+    # --- test datasets: every pair at every sample; none = the training pair / sample ---
     test_pairs::AbstractVector{DatasetPair}=DatasetPair[],
-    test_sample::Int=1,
+    test_samples::AbstractVector{Int}=Int[],
     # --- arms and seeds: one model per (arm, seed); run_label names the experiment ---
     cer_arms::AbstractVector{<:AbstractString}=["cer", "nocer"],
     seeds::AbstractVector{Int}=Int[],
@@ -382,15 +385,22 @@ function generate_batch_runs(;
     if isempty(seed_choices)
         push!(seed_choices, nothing)   # one model, with the hyperparameters file's own seed
     end
-    if train_pair === nothing
-        throw(ArgumentError("no training dataset: set train_pair = [p, sigma], e.g. train_pair = [0.0015, \"2p\"]."))
+    if train_instance === nothing
+        throw(ArgumentError("no training dataset: set train_instance = [p, sigma, sample], e.g. " *
+                            "train_instance = [0.0015, 0.003, 1]."))
     end
-    train_key::String = pair_dataset_key(train_pair, train_sample)
+    train_key::String = instance_key(train_instance)
     train_file::String = "train_$(train_key).txt"
-    test_keys::Vector{String} = [train_key]
+    # Tests default to the training pair and the training sample.
+    test_pair_list::Vector{DatasetPair} = DatasetPair[(train_instance[1], train_instance[2])]
     if !isempty(test_pairs)
-        test_keys = test_dataset_keys(test_pairs, test_sample)
+        test_pair_list = collect(DatasetPair, test_pairs)
     end
+    test_sample_list::Vector{Int} = Int[train_instance[3]]
+    if !isempty(test_samples)
+        test_sample_list = collect(Int, test_samples)
+    end
+    requested_test_instances::Vector{DatasetInstance} = test_instance_list(test_pair_list, test_sample_list)
 
     # ---- what one array task can hold (training) -----------------------------
     # Every training is a single-threaded host process (on a GPU job it drives the
@@ -442,7 +452,41 @@ function generate_batch_runs(;
             base_seed = Int(base_hyperparams["seed"])
         end
 
-        # ---- the jobs: one command per (arm, seed), times every test key in a test job
+        # ---- the test instances the data has --------------------------------
+        # Every pair at every sample, less the combinations without a test file
+        # (sigma = 0 comes with samples 1-3 only); a pair with a test file at none
+        # of the samples is a mistyped number and is refused.
+        tested_instances::Vector{DatasetInstance} = DatasetInstance[]
+        if test
+            skipped_test_files::Vector{String} = String[]
+            for instance in requested_test_instances
+                test_path::String = joinpath("testing_data", "test_$(instance_key(instance)).txt")
+                if isfile(joinpath(dataset_dir, test_path))
+                    push!(tested_instances, instance)
+                else
+                    push!(skipped_test_files, test_path)
+                end
+            end
+            unmatched_pairs::Vector{DatasetPair} =
+                filter(pair -> !any(instance -> (instance[1], instance[2]) == pair, tested_instances), test_pair_list)
+            if !isempty(unmatched_pairs)
+                unmatched_reports::Vector{String} = String[]
+                for pair in unmatched_pairs
+                    first_path::String = joinpath("testing_data",
+                                                  "test_$(instance_key((pair[1], pair[2], test_sample_list[1]))).txt")
+                    push!(unmatched_reports, "(p, sigma) = ($(pair[1]), $(pair[2]))" *
+                                             same_p_hint(dataset_dir, first_path))
+                end
+                throw(ArgumentError("[$(codename)] no test file for these pair(s) at any of the samples " *
+                                    "$(test_sample_list) — check the numbers:\n  " * join(unmatched_reports, "\n  ")))
+            end
+            if !isempty(skipped_test_files)
+                @warn "[$(codename)] $(length(skipped_test_files)) of $(length(requested_test_instances)) test " *
+                      "instance(s) are not in the data and are skipped:\n  " * join(skipped_test_files, "\n  ")
+            end
+        end
+
+        # ---- the jobs: one command per (arm, seed), times every test instance in a test job
         jobs::Vector{SubmissionJob} = SubmissionJob[]
         for mode in modes
             use_gpu::Bool = gpu_for_training
@@ -467,7 +511,8 @@ function generate_batch_runs(;
                                                           train_file, "", seed))
                         push!(model_names, model_name)
                     else
-                        for test_key in test_keys
+                        for instance in tested_instances
+                            test_key::String = instance_key(instance)
                             push!(commands, ExperimentCommand(arm, arm_file, "correlated_weights_$(test_key).txt",
                                                               train_file, "test_$(test_key).txt", seed))
                             push!(model_names, model_name)
@@ -494,8 +539,8 @@ function generate_batch_runs(;
             end
             throw(ArgumentError("[$(codename)] missing dataset input(s) under $(dataset_dir):\n  " *
                                 join(missing_reports, "\n  ") * "\n" *
-                                "Check train_pair / train_sample and test_pairs / test_sample against the " *
-                                "file names." * bethe_hint))
+                                "Check train_instance and test_pairs / test_samples against the file names." *
+                                bethe_hint))
         end
 
         # ---- a test job on its own: only the models that are on disk ---------
@@ -573,7 +618,9 @@ function generate_batch_runs(;
         println("\n[$(codename)] submission $(timestamp): $(job_description)")
         println("  trained on : $(train_file)")
         if test
-            println("  tested on  : $(length(test_keys)) dataset(s): $(join(test_keys, ", "))")
+            println("  tested on  : $(length(tested_instances)) dataset(s) = $(length(test_pair_list)) (p, sigma) " *
+                    "pair(s) at sample(s) $(join(test_sample_list, ", ")), " *
+                    "$(length(requested_test_instances) - length(tested_instances)) not in the data")
         end
         arm_labels::Vector{String} = ["$(arm) (run_tag $(arm_run_tag(arm, run_label)))" for arm in arm_names]
         seed_labels::Vector{String} = [string(something(seed, "(from $(hyperparams_file))")) for seed in seed_choices]
@@ -706,14 +753,15 @@ function _overlay_toml!(parsed_args::Dict, toml_path::String)::Dict
     if !isempty(unknown_keys)
         valid_keys::Vector{String} = sort([key for key in keys(parsed_args) if key != "settings"])
         removed_keys::Vector{String} = filter(key -> key in ("pvals", "qvals", "n_samples", "error_model",
-                                                             "train_p", "train_sigma", "test_pvals", "test_sigmas"),
+                                                             "train_p", "train_sigma", "test_pvals", "test_sigmas",
+                                                             "train_pair", "train_sample", "test_sample"),
                                               unknown_keys)
         removed_note::String = ""
         if !isempty(removed_keys)
-            removed_note = "\n$(join(removed_keys, ", ")) belonged to an older settings format. Datasets are named " *
-                           "by (p, sigma) pairs now: train_pair = [0.0015, \"2p\"] with train_sample for training, " *
-                           "test_pairs = [[0.0001, 0], [0.0001, \"p\"], ...] with test_sample for testing " *
-                           "(bash submit.sh writes a fresh file)."
+            removed_note = "\n$(join(removed_keys, ", ")) belonged to an older settings format. Datasets are given " *
+                           "by their numbers now: train_instance = [0.0015, 0.003, 1] (p, sigma, sample) for " *
+                           "training; test_pairs = [[0.0001, 0.0], [0.0001, 0.0001], ...] at test_samples = [1] " *
+                           "for testing (bash submit.sh writes a fresh file)."
         end
         throw(ArgumentError("Unknown key(s) in settings TOML $(toml_path): $(join(unknown_keys, ", ")).\n" *
                             "Valid keys are: $(join(valid_keys, ", "))." * removed_note))
@@ -750,24 +798,21 @@ if abspath(PROGRAM_FILE) == @__FILE__
             help = "Dataset directories (codenames) under --workdir."
             nargs = '+'
             default = ["72q_BB_cycles_1_sweep"]
-        "--train_pair"
-            help = "The ONE training dataset as p,sigma, e.g. 0.0015,2p (sigma: a number, or a multiple of " *
-                   "p such as p or 2p). In the settings file: train_pair = [0.0015, \"2p\"]."
+        "--train_instance"
+            help = "The ONE training dataset as p,sigma,sample, e.g. 0.0015,0.003,1 (the numbers of " *
+                   "train_p_0.0015_sig_0.003_s_1.txt). In the settings file: train_instance = [0.0015, 0.003, 1]."
             arg_type = String
             default = ""
-        "--train_sample"
-            help = "Sample index s of the training dataset."
-            arg_type = Int
-            default = 1
         "--test_pairs"
-            help = "Test datasets as p,sigma pairs, e.g. 0.0001,0 0.0001,p 0.0001,2p. Only the listed pairs " *
-                   "are tested. Empty = the training dataset only."
+            help = "Test datasets as p,sigma pairs, e.g. 0.0001,0 0.0001,0.0001 0.0001,0.0002; each is tested at " *
+                   "every sample in --test_samples. Empty = the training pair only."
             nargs = '+'
             default = Any[]
-        "--test_sample"
-            help = "Sample index s of the test datasets."
-            arg_type = Int
-            default = 1
+        "--test_samples"
+            help = "Sample indices s at which every test pair is tested, e.g. 1 2 3. A pair the data lacks at a " *
+                   "sample is skipped there. Empty = the training sample only."
+            nargs = '+'
+            default = Any[]
         "--cer_arms"
             help = "\"cer\" (CER priors, use_CER = true), \"nocer\" (uniform priors) or both: one model per arm and seed."
             nargs = '+'
@@ -876,20 +921,20 @@ if abspath(PROGRAM_FILE) == @__FILE__
 
     # Values arrive as TOML types from the settings file and as strings from the
     # command line; normalise both.
-    train_pair_spec::Any = parsed_args["train_pair"]
-    if train_pair_spec isa AbstractString && isempty(strip(train_pair_spec))
-        throw(ArgumentError("no training dataset: set train_pair = [p, sigma] in the settings file " *
-                            "(e.g. [0.0015, \"2p\"]), or pass --train_pair 0.0015,2p."))
+    train_instance_spec::Any = parsed_args["train_instance"]
+    if train_instance_spec isa AbstractString && isempty(strip(train_instance_spec))
+        throw(ArgumentError("no training dataset: set train_instance = [p, sigma, sample] in the settings file " *
+                            "(e.g. [0.0015, 0.003, 1]), or pass --train_instance 0.0015,0.003,1."))
     end
-    train_pair_value::DatasetPair = parse_dataset_pair(train_pair_spec, "train_pair")
+    train_instance_value::DatasetInstance = parse_dataset_instance(train_instance_spec, "train_instance")
     test_pair_values::Vector{DatasetPair} = dataset_pairs(_as_list(parsed_args["test_pairs"]), "test_pairs")
+    test_sample_values::Vector{Int} = sample_indices(parsed_args["test_samples"], "test_samples")
 
     generate_batch_runs(;
         codenames         = String[String(name) for name in _as_list(parsed_args["dirnames"])],
-        train_pair        = train_pair_value,
-        train_sample      = Int(parsed_args["train_sample"]),
+        train_instance    = train_instance_value,
         test_pairs        = test_pair_values,
-        test_sample       = Int(parsed_args["test_sample"]),
+        test_samples      = test_sample_values,
         cer_arms          = String[String(arm) for arm in _as_list(parsed_args["cer_arms"])],
         seeds             = _integer_list(parsed_args["seeds"]),
         run_label         = String(parsed_args["run_label"]),
@@ -923,6 +968,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     #   Only test models already trained (same settings otherwise):
     #     julia --project="./../" batch_run.jl --settings scripts/submission_settings_<ts>.toml --train false
     #   Without a settings file:
-    #     julia --project="./../" batch_run.jl --dirnames 72q_BB_cycles_1_sweep --train_pair 0.0015,2p \
-    #         --test_pairs 0.0015,0 0.0015,p 0.0015,2p --seeds 1 --gpu_type a100 --mem_per_gpu 32G
+    #     julia --project="./../" batch_run.jl --dirnames 72q_BB_cycles_1_sweep --train_instance 0.0015,0.003,1 \
+    #         --test_pairs 0.0015,0 0.0015,0.0015 0.0015,0.003 --test_samples 1 2 3 --seeds 1 \
+    #         --gpu_type a100 --mem_per_gpu 32G
 end

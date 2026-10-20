@@ -117,8 +117,11 @@ function slurm_task_layout(n_commands::Int, use_gpu::Bool, n_cpus::Int, n_gpus_p
     if use_gpu
         jobs_per_task = n_gpus_per_node * jobs_per_gpu
     end
-    n_tasks::Int = min(cld(n_commands, jobs_per_task), max_nodes)
-    commands_per_task::Int = cld(n_commands, n_tasks)
+    requested_tasks::Int = min(cld(n_commands, jobs_per_task), max_nodes)
+    commands_per_task::Int = cld(n_commands, requested_tasks)
+    # Only as many tasks as the slices fill: 1040 commands at 18 per task are 58
+    # tasks, not 60 with two that would hold a card only to find nothing to run.
+    n_tasks::Int = cld(n_commands, commands_per_task)
     layout::SlurmTaskLayout = SlurmTaskLayout(jobs_per_task, n_tasks, commands_per_task)
     return layout
 end

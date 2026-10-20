@@ -16,8 +16,8 @@
 # test = true alone tests models already on disk; train = true alone only trains.
 # Datasets are named
 #     {train,test,correlated_weights}_p_<p>_sig_<sigma>_s_<sample>.txt
-# and the settings name them by (p, sigma) pairs, sigma being a number or a
-# multiple of p: [0.0015, "2p"] is p_0.0015_sig_0.003.
+# and the settings give those numbers: the training instance [0.0015, 0.003, 1]
+# is p_0.0015_sig_0.003_s_1.
 #
 # When there's no editor available (e.g. a headless SLURM login node with no
 # $EDITOR set), the script skips the editor step and just tells you the file
@@ -100,29 +100,34 @@ dirnames         = ["72q_BB_cycles_1_sweep"]
 # Every input of one dataset carries the key  p_<p>_sig_<sigma>_s_<sample>:
 #     training_data/train_<key>.txt, testing_data/test_<key>.txt,
 #     correlated_weights/correlated_weights_<key>.txt
-# A dataset is a (p, sigma) pair, [p, sigma]: sigma is a number, or a multiple of
-# p written as a quoted string ("p", "2p", "0.5p"). [0.0015, "2p"] is
-# p_0.0015_sig_0.003 and [0.0015, 0] is p_0.0015_sig_0.0. batch_run.jl checks that
+# Write p and sigma as the numbers in those names: [0.0015, 0.003] is
+# p_0.0015_sig_0.003, [0.0015, 0.0] is p_0.0015_sig_0.0. batch_run.jl checks that
 # every file exists before writing a job.
 #
-# TRAINING: ONE pair; every model is trained on it.
-train_pair       = [0.0015, "2p"]
-train_sample     = 1
+# TRAINING: ONE instance [p, sigma, sample]; every model is trained on it.
+train_instance   = [0.0015, 0.003, 1]
 
-# TESTING: every trained model is scored on every pair listed, and only on those:
-# nothing is combined into a grid. Here 8 p values x sigma = 0, p, 2p = 24
-# datasets. test_pairs = [] tests on the training dataset only.
+# TESTING: every trained model is scored on every [p, sigma] pair below at every
+# sample in test_samples. Here 8 p values x sigma = 0, p, 2p = 24 pairs at sample
+# 1. A pair the data lacks at a sample is skipped there with a warning (sigma = 0
+# comes with samples 1-3 only); a pair it has at none of them is refused, as a
+# mistyped number. test_pairs = [] tests the training pair; test_samples = [] the
+# training sample.
 test_pairs       = [
-    [0.0001, 0], [0.0001, "p"], [0.0001, "2p"],
-    [0.0003, 0], [0.0003, "p"], [0.0003, "2p"],
-    [0.0005, 0], [0.0005, "p"], [0.0005, "2p"],
-    [0.0007, 0], [0.0007, "p"], [0.0007, "2p"],
-    [0.0009, 0], [0.0009, "p"], [0.0009, "2p"],
-    [0.0011, 0], [0.0011, "p"], [0.0011, "2p"],
-    [0.0013, 0], [0.0013, "p"], [0.0013, "2p"],
-    [0.0015, 0], [0.0015, "p"], [0.0015, "2p"],
+    [0.0001, 0.0], [0.0001, 0.0001], [0.0001, 0.0002],
+    [0.0003, 0.0], [0.0003, 0.0003], [0.0003, 0.0006],
+    [0.0005, 0.0], [0.0005, 0.0005], [0.0005, 0.001],
+    [0.0007, 0.0], [0.0007, 0.0007], [0.0007, 0.0014],
+    [0.0009, 0.0], [0.0009, 0.0009], [0.0009, 0.0018],
+    [0.0011, 0.0], [0.0011, 0.0011], [0.0011, 0.0022],
+    [0.0013, 0.0], [0.0013, 0.0013], [0.0013, 0.0026],
+    [0.0015, 0.0], [0.0015, 0.0015], [0.0015, 0.003],
 ]
-test_sample      = 1
+# One sample is enough to compare the arms: in the 2026-09-17 sweep (3 samples x
+# 5 seeds, each sample with its own models) the CER effect was -23%, -21%, -24% on
+# samples 1, 2, 3. More samples test other devices; each one adds a set of tests
+# (2 arms x 5 seeds x 24 pairs = 240 per sample; 160 at samples 4 and 5).
+test_samples     = [1]
 
 # --- arms and seeds ---------------------------------------------------------
 # One model per (arm, seed). "cer": CER priors (use_CER = true); "nocer": uniform
@@ -132,8 +137,9 @@ test_sample      = 1
 cer_arms         = ["cer", "nocer"]
 # Passed to every command as --seed; [] = the seed in hyperparams_file. The seed
 # fixes the initial weights, the 10^4-sample training draw and the batch order.
-# A CER vs no-CER comparison pairs the two arms seed by seed; one seed gives one
-# draw of a 3-12% seed-to-seed spread, five can tell a ~15% effect from it.
+# A CER vs no-CER comparison pairs the two arms seed by seed. One seed per arm is
+# one draw: in the 2026-09-17 sweep a single seed pair gave anything from +4% to
+# -63% on one sample, where five seeds gave -21% to -24% on every sample.
 seeds            = [1, 2, 3, 4, 5]
 # Model and result files end in <run tag>_seed_<n>, the run tag being _cer or
 # _nocer (after the code's own _no_cer):

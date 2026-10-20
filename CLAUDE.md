@@ -1411,14 +1411,23 @@ The general-purpose driver for the `72q_BB_cycles_1_sweep` data (8 p × sigma �
   infix). Not `""` for the no-CER arm: `_no_cer_seed_1` would contain `_cer_seed_1`,
   so a CER-arm glob would match both. The no-CER arm is always written with
   `check_node = "tanh"` (the enriched node refuses `use_CER = false`).
-- **Datasets are (p, sigma) pairs** (changed 2026-10-20 from `test_pvals ×
-  test_sigmas`): `train_pair = [0.0015, "2p"]`, `test_pairs = [[0.0001, 0], [0.0001,
-  "p"], ...]` — only listed pairs, no grid; sigma a number or a multiple of p ("p",
-  "2p", "0.5p"); `train_sample` / `test_sample` give `s`. Command line: `--train_pair
-  0.0015,2p --test_pairs 0.0001,0 0.0001,p`. Keys are written like the Python generator's
-  `repr`: `p_0.0015_sig_0.003_s_1`, sigma 0 → `sig_0.0` (`python_float_text`). Every
-  input file is checked before anything is written. Old keys (`train_p`, `test_pvals`,
-  `pvals`, …) are refused with the new format in the message.
+- **Datasets are given by their numbers** (2026-10-20; the user asked for no symbolic
+  sigma): `train_instance = [0.0015, 0.003, 1]` = (p, sigma, sample), and
+  `test_pairs = [[0.0001, 0.0], [0.0001, 0.0001], …]` (N × 2) tested at every index
+  in `test_samples = [1]` — the user's choice over an N × 3 list. "2p" or any
+  non-number is refused (`setting_number`). Every pair × sample the data lacks is
+  skipped with a warning (sigma = 0 comes with samples 1–3, every other sigma 1–5:
+  samples 1–5 give 120 requested, 104 tested); a pair with a test file at NONE of the
+  samples is refused as a mistyped number, with the same-p files listed. Empty
+  `test_pairs` / `test_samples` = the training pair / sample. Command line:
+  `--train_instance 0.0015,0.003,1 --test_pairs 0.0001,0 0.0001,0.0001 --test_samples 1 2 3`.
+  Keys are written like the Python generator's `repr`: `p_0.0015_sig_0.003_s_1`,
+  sigma 0 → `sig_0.0` (`python_float_text`); a typed 2 × 0.0007 is `0.0014`, as in the
+  file names. Every input file is checked before anything is written. Old keys
+  (`train_pair`, `train_sample`, `test_sample`, `train_p`, `test_pvals`, `pvals`, …) are
+  refused with the new format in the message.
+- Array layout (2026-10-20): tasks = cld(commands, commands per task), so no task is
+  left empty (1040 tests at 18 per task are 58 tasks, not 60 with two idle cards).
 - Arms: `cer_arms = ["cer", "nocer"]`, each from a copy of the base hyperparameters
   with `use_CER`, `retrain` and `run_tag` set (the base file is never edited). `seeds`
   are passed as `--seed`. `gpu_for_training` (needs `manual_backprop = true`;
@@ -1438,11 +1447,21 @@ The general-purpose driver for the `72q_BB_cycles_1_sweep` data (8 p × sigma �
   estimate reaches wall_time and names the max_nodes that would fit; warns at 70%;
   prints "no measured timing" for CPU jobs. It does not see `online_training = false`
   or `batch_size`, and skips a base with `n_gradient_updates_per_epoch = 0`.
-- Big-run defaults (2026-10-20): train (0.0015, 2p), 24 test pairs, cer + nocer, seeds
-  1–5, train = test = true, max_nodes 24, wall 1:00:00 per job → training 10 models in
-  3 tasks (est. 34 min), then testing 240 in 24 tasks of 10 (est. 35 min).
-- Sample index (asked 2026-10-20): `train_sample` and `test_sample` are independent and
-  both default to 1; one index is enough. The index seeds the per-gate rate draw
+- Big-run defaults (2026-10-20): train (0.0015, 0.003, 1), 24 test pairs at sample 1,
+  cer + nocer, seeds 1–5, train = test = true, max_nodes 24, wall 1:00:00 per job →
+  training 10 models in 3 tasks (est. 34 min), then testing 240 in 24 tasks of 10 (est.
+  35 min). Samples 1–5 would be 1040 tests: refused at 24 tasks (needs ≥ 55 at 1 h;
+  58 tasks of 18 = 91% of the wall).
+- **Seeds vs samples (asked 2026-10-20), from the 2026-09-17 sweep in
+  `72q_BB_cycles_1_spread_comparison`** (CER-tanh vs no-CER, samples 1–3 × seeds 1–5,
+  each sample with its own models): the CER effect averaged over 5 seeds was −23.0%,
+  −21.0%, −24.3% on samples 1, 2, 3 (between-sample variance ≈ 0), while single seed
+  pairs on one sample ranged from +4.5% to −62.7% (cell sd of the log-ratio 38%,
+  against 6.7% Poisson). So the replication that matters is seeds (the trained model);
+  samples change the answer by nothing measurable. Its seed CVs (13–33%) were larger
+  than the 2026-10-15/19 sweeps' (2.5–12%), older settings (lr 0.01, warmup 10).
+- Sample index (asked 2026-10-20): the training sample (third entry of
+  `train_instance`) and `test_samples` are independent; one index is enough. The index seeds the per-gate rate draw
   (misc/sweep_transfer.sh header): s_1's rate vector is a rescaling of one fixed
   pattern at every (p, sigma) (R² 0.977–0.994), s_2's is unrelated (R² 0.04); at sigma = 0
   the index changes only the shots. So same-index train/test = the same hot-gate
@@ -1466,6 +1485,12 @@ The general-purpose driver for the `72q_BB_cycles_1_sweep` data (8 p × sigma �
   A test job that cannot fit (max_nodes 4) refuses with 0 files written. An enriched
   base: the no-CER TOMLs say `check_node = "tanh"`. A separate desk-check of the Julia
   (signatures, typed locals, scoping) found no runtime error on the default path.
+- Re-verified with numeric instances (2026-10-20), the fake dataset now built from the
+  Narval tree's own file list (`refs/tree_sweep.sh`): defaults → 24 instances, 10
+  models, 240 results; samples 1–5 → 120 requested, 104 tested (sigma 0 skipped at 4
+  and 5), refused at 24 tasks, 58/58 tasks and 1040 results at max_nodes 60; sigma
+  0.00014 for 0.0014 → refused, naming the pair. The 24 default keys and the training
+  key exist in the tree.
 
 ## Run tags (changed 2026-10-09)
 
@@ -1559,8 +1584,17 @@ The general-purpose driver for the `72q_BB_cycles_1_sweep` data (8 p × sigma �
   - Only training needs GNU parallel, so `--test-only` works without it installed.
 
 - `python3 misc/cleanup.py --workdir <codename> [--dry-run|--yes]` resets a run dir
-  to its inputs. Rules are one table (`RULES`): logs/ cluster/ results/ emptied;
-  models/ loses `*.json` and sweep TOMLs (`hyperparams_hp_*`, `hyperparams_xf_*`),
-  keeps every other `*.toml` as the base config. Refuses `/`, `$HOME`, the repo,
-  `data/` itself, anything outside `data/`, and any run whose models/ would be left
-  with no `.toml`. Replaces `clean_up_data.sh`.
+  to its inputs. Rules are one table (`RULES`): logs/ cluster/ emptied; results/
+  emptied **except `*.txt`** (since 2026-10-20: the dataset ships its reference
+  decoders there — `72q_BB_<key>_BP_failure_rates.txt` and
+  `72q_BB_<key>BP+OSD_failure_rates_OSD_E_order_2.txt`, one-line tables `p sample
+  failures trials LER stderr` at 10⁶ trials, 208 in `72q_BB_cycles_1_sweep` — which the
+  old rule would have deleted; nothing in the repo writes a .txt there except
+  `reformat_standard_bp_failures.py`'s aggregate of the same tables, and only a
+  `simulation_results_*.csv` makes a test skip); models/ loses `*.json`, sweep TOMLs
+  (`hyperparams_hp_*`, `hyperparams_xf_*`) and everything under `submissions/`
+  (batch_run.jl's per-submission arm files, matched by path), and keeps every other
+  `*.toml` as the base config. Refuses `/`, `$HOME`, the repo, `data/` itself,
+  anything outside `data/`, and any run whose models/ would be left with no `.toml`.
+  Replaces `clean_up_data.sh`. Checked 2026-10-20 on a copy of the sweep zip's
+  results/: 208 tables spared, the CSVs removed.

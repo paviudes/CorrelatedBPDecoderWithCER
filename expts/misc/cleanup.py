@@ -16,13 +16,27 @@ What is removed is defined by ONE table, here and in the RULES tuple below
     ---------   ----------------   -------------------------------------------------
     logs/       *                  —
     cluster/    *                  —
-    results/    *                  —
-    models/     *.json  *.toml     *.toml not written by a sweep, i.e. not matching
-                                   hyperparams_hp_*.toml or hyperparams_xf_*.toml —
-                                   the base config every sweep starts from
+    results/    *                  *.txt — the reference decoders' tables that come
+                                   with the dataset, e.g.
+                                   72q_BB_<key>_BP_failure_rates.txt and
+                                   72q_BB_<key>BP+OSD_failure_rates_OSD_E_order_2.txt
+    models/     *.json  *.toml     *.toml not written by a sweep or a submission, i.e.
+                                   not matching hyperparams_hp_*.toml or
+                                   hyperparams_xf_*.toml and not under submissions/
+                                   (batch_run.jl's per-submission arm files) — the
+                                   base config every sweep starts from
 
 Not in the table, never touched:  code/  correlated_weights/  training_data/
 testing_data/  — the inputs, measured in gigabytes.
+
+The results/ exception is every .txt, not only *failure_rates*: the experiments
+write simulation_results_*.csv and the postprocessors .csv, and the only .txt the
+repository puts there is reformat_standard_bp_failures.py's aggregate of those
+same reference tables. A .txt never makes a test skip — only an existing
+simulation_results_*.csv does, which is what this script must remove. So the rule
+spares a reference table whatever a future dataset calls it. Until 2026-10-20
+results/ was emptied whole, which would have deleted the 208 BP and BP+OSD tables
+shipped with 72q_BB_cycles_1_sweep.
 
 The models/ exception is defined negatively on purpose. The base config has gone
 by two names already (hyperparams_epochs_5_corrs.toml, hyperparams_baseline.toml),
@@ -51,8 +65,9 @@ class CleanupRule:
     """
     One row: inside `directory` (relative to the run dir, walked recursively),
     every file matching a `removed` glob is a candidate; a candidate is spared
-    if it matches a `kept` glob and does NOT also match a `kept_unless` glob.
-    `kept_note` is the text of the EXCEPT column.
+    if its name matches a `kept` glob and neither its name nor its path relative
+    to `directory` matches a `kept_unless` glob. `kept_note` is the text of the
+    EXCEPT column.
     """
     directory: str
     removed: Tuple[str, ...]
@@ -62,13 +77,18 @@ class CleanupRule:
 
 
 SWEEP_TOML_GLOBS: Tuple[str, ...] = ("hyperparams_hp_*.toml", "hyperparams_xf_*.toml")
+# batch_run.jl writes each submission's arm files to models/submissions/<timestamp>/,
+# under the base config's own stem, so they are told apart by folder, not by name.
+SUBMISSION_TOML_GLOBS: Tuple[str, ...] = ("submissions/*",)
 
 RULES: Tuple[CleanupRule, ...] = (
     CleanupRule("logs",    ("*",),               (),          (),               "—"),
     CleanupRule("cluster", ("*",),               (),          (),               "—"),
-    CleanupRule("results", ("*",),               (),          (),               "—"),
-    CleanupRule("models",  ("*.json", "*.toml"), ("*.toml",), SWEEP_TOML_GLOBS,
-                "*.toml not written by a sweep (not " + ", ".join(SWEEP_TOML_GLOBS) + "): the base config"),
+    CleanupRule("results", ("*",),               ("*.txt",),  (),
+                "*.txt: the dataset's reference decoder tables (BP, BP+OSD failure rates)"),
+    CleanupRule("models",  ("*.json", "*.toml"), ("*.toml",), SWEEP_TOML_GLOBS + SUBMISSION_TOML_GLOBS,
+                "*.toml not written by a sweep (not " + ", ".join(SWEEP_TOML_GLOBS) + ") or a submission "
+                "(not under submissions/): the base config"),
 )
 
 # Directories a run needs and this script must never enter.
@@ -93,13 +113,15 @@ def matches_any(name: str, globs: Iterable[str]) -> bool:
     return False
 
 
-def is_spared(name: str, rule: CleanupRule) -> bool:
+def is_spared(name: str, relative_path: str, rule: CleanupRule) -> bool:
     """
-    The EXCEPT column: matched by `kept`, and not by `kept_unless`.
+    The EXCEPT column: the name matched by `kept`, and neither the name nor the
+    path relative to the rule's directory (e.g. "submissions/<ts>/x.toml")
+    matched by `kept_unless`.
     """
     if not matches_any(name, rule.kept):
         return False
-    if matches_any(name, rule.kept_unless):
+    if matches_any(name, rule.kept_unless) or matches_any(relative_path, rule.kept_unless):
         return False
     return True
 
@@ -128,7 +150,8 @@ def inventory_rule(run_directory: Path, rule: CleanupRule) -> RuleInventory:
             continue
         if not matches_any(path.name, rule.removed):
             continue
-        if is_spared(path.name, rule):
+        relative_path: str = path.relative_to(target_directory).as_posix()
+        if is_spared(path.name, relative_path, rule):
             spared.append(path)
             continue
         to_remove.append(path)
@@ -262,7 +285,8 @@ def refuse_if_no_base_config_would_survive(run_directory: Path, inventories: Lis
         print("  models/ currently holds:", file=sys.stderr)
         for path in sorted(tomls_now):
             print(f"    {path.name}", file=sys.stderr)
-        print(f"  Only files matching {', '.join(SWEEP_TOML_GLOBS)} are treated as sweep products;", file=sys.stderr)
+        print(f"  Only files matching {', '.join(SWEEP_TOML_GLOBS)} or under submissions/ are treated as", file=sys.stderr)
+        print("  sweep or submission products;", file=sys.stderr)
         print("  anything else is the base config and is kept. If one of the files above IS a", file=sys.stderr)
         print("  sweep product under a new prefix, add that prefix to SWEEP_TOML_GLOBS.", file=sys.stderr)
         sys.exit(1)

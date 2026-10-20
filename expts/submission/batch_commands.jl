@@ -13,13 +13,14 @@
 # 0.0015, 0.003, 0.0. This replaces the old "Ising" (p_..._q_..., zero-padded)
 # and "Circuit" (p_...) conventions, which this pipeline no longer reads.
 #
-# A submission TRAINS on one dataset and TESTS every trained model on a list of
-# datasets. Each is named by a (p, sigma) pair, sigma being a number or a
-# multiple of p ("0", "p", "2p"), plus a sample index shared by the list.
+# A submission TRAINS on one dataset instance, (p, sigma, sample), and TESTS
+# every trained model on a list of (p, sigma) pairs at a list of samples. p and
+# sigma are the numbers the file names carry; nothing symbolic ("2p") is read.
 #
 # Exposes:
-#   python_float_text, resolve_sigma, dataset_key
-#   DatasetPair, parse_dataset_pair, dataset_pairs, pair_dataset_key, test_dataset_keys
+#   python_float_text, dataset_key, DatasetPair, DatasetInstance, instance_key
+#   parse_dataset_pair, parse_dataset_instance, dataset_pairs, sample_indices
+#   test_instance_list, same_p_hint
 #   ExperimentCommand                 one julia neural_bp_experiments.jl invocation
 #   missing_dataset_inputs            submit-time check that every input exists
 #   expected_weights_name             the weights file a command trains or loads
@@ -57,45 +58,6 @@ function python_float_text(value::Float64)::String
 end
 
 """
-    resolve_sigma(sigma_spec, p_value) -> Float64
-
-`sigma_spec` is a number, used as it is, or text: a number such as "0" or
-"0.003", or a multiple of p written "p", "2p", "0.5p". The product is computed
-as the data generator computes it (coefficient × p in Float64), so "2p" at
-p = 0.0007 names the file `..._sig_0.0014_...`.
-"""
-function resolve_sigma(sigma_spec::Union{Real, AbstractString}, p_value::Float64)::Float64
-    sigma_value::Float64 = 0.0
-    if sigma_spec isa Real
-        sigma_value = Float64(sigma_spec)
-    else
-        sigma_text::String = lowercase(strip(String(sigma_spec)))
-        parsed_value::Union{Float64, Nothing} = nothing
-        if endswith(sigma_text, "p")
-            coefficient_text::String = strip(sigma_text[1:end-1])
-            coefficient::Union{Float64, Nothing} = 1.0
-            if !isempty(coefficient_text)
-                coefficient = tryparse(Float64, coefficient_text)
-            end
-            if coefficient !== nothing
-                parsed_value = coefficient * p_value
-            end
-        else
-            parsed_value = tryparse(Float64, sigma_text)
-        end
-        if parsed_value === nothing
-            throw(ArgumentError("sigma $(repr(sigma_spec)): write a number (\"0\", \"0.003\") or a " *
-                                "multiple of p (\"p\", \"2p\", \"0.5p\")."))
-        end
-        sigma_value = parsed_value
-    end
-    if sigma_value < 0.0
-        throw(ArgumentError("sigma $(repr(sigma_spec)) at p = $(p_value) is negative."))
-    end
-    return sigma_value
-end
-
-"""
     dataset_key(p_value, sigma_value, sample_index) -> String
 
 `p_<p>_sig_<sigma>_s_<sample>`, the key every input file of a dataset carries.
@@ -105,79 +67,141 @@ function dataset_key(p_value::Float64, sigma_value::Float64, sample_index::Int):
     return key
 end
 
+"The noise parameters of a dataset, (p, sigma), as the numbers its file names carry."
+const DatasetPair = Tuple{Float64, Float64}
+
+"One dataset, (p, sigma, sample index): one key."
+const DatasetInstance = Tuple{Float64, Float64, Int}
+
 """
-One dataset named by its noise parameters: p, and sigma as written — a number,
-or a multiple of p ("p", "2p") that `resolve_sigma` turns into one.
+    instance_key(instance) -> String
+
+The key of one dataset, e.g. (0.0015, 0.003, 1) -> `p_0.0015_sig_0.003_s_1`.
 """
-const DatasetPair = Tuple{Float64, Union{Float64, String}}
+function instance_key(instance::DatasetInstance)::String
+    key::String = dataset_key(instance[1], instance[2], instance[3])
+    return key
+end
+
+"""
+    setting_number(item, setting_name, quantity_name) -> Float64
+
+One number of a dataset setting: a TOML number, or its text from the command
+line. Anything else — "2p" included — is refused: p and sigma are written as
+the numbers the file names carry (p_0.0015_sig_0.003 is [0.0015, 0.003]).
+"""
+function setting_number(item::Any, setting_name::String, quantity_name::String)::Float64
+    parsed_value::Union{Float64, Nothing} = nothing
+    if item isa Real && !(item isa Bool)
+        parsed_value = Float64(item)
+    elseif item isa AbstractString
+        parsed_value = tryparse(Float64, strip(item))
+    end
+    if parsed_value === nothing || !isfinite(parsed_value)
+        throw(ArgumentError("$(setting_name): $(quantity_name) $(repr(item)) is not a number. Write the value the " *
+                            "file names carry, e.g. sigma 0.003 for p_0.0015_sig_0.003."))
+    end
+    numeric_value::Float64 = parsed_value
+    if numeric_value == 0.0
+        numeric_value = 0.0    # -0.0 would print as "-0.0" and name no file
+    end
+    return numeric_value
+end
+
+"""
+    setting_sample(item, setting_name) -> Int
+
+A sample index (the s of `..._s_<s>`): a positive integer, given as a TOML
+integer — or a whole float, which an array mixing floats and integers can hand
+over — or as text from the command line.
+"""
+function setting_sample(item::Any, setting_name::String)::Int
+    parsed_value::Union{Int, Nothing} = nothing
+    if item isa Integer && !(item isa Bool)
+        parsed_value = Int(item)
+    elseif item isa AbstractFloat && isinteger(item)
+        parsed_value = Int(item)
+    elseif item isa AbstractString
+        parsed_value = tryparse(Int, strip(item))
+    end
+    if parsed_value === nothing || parsed_value < 1
+        throw(ArgumentError("$(setting_name): sample $(repr(item)) is not a positive integer (the s of " *
+                            "p_<p>_sig_<sigma>_s_<s>)."))
+    end
+    sample_index::Int = parsed_value
+    return sample_index
+end
+
+"""
+    setting_entries(spec, setting_name, expected_length) -> Vector{Any}
+
+The entries of one [p, sigma] or [p, sigma, sample]: an array in the settings
+file, comma-separated text ("0.0015,0.003,1") on the command line.
+"""
+function setting_entries(spec::Any, setting_name::String, expected_length::Int)::Vector{Any}
+    entries::Vector{Any} = Any[]
+    if spec isa AbstractVector
+        entries = collect(Any, spec)
+    elseif spec isa AbstractString
+        entries = Any[String(strip(part)) for part in split(spec, ',')]
+    end
+    if length(entries) != expected_length
+        example_text::String = "[0.0015, 0.003] in the settings file, or 0.0015,0.003 on the command line"
+        if expected_length == 3
+            example_text = "[0.0015, 0.003, 1] in the settings file, or 0.0015,0.003,1 on the command line"
+        end
+        throw(ArgumentError("$(setting_name): $(repr(spec)) does not have $(expected_length) entries. Write it as " *
+                            "$(example_text)."))
+    end
+    return entries
+end
 
 """
     parse_dataset_pair(pair_spec, setting_name) -> DatasetPair
 
-One (p, sigma) pair as the settings file writes it, a two-element array
-`[0.0015, "2p"]`, or as the command line does, the text `0.0015,2p`. p is a
-positive number; sigma is a number or a multiple of p. The sigma is resolved
-here once, so a typo fails before anything is written. `setting_name` names the
-setting in error messages.
+One (p, sigma), both numbers: p > 0, sigma ≥ 0.
 """
 function parse_dataset_pair(pair_spec::Any, setting_name::String)::DatasetPair
-    pair_items::Vector{Any} = Any[]
-    if pair_spec isa AbstractVector
-        pair_items = collect(Any, pair_spec)
-    elseif pair_spec isa AbstractString && occursin(',', pair_spec)
-        pair_items = Any[String(strip(part)) for part in split(pair_spec, ',')]
+    entries::Vector{Any} = setting_entries(pair_spec, setting_name, 2)
+    p_value::Float64 = setting_number(entries[1], setting_name, "p")
+    sigma_value::Float64 = setting_number(entries[2], setting_name, "sigma")
+    if p_value <= 0.0 || sigma_value < 0.0
+        throw(ArgumentError("$(setting_name): $(repr(pair_spec)) needs p > 0 and sigma ≥ 0."))
     end
-    if length(pair_items) != 2
-        throw(ArgumentError("$(setting_name): $(repr(pair_spec)) is not a (p, sigma) pair. Write it as " *
-                            "[0.0015, \"2p\"] in the settings file, or 0.0015,2p on the command line."))
-    end
-
-    p_item::Any = pair_items[1]
-    p_value::Union{Float64, Nothing} = nothing
-    if p_item isa Real
-        p_value = Float64(p_item)
-    elseif p_item isa AbstractString
-        p_value = tryparse(Float64, strip(p_item))
-    end
-    if p_value === nothing || p_value <= 0.0
-        throw(ArgumentError("$(setting_name): p in $(repr(pair_spec)) must be a positive number."))
-    end
-
-    sigma_item::Any = pair_items[2]
-    sigma_spec::Union{Float64, String} = 0.0
-    if sigma_item isa Real
-        sigma_spec = Float64(sigma_item)
-    elseif sigma_item isa AbstractString
-        sigma_spec = String(strip(sigma_item))
-    else
-        throw(ArgumentError("$(setting_name): sigma in $(repr(pair_spec)) must be a number or a multiple of p " *
-                            "(\"0\", \"p\", \"2p\")."))
-    end
-    resolve_sigma(sigma_spec, p_value)
-
-    parsed_pair::DatasetPair = (p_value, sigma_spec)
+    parsed_pair::DatasetPair = (p_value, sigma_value)
     return parsed_pair
+end
+
+"""
+    parse_dataset_instance(instance_spec, setting_name) -> DatasetInstance
+
+One (p, sigma, sample) — the training dataset, `train_instance = [0.0015, 0.003, 1]`.
+"""
+function parse_dataset_instance(instance_spec::Any, setting_name::String)::DatasetInstance
+    entries::Vector{Any} = setting_entries(instance_spec, setting_name, 3)
+    pair::DatasetPair = parse_dataset_pair(entries[1:2], setting_name)
+    sample_index::Int = setting_sample(entries[3], setting_name)
+    parsed_instance::DatasetInstance = (pair[1], pair[2], sample_index)
+    return parsed_instance
 end
 
 """
     dataset_pairs(pairs_spec, setting_name) -> Vector{DatasetPair}
 
-A list of (p, sigma) pairs: `[[0.0001, 0], [0.0001, "p"], ...]` in the settings
-file, or `0.0001,0 0.0001,p ...` on the command line. Only the listed pairs are
-used — no p is combined with another pair's sigma.
+A list of (p, sigma): `[[0.0001, 0.0], [0.0001, 0.0001], ...]` in the settings
+file, or `0.0001,0 0.0001,0.0001 ...` on the command line.
 """
 function dataset_pairs(pairs_spec::Any, setting_name::String)::Vector{DatasetPair}
     if !(pairs_spec isa AbstractVector)
-        throw(ArgumentError("$(setting_name) must be a list of (p, sigma) pairs, e.g. " *
-                            "$(setting_name) = [[0.0001, 0], [0.0001, \"p\"]]; got $(repr(pairs_spec))."))
+        throw(ArgumentError("$(setting_name) must be a list of [p, sigma] pairs, e.g. " *
+                            "$(setting_name) = [[0.0001, 0.0], [0.0001, 0.0001]]; got $(repr(pairs_spec))."))
     end
     parsed_pairs::Vector{DatasetPair} = DatasetPair[]
     for pair_spec in pairs_spec
         is_pair_shaped::Bool = pair_spec isa AbstractVector || pair_spec isa AbstractString
         if !is_pair_shaped
-            throw(ArgumentError("$(setting_name): every entry must be a [p, sigma] pair, and " *
-                                "$(repr(pair_spec)) is not. One pair still needs the outer brackets: " *
-                                "$(setting_name) = [[0.0015, \"2p\"]]."))
+            throw(ArgumentError("$(setting_name): every entry must be a [p, sigma] pair, and $(repr(pair_spec)) " *
+                                "is not. One pair still needs the outer brackets: $(setting_name) = [[0.0015, 0.003]]."))
         end
         push!(parsed_pairs, parse_dataset_pair(pair_spec, setting_name))
     end
@@ -185,32 +209,59 @@ function dataset_pairs(pairs_spec::Any, setting_name::String)::Vector{DatasetPai
 end
 
 """
-    pair_dataset_key(pair, sample_index) -> String
+    sample_indices(samples_spec, setting_name) -> Vector{Int}
 
-The key of the dataset `pair` names at sample index `sample_index`, e.g.
-(0.0015, "2p") at 1 -> `p_0.0015_sig_0.003_s_1`.
+A list of sample indices: `[1, 2, 3]` in the settings file, `1 2 3` on the
+command line; a bare number is one index. Each index once, in the order given.
 """
-function pair_dataset_key(pair::DatasetPair, sample_index::Int)::String
-    key::String = dataset_key(pair[1], resolve_sigma(pair[2], pair[1]), sample_index)
-    return key
+function sample_indices(samples_spec::Any, setting_name::String)::Vector{Int}
+    sample_items::Vector{Any} = Any[samples_spec]
+    if samples_spec isa AbstractVector
+        sample_items = collect(Any, samples_spec)
+    end
+    indices::Vector{Int} = Int[setting_sample(item, setting_name) for item in sample_items]
+    unique_indices::Vector{Int} = unique(indices)
+    return unique_indices
 end
 
 """
-    test_dataset_keys(test_pairs, test_sample) -> Vector{String}
+    test_instance_list(test_pairs, test_samples) -> Vector{DatasetInstance}
 
-The key of every test pair at sample index `test_sample`, in the order given.
-Two spellings of one dataset (sigma "0" and 0.0, or "p" and the number) are
-kept once.
+Every (p, sigma) pair at every sample index, pair by pair, each instance once.
 """
-function test_dataset_keys(test_pairs::AbstractVector{DatasetPair}, test_sample::Int)::Vector{String}
-    keys_in_order::Vector{String} = String[]
+function test_instance_list(test_pairs::AbstractVector{DatasetPair},
+                            test_samples::AbstractVector{Int})::Vector{DatasetInstance}
+    instances::Vector{DatasetInstance} = DatasetInstance[]
     for pair in test_pairs
-        key::String = pair_dataset_key(pair, test_sample)
-        if !(key in keys_in_order)
-            push!(keys_in_order, key)
+        for sample_index in test_samples
+            instance::DatasetInstance = (pair[1], pair[2], sample_index)
+            if !(instance in instances)
+                push!(instances, instance)
+            end
         end
     end
-    return keys_in_order
+    return instances
+end
+
+"""
+    same_p_hint(dataset_dir, relative_path) -> String
+
+"   (present for this p: …)", naming up to six files in the path's folder with
+the same p, or "" when there are none: the usual cause of a missing file is a
+sigma or sample the data does not have.
+"""
+function same_p_hint(dataset_dir::String, relative_path::String)::String
+    hint::String = ""
+    p_prefix_match::Union{RegexMatch, Nothing} = match(r"^(.*_p_[^_]+_sig_)", basename(relative_path))
+    folder::String = joinpath(dataset_dir, dirname(relative_path))
+    if p_prefix_match !== nothing && isdir(folder)
+        p_prefix::String = String(p_prefix_match.captures[1])
+        same_p_files::Vector{String} = filter(name -> startswith(name, p_prefix), readdir(folder))
+        if !isempty(same_p_files)
+            hint = "   (present for this p: " * join(first(same_p_files, 6), ", ") * ")"
+        end
+    end
+    return hint
 end
 
 """
@@ -307,16 +358,7 @@ function missing_dataset_inputs(dataset_dir::String, commands::AbstractVector{Ex
         if isfile(joinpath(dataset_dir, relative_path))
             continue
         end
-        report::String = relative_path
-        # Files of the same p, if any: "testing_data/test_p_0.0007_sig_" etc.
-        p_prefix_match::Union{RegexMatch, Nothing} = match(r"^(.*_p_[^_]+_sig_)", basename(relative_path))
-        folder::String = joinpath(dataset_dir, dirname(relative_path))
-        if p_prefix_match !== nothing && isdir(folder)
-            same_p_files::Vector{String} = filter(name -> startswith(name, p_prefix_match.captures[1]), readdir(folder))
-            if !isempty(same_p_files)
-                report *= "   (present for this p: " * join(first(same_p_files, 6), ", ") * ")"
-            end
-        end
+        report::String = relative_path * same_p_hint(dataset_dir, relative_path)
         push!(missing_reports, report)
     end
     return missing_reports
