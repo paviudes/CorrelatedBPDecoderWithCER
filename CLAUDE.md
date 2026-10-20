@@ -1492,6 +1492,39 @@ The general-purpose driver for the `72q_BB_cycles_1_sweep` data (8 p × sigma �
   0.00014 for 0.0014 → refused, naming the pair. The 24 default keys and the training
   key exist in the tree.
 
+## Gathering results: `postprocess.jl` (updated 2026-10-20 for the (p, sigma, sample) names)
+
+- `julia --project="./" postprocess.jl --config=postprocess_configs/postprocess_panel_sweep.toml --task=gather`
+  (from expts/, on the laptop: postprocess.jl loads PlotsForBPDecoder/Plots) writes
+  into `<codename>/results/`: `decoder_statistics_NeuralBP.csv` (one row per results
+  CSV), `decoder_statistics_BP_OSD.csv` and `decoder_statistics_BP.csv` (one row per
+  reference table). The older panels all point at `data/update_23July2026`, which is
+  not on the laptop.
+- Gather sections take `pattern` (shell-style `*`/`?`, one or a list; `glob_regex`)
+  and/or `files`, and REPLACE their output. They used to call `save_decoder_dataframe`,
+  which APPENDS to an existing file, so every re-run duplicated all rows.
+- **The arm and the datasets are only in the file names**: a results CSV has `seed`,
+  `check_node`, the coset/convergence counts and the test file's path, but no
+  `use_CER`, run tag or sigma column. `neural_gather` adds `results_file`, `arm`
+  (`cer` / `nocer`: the run tag without its underscore), `use_CER`, `run_tag`,
+  `test_key`, `test_p`, `test_sigma`, `test_sample`, `train_key`, `train_p`,
+  `train_sigma`, `train_sample` from `NEURAL_RESULTS_NAME`; a name in an older format
+  (no `sig_`) keeps its row without them, with a warning. The reference tables
+  (`72q_BB_<key>_BP_failure_rates.txt`, `72q_BB_<key>BP+OSD_failure_rates_OSD_E_order_2.txt`)
+  hold `p sample failures trials LER stderr` but not sigma, so the standard gathers add
+  `decoder`, `test_key`, `test_p`, `test_sigma`, `test_sample` from the name, set the
+  description to `testing_data/test_<key>.txt`, and warn if the table's p or sample
+  disagrees with the name.
+- Checked 2026-10-20 without Julia, on the 928 names of the run's `results/`
+  (`data/tree_log.sh`) through Python copies of the patterns and regexes: 240 / 104 /
+  104 files selected, all 240 names parsed (120 `cer`, 120 `nocer`, 5 seeds × 24 test
+  datasets each, one training dataset), and the 208 real reference tables from the
+  sweep zip agree with their names. postprocess.jl parses (tree-sitter).
+- **The plot sections are not (p, sigma)-aware**: `_logical_error_rate_vs_p` groups rows
+  by `test_p_<p>` alone and averages the rest, so on this run it would merge sigma = 0,
+  p, 2p and both arms into one point per p. Off in the sweep panel until they learn the
+  new columns.
+
 ## Run tags (changed 2026-10-09)
 
 - **The run tag is `_<arm>_<optimizer tag>` and nothing else** — `_cer_init_0p1`,
