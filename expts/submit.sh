@@ -6,6 +6,18 @@
 # Writes a submission_settings_<timestamp>.toml file with commented defaults,
 # opens it in your editor, and then runs
 #     julia --project="./../" batch_run.jl --settings <toml>
+# which writes the job scripts and prints how to submit them.
+#
+# With train = true and test = true (the defaults) one submission writes both
+# jobs: the TRAINING job trains one model per (arm, seed) on the training
+# dataset, and the TEST job, chained on it with --dependency=afterok, scores
+# every model on every test dataset once every training task has exited 0. Both
+# go in with one command, bash <data>/<codename>/cluster/submit_<ts>.sh.
+# test = true alone tests models already on disk; train = true alone only trains.
+# Datasets are named
+#     {train,test,correlated_weights}_p_<p>_sig_<sigma>_s_<sample>.txt
+# and the settings name them by (p, sigma) pairs, sigma being a number or a
+# multiple of p: [0.0015, "2p"] is p_0.0015_sig_0.003.
 #
 # When there's no editor available (e.g. a headless SLURM login node with no
 # $EDITOR set), the script skips the editor step and just tells you the file
@@ -17,10 +29,8 @@
 # ratio get charged for the "missing" resource and drop down the priority
 # stack. Bundle sizes are in Table "Ratios in bundles" at:
 #     https://docs.alliancecan.ca/wiki/Allocations_and_compute_scheduling#Ratios_in_bundles
-# The TOML this script writes has defaults sized for a Narval A100 MIG 1g.5gb
-# instance (1 core, 15 GB) — most abundant, near-zero queue wait, perfect for
-# small tests. See the annotated comments in the TOML for how to size up if
-# you actually need a whole A100 or a full CPU node for training.
+# The defaults below are one whole Narval A100 per array task (12 cores, 32 GB
+# of host RAM), which is inside the A100 bundle.
 #
 # Usage:
 #     bash submit.sh                    # write TOML, edit, run
@@ -82,28 +92,81 @@ cat > "$SETTINGS_FILE" <<'EOF'
 # hard error (batch_run.jl will stop and list the valid keys).
 # ----------------------------------------------------------------------------
 
-# --- data & experiment ---
+# --- data ---
 workdir          = "./../data"
-dirnames         = ["18q_BB_cycles_1"]
-# pvals / qvals: TOML arrays like [0.001, 0.005], OR a QUOTED Julia range
-# shorthand "start:step:stop", e.g. pvals = "0.0001:0.0002:0.0009". The quotes
-# are required — bare 0.0001:0.0002:0.0009 is not valid TOML. You can also mix:
-# pvals = ["0.0001:0.0002:0.0009", 0.002, 0.0024, 0.0028, 0.0032, 0.0036, 0.0040, 0.0044, 0.0048, 0.005].
-pvals            = [0.0001, 0.0003, 0.0005, 0.0007, 0.0009, 0.0011, 0.0013, 0.0015, 0.0017, 0.0019, 0.002, 0.0024, 0.0028, 0.0032, 0.0036, 0.004, 0.0044, 0.0048, 0.005]
-qvals            = [0.0]
-n_samples        = 1
+dirnames         = ["72q_BB_cycles_1_sweep"]
 
-# Error model — selects the filename convention (case-insensitive):
-#   "Ising"   two-parameter correlated model; uses BOTH pvals and qvals.
-#             Filenames carry the padded "p_..._q_..." tag.
-#   "Circuit" single-parameter circuit-level depolarizing model; uses pvals
-#             ONLY (qvals is ignored). Filenames carry just the "p_..." tag.
-error_model      = "Circuit"
+# --- datasets ---------------------------------------------------------------
+# Every input of one dataset carries the key  p_<p>_sig_<sigma>_s_<sample>:
+#     training_data/train_<key>.txt, testing_data/test_<key>.txt,
+#     correlated_weights/correlated_weights_<key>.txt
+# A dataset is a (p, sigma) pair, [p, sigma]: sigma is a number, or a multiple of
+# p written as a quoted string ("p", "2p", "0.5p"). [0.0015, "2p"] is
+# p_0.0015_sig_0.003 and [0.0015, 0] is p_0.0015_sig_0.0. batch_run.jl checks that
+# every file exists before writing a job.
+#
+# TRAINING: ONE pair; every model is trained on it.
+train_pair       = [0.0015, "2p"]
+train_sample     = 1
 
-# --- Parameters for the neural BP model ---
-# The hyperparams TOML file should be placed in the same directory as the <workdir>/<dirnames>/<models> folder.
-hyperparams_file = "hyperparams_epochs_10_no_cer.toml"
-n_hidden_layers  = 100
+# TESTING: every trained model is scored on every pair listed, and only on those:
+# nothing is combined into a grid. Here 8 p values x sigma = 0, p, 2p = 24
+# datasets. test_pairs = [] tests on the training dataset only.
+test_pairs       = [
+    [0.0001, 0], [0.0001, "p"], [0.0001, "2p"],
+    [0.0003, 0], [0.0003, "p"], [0.0003, "2p"],
+    [0.0005, 0], [0.0005, "p"], [0.0005, "2p"],
+    [0.0007, 0], [0.0007, "p"], [0.0007, "2p"],
+    [0.0009, 0], [0.0009, "p"], [0.0009, "2p"],
+    [0.0011, 0], [0.0011, "p"], [0.0011, "2p"],
+    [0.0013, 0], [0.0013, "p"], [0.0013, "2p"],
+    [0.0015, 0], [0.0015, "p"], [0.0015, "2p"],
+]
+test_sample      = 1
+
+# --- arms and seeds ---------------------------------------------------------
+# One model per (arm, seed). "cer": CER priors (use_CER = true); "nocer": uniform
+# priors (use_CER = false). Each arm runs from its own copy of hyperparams_file,
+# models/submissions/<timestamp>/<stem>_<arm>_<train|test>.toml; hyperparams_file
+# itself is never edited.
+cer_arms         = ["cer", "nocer"]
+# Passed to every command as --seed; [] = the seed in hyperparams_file. The seed
+# fixes the initial weights, the 10^4-sample training draw and the batch order.
+# A CER vs no-CER comparison pairs the two arms seed by seed; one seed gives one
+# draw of a 3-12% seed-to-seed spread, five can tell a ~15% effect from it.
+seeds            = [1, 2, 3, 4, 5]
+# Model and result files end in <run tag>_seed_<n>, the run tag being _cer or
+# _nocer (after the code's own _no_cer):
+#     ..._trained_using_train_<key>_cer_seed_1.json
+#     ..._trained_using_train_<key>_no_cer_nocer_seed_1.json
+# run_label = "big" makes them _cer_big / _nocer_big, so a second experiment in the
+# same data directory does not replace the first one's files.
+run_label        = ""
+
+# --- model ---
+# Under <workdir>/<dirname>/models/.
+hyperparams_file = "hyperparams_baseline.toml"
+n_hidden_layers  = 90
+# julia --heap-size-hint for every process: the GC otherwise sizes its heap to the
+# whole node, and processes sharing one allocation balloon into each other.
+heap_size_hint   = "4G"
+
+# --- which jobs this submission writes ---
+# Both true: the training job and the test job chained on it (afterok: testing
+# starts when every training task has exited 0, and is cancelled if any has not).
+# test alone: tests the models already on disk (named by the settings above).
+# train alone: only trains.
+train            = true
+test             = true
+
+# --- devices ---
+# Training on a GPU needs manual_backprop = true in hyperparams_file (Enzyme cannot
+# differentiate on the GPU). A training at the batch of 20 keeps an A100 only ~20%
+# busy, so trainings_per_gpu of them share each card. A test process always has a
+# card to itself: its prediction batch is sized to the card's VRAM.
+gpu_for_training  = true
+gpu_for_testing   = true
+trainings_per_gpu = 4
 
 # --- backend selection ---
 # "SLURM"     Alliance Canada / any SLURM cluster
@@ -122,59 +185,40 @@ cluster_backend  = "SLURM"
 # Table: https://docs.alliancecan.ca/wiki/Allocations_and_compute_scheduling#Ratios_in_bundles
 #
 # Narval A100 bundle sizes (per GPU / MIG instance):
-#   Model            Fraction   Recommended per-GPU        Availability
-#   a100             100%       12 cores, 124 GB           scarce, long wait
-#   a100_3g.20gb     50%         6 cores,  62 GB           moderate
-#   a100_2g.10gb     28%         3 cores,  31 GB           abundant
-#   a100_1g.5gb      14%         1 core,   15 GB           MOST abundant, near-zero wait
-#
-# CPU-only nodes (train mode) don't share the GPU bundle rule but do have
-# their own core-per-RGU ratio. Narval CPU nodes have 48 cores each; typical
-# training jobs use 32–48 cores per node with 4 GB/core.
-#
-# The defaults below are sized for the smallest MIG A100 instance — great for
-# small tests (72q decoder etc.) with minimal queue wait. If you need bigger,
-# bump n_cpus, mem_per_cpu, and gpu_type TOGETHER to stay inside the bundle.
+#   Model            Fraction   Recommended per-GPU
+#   a100             100%       12 cores, 124 GB
+#   a100_3g.20gb     50%         6 cores,  62 GB
+#   a100_2g.10gb     28%         3 cores,  31 GB
+#   a100_1g.5gb      14%         1 core,   15 GB
+# Fir/Nibi/Rorqual/Trillium: "h100" and its "h100_*g.*gb" MIG variants.
+# If you change gpu_type, change n_cpus and mem_per_gpu with it.
 # ----------------------------------------------------------------------------
 
 # --- HPC resources (ignored on non-SLURM backends) ---
 account          = "def-jemerson_gpu"
-
-# Size per test-mode invocation. For train mode (test=false, no GPU), you can
-# safely go up to 32–48 cores with 4G–8G/core on a CPU node.
-n_cpus           = 1
-mem_per_cpu      = "16G"
-
-wall_time        = "3:00:00"
-max_nodes        = 1
-email            = "pavithran.sridhar@gmail.com"
-
-# --- test mode ---
-# When true: flips retrain = false in the hyperparams TOML, emits a test-mode
-# script (GPU on SLURM+CUDA, Metal on Mac local, CPU fallback otherwise).
-test             = true
-
-# --- GPU knobs (used when test = true) ---
-n_gpus_per_node  = 2
-
-# Alliance Canada GPU model specifier. Pick a MIG instance for small tests
-# (near-zero queue wait); pick "a100" only if you actually need the full GPU.
-# The 72q/90q/144q BB decoders comfortably fit in a 1g.5gb MIG.
-#   Narval:  "a100_1g.5gb"  (default, MIG 14%),  "a100_2g.10gb"  (MIG 28%),
-#            "a100_3g.20gb" (MIG 50%),           "a100"          (whole GPU)
-#   Fir/Nibi/Rorqual/Trillium:  "h100" and its "h100_*g.*gb" MIG variants
-# See the ratios table linked in the header comment above.
-gpu_type         = "a100_3g.20gb"
-
-# Cluster's CUDA module name (used only on SLURM test mode).
+# Per array task. GPU jobs: n_gpus_per_node cards of gpu_type, n_cpus cores and
+# mem_per_gpu of HOST memory per card. CPU jobs: n_cpus processes, mem_per_cpu each.
+n_gpus_per_node  = 1
+gpu_type         = "a100"
 cuda_module      = "cuda"
-
-# Memory per GPU (test mode only, e.g. "16G"). When non-empty this OVERRIDES
-# mem_per_cpu — SLURM disallows both --mem-per-gpu and --mem-per-cpu at once.
-# For MIG instances it's usually simpler to set mem_per_cpu = "<bundle mem>"
-# and leave this empty. Only use mem_per_gpu when you request multiple GPUs
-# per node and want the memory scaled per-GPU rather than per-CPU.
-mem_per_gpu      = "16G"
+n_cpus           = 12
+mem_per_gpu      = "32G"
+mem_per_cpu      = "4G"
+# VRAM per card in GB for the test batch sizer; 0 = from gpu_type (a100: 40).
+vram_per_gpu     = 0
+# Upper bound on array tasks, per job. The training job uses one task per
+# n_gpus_per_node x trainings_per_gpu models (10 models -> 3 tasks); the test job
+# spreads its tests over up to max_nodes tasks (2 arms x 5 seeds x 24 datasets =
+# 240 tests -> 24 tasks of 10).
+max_nodes        = 24
+# Per job (each of the two gets this wall). Measured on Narval (90 layers, 5
+# epochs): a wave of 4 tanh trainings on one A100 ~12 min (~25 min with enriched
+# ones); a 10^6-sample test ~2.3 min with startup; plus ~6 min per job to prepare
+# the depot. Twice the epochs, twice the training. batch_run.jl estimates every
+# array task of both jobs from these and refuses to write anything when a job
+# cannot finish, saying which of max_nodes / wall_time to raise.
+wall_time        = "1:00:00"
+email            = "pavithran.sridhar@gmail.com"
 
 EOF
 
@@ -213,17 +257,18 @@ open_editor() {
     "$editor_cmd" "$SETTINGS_FILE"
 }
 
+# batch_run.jl and every path in the settings are relative to expts/.
 CMD=(julia --project="./../" batch_run.jl --settings "$SETTINGS_FILE")
 
 if [ "$NO_EDIT" -eq 1 ]; then
-    echo "[submit] --no-edit: skipping editor. Edit $SETTINGS_FILE manually, then run:"
+    echo "[submit] --no-edit: skipping editor. Edit $SETTINGS_FILE manually, then run from $SCRIPT_DIR:"
     printf '  '; printf '%q ' "${CMD[@]}"; printf '\n'
     exit 0
 fi
 
 if ! open_editor; then
     # Editor missing or non-interactive — print instructions and exit cleanly.
-    echo "[submit] Edit $SETTINGS_FILE manually, then run:"
+    echo "[submit] Edit $SETTINGS_FILE manually, then run from $SCRIPT_DIR:"
     printf '  '; printf '%q ' "${CMD[@]}"; printf '\n'
     exit 0
 fi
@@ -232,7 +277,7 @@ fi
 # Show the constructed command and (unless --no-run) execute it.
 # ----------------------------------------------------------------------------
 echo ""
-echo "[submit] Will run:"
+echo "[submit] Will run (from $SCRIPT_DIR):"
 printf '  '; printf '%q ' "${CMD[@]}"; printf '\n\n'
 
 if [ "$NO_RUN" -eq 1 ]; then
@@ -240,4 +285,5 @@ if [ "$NO_RUN" -eq 1 ]; then
     exit 0
 fi
 
+cd "$SCRIPT_DIR"
 exec "${CMD[@]}"

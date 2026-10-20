@@ -135,14 +135,64 @@ end
     `train_cpus < train_jobs`, and `train_cpus > test_cpus × n_gpus_per_node` (an old
     CPU-node value like 54). `account_cpu`, `train_mem_per_cpu`, `cpu_node_memory_mb`
     are ignored, with a note.
+  - **Measured with nvtop (2026-10-19, enriched_vs_nocer task 0, ~21 min in):** two
+    trainings on the card, each ~700 MiB of VRAM, one core at 100%, 3.7–4.7 GB host
+    RSS (above the 4G heap hint); the card 16–82% busy, ~40% mean. So a training uses
+    ~20% of an A100: it is HOST-bound at a batch of 20 (tiny kernels, plus the per-step
+    rebuild and upload of the dense per-layer weights — PCIe RX spikes to 1.1 GiB/s),
+    and ~5 trainings saturate one card. Each task holds ONE A100 + 12 cores + 32 GB (a
+    quarter of a Narval GPU node); Slurm puts the tasks on whatever nodes have a free
+    card, and the trainings never talk to each other, so spreading over nodes costs
+    nothing. A task mixing fast (tanh) and slow (enriched) points holds its card at
+    half occupancy once the fast ones finish. (The two missing processes had
+    finished, not crashed: the afterok test job started, so all 20 points exited 0.
+    The whole training job took roughly 25 min.)
+  - **Measured with nvtop, testing (same sweep, one test task, 4 min recorded): the
+    card is busy ~24% of the time.** Each test is a fresh Julia process, ~2 min:
+    ~55–65 s with no CUDA context at all (Julia start, package load, `readdlm` of the
+    144 MB text test file, its syndromes — all CPU); for an enriched model ~25 s more
+    with the context up and the card idle (GPU kernel compilation); then the decode,
+    in chunks of 65,536 samples (enriched) or 131,072 (tanh) — what
+    `resolve_prediction_batch_size` gives at GPU_MEMORY=34816M, so 16 or 8 chunks
+    per 10⁶ — each chunk a ~2 s burst at 100% followed by ~2 s at 0% while the host
+    runs `count_syndrome_satisfactions` on it (`--diagnose true`: 90 layers of XOR,
+    SGEMM and bookkeeping): 40–60 s at ~45%; then exit (tests run without
+    `--isdebug`, so the file is read once). The 38 of 40 GB nvtop shows is CUDA.jl's
+    caching pool, not the working set (~5.5 GB per enriched chunk), which is also
+    why two tests cannot share a card. Levers, by payoff: score on the device inside
+    the layer loop (removes the ~2 s gaps and the 0.4–0.85 GB copy per chunk); one
+    Julia process per test task looping over its points (startup, package load and
+    kernel compilation once, each test set parsed once); a binary copy of each test
+    set.
   - **The network is fixed at 90 layers** in the generator (`NLAYERS=90`); a settings
     file naming another `n_hidden_layers` is refused. `run_local.sh` lost `--layers`.
   - `seconds_per_train_point = 720` is the MEASURED wall time of one wave of
     `train_jobs = 4` points sharing an A100 (2026-10-15, tanh: ~12 min per task of 4);
     the test job used 21–27 min of its 4 h. Each point prints `Training: N gradients
     (...) in X s ...` to its stdout under `cluster/logs/hp_<ts>_train_task<t>/`. The
-    enriched node does ~10× the check-node arithmetic, so raise the value if an
-    enriched/bethe sweep's points report more.
+    enriched node does ~10× the check-node arithmetic: a wave of 2 enriched + 2 tanh
+    points took ~25 min (measured 2026-10-19), so use 1500 for any wave holding
+    enriched points.
+  - **Walltimes actually used (2026-10-19 sweep):** training job ~31 min of its 3 h (6 min
+    CUDA rebuild + one 25 min wave), test job ~20–27 min of its 4 h (10 tests per task,
+    ~2.3 min each with Julia startup). Usage is charged for time used, and ≤ 3 h is the
+    shortest Alliance walltime class (most nodes), so the oversizing cost nothing but
+    backfill chances (and up to the full wall if a job hangs). One wave per task fits a
+    1 h wall for both jobs; the preflight scales it when tasks get more waves.
+  - **Trillium (SciNet, assessed 2026-10-19; decided the same day to stay on Narval,
+    GPU for training and testing).** GPU subcluster: 63 nodes ×
+    4 H100 SXM 80 GB (252 GPUs, 96 Zen 4 cores per node, scheduled by whole GPU); CPU
+    subcluster: 1224 nodes × 192 Zen 5 cores, 749 GB, scheduled by WHOLE NODE; jobs
+    15 min–24 h. H100s do not pay here: training is host-bound (~20% of an A100) and
+    ~3/4 of a test is CPU work, so expect ~10–20% per point, at 12.2 RGU per H100 vs 4.0
+    per A100-40GB. The CPU nodes are the possible win for a BIG sweep — not per-point
+    speed but ~100+ concurrent CPU trainings (USE_GPU=0, manual backprop) on one node —
+    and need a benchmark first: CPU time per 90-layer point is unmeasured, the enriched
+    node's CPU kernel is the heavy part, and one process per core needs BLAS threads
+    pinned to 1. Site differences the scripts would need: $HOME and $PROJECT are
+    read-only from jobs (repo, data and depot on $SCRATCH), no local disk
+    ($SLURM_TMPDIR is a RAM disk, so staging the run directory costs RAM), no internet
+    on compute nodes.
   - Verified 2026-10-15 by executing both generated scripts with stub
     `julia`/`parallel`/`module` and fake `SLURM_*`: all 5 train and 8 test tasks exit
     0 (lock owner + waiting siblings, 20 models and 80 results staged out); a failing
@@ -1254,6 +1304,168 @@ inherited from `hyperparams_baseline.toml`).
   all in convergence (1179 → 518, 786 → 417), and nearly all of the coset penalty
   (691 / 749 with priors only, 963 / 996 with couplings; no-CER 592 / 692).
 - Under a perfect OSD only the coset column counts, and there no-CER design A is best.
+
+## Measured 2026-10-19: enriched CER vs no-CER (Narval, `hp_2026-10-19_06-45-21`)
+
+`sweeps/enriched_vs_nocer.toml`: CER = per-qubit priors + the enriched node (pairwise
+table, α from 0.503, learned); no-CER = uniform priors, tanh. `softmin_first` (softmin +
+first, warmup 0) and `ramp_last` (ramp + last, warmup 5, k = 3) × 5 seeds × 4 test sets ×
+10⁶ (20M per row). Results in `data/72q_BB_cycles_1_trainable_alpha/` (the
+`_spread_comparison` directory is the 2026-09-17 sweep; see the end).
+
+- **No-CER `softmin_first` reproduced the 2026-10-15 `nocer_histpair` arm bit for bit**
+  (every seed's total, coset and convergence count). GPU training + testing is
+  deterministic, so arms from different sweeps pair exactly by seed.
+- Verdict table (failures; t is seed-paired, df 4; CER lower in 5/5 seeds in every row):
+
+  | | no-CER | CER | change |
+  |---|---|---|---|
+  | NBP alone, softmin_first | 22931 (9021 \| 13910) | 18276 (12241 \| 6035) | −20.3%, t −10.1 |
+  | NBP alone, ramp_last | 24988 (7950 \| 17038) | 19642 (11993 \| 7649) | −21.4%, t −4.2 |
+  | + BP+OSD fallback, softmin_first | 17531 | 15045 | −14.2%, t −8.9 |
+  | + BP+OSD fallback, ramp_last | 17929 | 14927 | −16.7%, t −22.2 |
+
+  Per DISTINCT failing pattern −20% / −27% (t −26 / −23). The NBP-alone gain is all
+  convergence (−57% / −55%); coset rises +36% / +51% (0/5 seeds lower).
+- **The fallback** (the OSD question, answered with a real decoder): ldpc 2.4.1
+  `BpOsdDecoder(HZ, product_sum, max_iter 100, osd_cs, order 10)` run on every sample the
+  NBP did not converge on (H = HZ, logical check LZ; each distinct pattern decoded once).
+  The CER pipeline's fallback uses the test key's raw per-qubit CER rates, the no-CER one
+  their mean. Coset failures stay failures (the NBP already returned a syndrome-valid
+  answer). The fallback fails on 38–61% of the NBP's convergence failures (sample-weighted:
+  CER arms 38–47% with CER priors, 46–57% uniform; no-CER arms 49–51% / 59–61%; by weight
+  w3 0–17%, w4 15–34%, w5 and up 49–92%). With the SAME fallback for both arms CER is
+  still −7% to −13% (5/5). Were the fallback to fail on one fraction f of both arms'
+  convergence failures, the break-even would be f ≈ 0.41 (softmin_first) / 0.43
+  (ramp_last); no-CER wins only under a post-processor that repairs most of them.
+- Plain BP+OSD-CS(10), no NBP, per 10⁶ (uniform / CER priors): 405 / 279, 728 / 452,
+  872 / 723, 3368 / 3364 on p.0005-sig.0005, p.0005-sig.001, p.0007-sig.001,
+  p.0015-sig.0015 — 5373 / 4818 summed, against 4586 (no-CER) and 3655 (CER) for the
+  NBP alone and 3506 / 3009 with the fallback (per seed, 4 sets). The NBP beats it.
+- **Priors vs couplings** (softmin_first, paired by seed with the 2026-10-15 CER-tanh arm):
+  priors alone 22931 → 19409 (−15.4%, t −10.2, 5/5; conv −30.5%, coset +8.0%); adding the
+  couplings 19409 → 18276 (**−5.8%, t −1.5, 3/5 — not significant**; conv −37.6% t −4.1,
+  coset +25.6% t +17.3, both 5/5). The couplings trade convergence for coset failures
+  almost one for one (−3631 / +2498). Their value after the fallback is not computable:
+  the 2026-10-15 per-sample files are gone. Re-running the CER-tanh arm reproduces it
+  exactly (determinism, above) with per-sample files.
+- **Training health**: 20/20 points completed 5/5 epochs, max nan_skip 0 everywhere — the
+  enriched arms lost epochs in 8/20 points on 2026-10-05. Weight sd 0.177–0.181. Learned α
+  0.493–0.526 from 0.503: still inert. A task of 2 enriched + 2 tanh points took ~25 min
+  on one A100 (08:36 → 09:00 EDT, after a 6 min rebuild), so `seconds_per_train_point =
+  1500` was right for a mixed wave; the 80 tests took ~25 min on 8 cards.
+- **Blocks**: 9 frequent weight-3 patterns failed on every occurrence (65–983×, all
+  convergence), all in CER arms: 4.4% (softmin_first) and 11.1% (ramp_last) of CER
+  failures, and the cause of the CER ramp_last arm's 12% seed CV. The CER fallback rescues
+  every weight-3 convergence failure, blocks included. On the training-distribution set
+  CER fails less at every weight ≥ 4; at weight 3 it ties (softmin_first, 0.206% vs
+  0.199%) or loses through a block (ramp_last, 0.86% vs 0.21%).
+- Layer design: ramp_last is worse standalone (no-CER +9.0%, t +9.3, 5/5; CER +7.5%, n.s.)
+  and within ~3% of softmin_first after the fallback.
+- **The 2026-09-17 sweep in `data/72q_BB_cycles_1_spread_comparison`** (p = .0005,
+  sig = .001, s_1–s_3 × 5 seeds, lr 0.01, warmup 10, init 0.1): CER tanh −24.1% vs no-CER
+  (t −2.6, 11/15 cells; coset +0.2%, conv −33%) — consistent with the priors effect above.
+  Its enriched arms (α 0.42 fixed/learned, +18%) hit the NaN rollback in 29/30 trainings,
+  so they say nothing about the couplings.
+
+## Submission pipeline: `submit.sh` → `batch_run.jl` (rewritten 2026-10-19/20)
+
+The general-purpose driver for the `72q_BB_cycles_1_sweep` data (8 p × sigma ∈ {0, p,
+2p}); `sweep_hyperparams.sh` remains the tool for hyperparameter sweeps.
+
+- `bash submit.sh` writes `scripts/submission_settings_<ts>.toml` (defaults inline),
+  opens it, runs `julia --project="./../" batch_run.jl --settings <file>`.
+- **One submission, both jobs, chained (2026-10-20).** `train = true` + `test = true`
+  (the defaults; `--train` / `--test` take true/false) writes the training job AND the
+  test job, and `cluster/submit_<ts>.sh`, which `cd`s to expts/ and runs
+  `TRAIN_ID=$(sbatch --parsable train_<ts>.sh)` then `sbatch
+  --dependency=afterok:$TRAIN_ID --kill-on-invalid-dep=yes test_<ts>.sh` — the
+  `sweep_hyperparams.sh` pattern. `test` alone tests models already on disk (commands
+  whose model is missing are dropped with a warning; none left = refused); `train`
+  alone only trains; Google_VM refuses both at once (its script halts the VM).
+  - One timestamp per submission: `commands_<mode>_<ts>.txt`, `train_<ts>.sh` /
+    `test_<ts>.sh`, and the arms' hyperparameters in
+    `models/submissions/<ts>/<stem>_<arm>_<mode>.toml` — per submission, because a job
+    reads its file when it STARTS (hours later for a chained test job) and the old
+    fixed `<stem>_<arm>_<mode>.toml` let the next submission rewrite it under a queued
+    job. `--hyperparams submissions/<ts>/…` works because neural_bp_experiments.jl
+    reads `<prefix>/models/<name>`.
+  - Everything is checked before anything is written: inputs (plus
+    `bethe_table_<key>.txt` for the CER arm when the base is enriched + bethe), the
+    walltime of BOTH jobs, and the VRAM a GPU test job sizes its batch to.
+  - **Runtime model check in the test job.** `models_test_<ts>.txt` holds the weights
+    file of each command, line for line (`expected_weights_name`, mirroring
+    src/train.jl's name). After the stage-in each task reads its slice and runs only the
+    commands whose model is in `$LOCAL_WORK_DIR/models`; the rest are reported ("model
+    missing, test NOT run") and the task exits 1. Needed because a test with
+    `retrain = false` and no weights file TRAINS a model of its own and reports it.
+  - Both jobs share one depot preparation: lock/sentinel
+    `<workdir>/.depot_locks/submission_<ts>_<gpu|cpu>_depot.{lock,ready}` (one folder
+    for all codenames, since they share one depot; GPU and CPU jobs keep separate tags
+    because only the GPU preparation rebuilds CUDA_Runtime_jll).
+  - A training job warns when models of the same names exist (it will replace them).
+- **Run tags (2026-10-20): `_cer` / `_nocer`**, plus `_<run_label>` when set (letters,
+  digits, `-`, `_`; not "seed"), then the code's `_seed_<n>`:
+  `…_trained_using_train_<key>_cer_seed_1.json`,
+  `…_trained_using_train_<key>_no_cer_nocer_seed_1.json` (`_no_cer` is train.jl's own
+  infix). Not `""` for the no-CER arm: `_no_cer_seed_1` would contain `_cer_seed_1`,
+  so a CER-arm glob would match both. The no-CER arm is always written with
+  `check_node = "tanh"` (the enriched node refuses `use_CER = false`).
+- **Datasets are (p, sigma) pairs** (changed 2026-10-20 from `test_pvals ×
+  test_sigmas`): `train_pair = [0.0015, "2p"]`, `test_pairs = [[0.0001, 0], [0.0001,
+  "p"], ...]` — only listed pairs, no grid; sigma a number or a multiple of p ("p",
+  "2p", "0.5p"); `train_sample` / `test_sample` give `s`. Command line: `--train_pair
+  0.0015,2p --test_pairs 0.0001,0 0.0001,p`. Keys are written like the Python generator's
+  `repr`: `p_0.0015_sig_0.003_s_1`, sigma 0 → `sig_0.0` (`python_float_text`). Every
+  input file is checked before anything is written. Old keys (`train_p`, `test_pvals`,
+  `pvals`, …) are refused with the new format in the message.
+- Arms: `cer_arms = ["cer", "nocer"]`, each from a copy of the base hyperparameters
+  with `use_CER`, `retrain` and `run_tag` set (the base file is never edited). `seeds`
+  are passed as `--seed`. `gpu_for_training` (needs `manual_backprop = true`;
+  `trainings_per_gpu` share a card) and `gpu_for_testing` (one process per card,
+  `GPU_MEMORY` = 85% of the card's VRAM).
+- The job body is `submission/slurm_job_template.sh`, filled by `slurm.jl`: contiguous
+  slices per array task, stage-in of only the files a slice reads, stage-out of only
+  files newer than the stage-in, one depot preparation per tag (mkdir lock), CUDA gate,
+  the model check (test jobs), `parallel` in the background with the TERM trap
+  (`--signal=B:TERM@300`), exit 1 when any command fails or was not run. **The template
+  was untracked in git on 2026-10-20** (`?? expts/submission/slurm_job_template.sh`):
+  slurm.jl reads it for every SLURM job, so it must be committed for Narval to get it.
+- **Walltime preflight** (2026-10-20, `measured_round_seconds` in batch_run.jl,
+  `slurm_task_layout` + `walltime_estimate` in slurm.jl, run for every job before any
+  is written): startup 600 s + rounds × (GPU test 150 s; GPU training wave n_epochs ×
+  144 s tanh / 300 s enriched, scaled by updates per epoch and layers); refuses when an
+  estimate reaches wall_time and names the max_nodes that would fit; warns at 70%;
+  prints "no measured timing" for CPU jobs. It does not see `online_training = false`
+  or `batch_size`, and skips a base with `n_gradient_updates_per_epoch = 0`.
+- Big-run defaults (2026-10-20): train (0.0015, 2p), 24 test pairs, cer + nocer, seeds
+  1–5, train = test = true, max_nodes 24, wall 1:00:00 per job → training 10 models in
+  3 tasks (est. 34 min), then testing 240 in 24 tasks of 10 (est. 35 min).
+- Sample index (asked 2026-10-20): `train_sample` and `test_sample` are independent and
+  both default to 1; one index is enough. The index seeds the per-gate rate draw
+  (misc/sweep_transfer.sh header): s_1's rate vector is a rescaling of one fixed
+  pattern at every (p, sigma) (R² 0.977–0.994), s_2's is unrelated (R² 0.04); at sigma = 0
+  the index changes only the shots. So same-index train/test = the same hot-gate
+  pattern, rescaled; another index = another "device", which would measure
+  device-to-device spread, not the CER effect. Test commands read the TEST key's CER
+  file. The 2026-09-21 cross-index probe found transfer between indices free (−0.4%
+  to +4.0%, every CI straddling 0).
+- Verified 2026-10-20 WITHOUT Julia (unavailable in the sandbox): Julia files parse
+  (tree-sitter); the settings TOML parses and every key is a flag; the 24 test keys and
+  the training key exist in the Narval tree; a Python mirror of the Julia side filled the
+  template and the job scripts ran under stub julia / parallel / module: 3/3 train and
+  24/24 test tasks exit 0 with 10 models and 240 results staged out, the CPU path too,
+  and a failing command makes its task exit 1 with the rest staged out. The Julia side
+  itself first runs on Narval.
+- Re-verified after the chaining (2026-10-20, same mirror + stub `sbatch`): the submit
+  script makes two sbatch calls, the second `--dependency=afterok:<first id>
+  --kill-on-invalid-dep=yes`; 3/3 train tasks (1 prepares the depot), then 24/24 test
+  tasks find the sentinel and prepare nothing; 10 models, 240 results. One model removed
+  between the jobs: its 24 tests are not run (no julia call), the 3 tasks holding them
+  exit 1, 216 results land. Test-only with 2 of 10 models missing: 192 tests, all pass.
+  A test job that cannot fit (max_nodes 4) refuses with 0 files written. An enriched
+  base: the no-CER TOMLs say `check_node = "tanh"`. A separate desk-check of the Julia
+  (signatures, typed locals, scoping) found no runtime error on the default path.
 
 ## Run tags (changed 2026-10-09)
 

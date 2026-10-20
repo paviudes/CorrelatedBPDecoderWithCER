@@ -7,8 +7,9 @@
 # Emits train_local_<ts>.sh or test_local_<ts>.sh — same contract as run_on_SLURM,
 # but with no SLURM directives, no rsync staging, and runtime GPU detection.
 #
-# GPU detection at SCRIPT RUN time (not generation time), so the same script
-# works whether you dispatch it on your Mac or a Linux workstation:
+# With `use_gpu` (gpu_for_training / gpu_for_testing in the settings), the GPU is
+# detected at SCRIPT RUN time (not generation time), so the same script works
+# whether you dispatch it on your Mac or a Linux workstation:
 #
 #   * Apple Silicon (Darwin arm64)   → USE_GPU=1, GPU_BACKEND=metal, 1 job total
 #   * Linux with nvidia-smi present  → USE_GPU=1, GPU_BACKEND=cuda,
@@ -16,8 +17,9 @@
 #                                       CUDA_VISIBLE_DEVICES set per parallel slot
 #   * Anything else                  → USE_GPU=0, jobs = n_cpus (CPU fallback)
 #
-# Train mode always uses CPU (Enzyme's AD path can't run on GPU here), so GPU
-# detection only runs in test mode.
+# Without it every command runs on the CPU, n_cpus at a time. Training on a GPU
+# needs manual_backprop = true (Enzyme cannot differentiate on the GPU); batch_run.jl
+# checks that before writing a GPU training job.
 #
 # included by batch_run.jl.
 # ============================================================================
@@ -31,36 +33,40 @@ function run_locally(
     n_cpus::Int=4,
     working_dir::String=joinpath(@__DIR__, ".."),
     mode::Symbol=:train,
-    n_gpus_per_node::Int=1,     # in test mode: cap on parallel GPU jobs even if more GPUs are present
+    use_gpu::Bool=false,        # detect a GPU at run time and use it (else CPU only)
+    n_gpus_per_node::Int=1,     # with use_gpu: cap on parallel GPU jobs even if more GPUs are present
     gpu_type::String="",        # informational only — actual backend is detected at runtime
-)
+)::String
     """
     Generate a local shell script that runs the commands in `commands_file`
     via GNU parallel. Prints the `bash <script>` invocation on completion.
 
-    In test mode the generated script auto-detects Metal (Apple Silicon) or
+    With `use_gpu` the generated script auto-detects Metal (Apple Silicon) or
     CUDA (Linux + nvidia-smi), falling back to CPU if neither is present.
     """
     if !(mode in (:train, :test))
         error("mode must be :train or :test, got :$(mode)")
     end
 
-    is_test_mode = (mode == :test)
-    timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")
+    is_test_mode::Bool = mode == :test
+    timestamp::String = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")
 
-    target_dir = joinpath(working_dir, codename)
-    commands_dir = joinpath(target_dir, "cluster")
-    logs_dir = joinpath(target_dir, "logs", "$(mode)_$(timestamp)")
-    isdir(logs_dir) || mkpath(logs_dir)
+    target_dir::String = joinpath(working_dir, codename)
+    commands_dir::String = joinpath(target_dir, "cluster")
+    logs_dir::String = joinpath(target_dir, "logs", "$(mode)_$(timestamp)")
+    mkpath(logs_dir)
 
-    script_prefix = is_test_mode ? "test_local" : "train_local"
-    script_file  = joinpath(commands_dir, "$(script_prefix)_$(timestamp).sh")
+    script_prefix::String = is_test_mode ? "test_local" : "train_local"
+    script_file::String = joinpath(commands_dir, "$(script_prefix)_$(timestamp).sh")
 
-    # In train mode we run CPU-bound Julia processes in parallel — one thread each
-    # so BLAS doesn't compete with GNU parallel over cores. In test mode we cap
-    # parallel jobs at n_gpus_per_node so each Julia proc owns exactly one GPU
-    # (real per-runtime GPU count is detected in the generated script itself).
-    threads_per_job = is_test_mode ? max(1, n_cpus ÷ n_gpus_per_node) : 1
+    # On the CPU we run single-threaded Julia processes in parallel, so BLAS doesn't
+    # compete with GNU parallel over cores. With a GPU we cap parallel jobs at
+    # n_gpus_per_node so each Julia process owns one GPU (the real count is
+    # detected in the generated script itself) and split the cores among them.
+    threads_per_job::Int = 1
+    if use_gpu
+        threads_per_job = max(1, n_cpus ÷ n_gpus_per_node)
+    end
 
     # --- Script body ---
     # Everything after this line lands in the generated .sh verbatim. Bash
@@ -82,8 +88,15 @@ function run_locally(
         "",
     ]
 
-    gpu_detect = if is_test_mode
-        [
+    gpu_detect::Vector{String} = [
+        "# --- No GPU requested: CPU only ---",
+        "export USE_GPU=0",
+        "export GPU_BACKEND=",
+        "JOBS=$(n_cpus)",
+        "",
+    ]
+    if use_gpu
+        gpu_detect = [
             "# --- Runtime GPU detection ---",
             "# Metal on Apple Silicon, CUDA on Linux + nvidia-smi, else CPU.",
             "GPU_BACKEND=\"\"",
@@ -115,20 +128,12 @@ function run_locally(
             "echo \"[gpu] JOBS=\$JOBS  (threads/job: $(threads_per_job))\"",
             "",
         ]
-    else
-        [
-            "# --- Train mode is CPU-only ---",
-            "export USE_GPU=0",
-            "export GPU_BACKEND=",
-            "JOBS=$(n_cpus)",
-            "",
-        ]
     end
 
     thread_env = [
         "# Pin BLAS / OpenMP / Julia threads per Julia process so GNU parallel",
-        "# doesn't oversubscribe cores. Use 1 in train mode (many parallel Julia",
-        "# procs, each single-threaded); split cores across GPU procs in test mode.",
+        "# doesn't oversubscribe cores. 1 on the CPU (many parallel Julia procs,",
+        "# each single-threaded); the cores split across GPU procs otherwise.",
         "export JULIA_NUM_THREADS=$(threads_per_job)",
         "export OMP_NUM_THREADS=$(threads_per_job)",
         "export OPENBLAS_NUM_THREADS=$(threads_per_job)",
@@ -176,12 +181,15 @@ function run_locally(
         "    parallel --bar --jobs \$JOBS --results $(logs_dir) < $(commands_file)",
     ]
 
-    exec_block = vcat(
+    # The per-slot CUDA branch exists only when a GPU was requested.
+    cuda_branch::Vector{String} = String[]
+    if use_gpu
+        cuda_branch = vcat(["elif [ \"\$GPU_BACKEND\" = \"cuda\" ]; then"], parallel_test_cuda)
+    end
+    exec_block::Vector{String} = vcat(
         ["if [ \"\$JOBS\" -eq 1 ]; then"],
         seq_block,
-        (is_test_mode ?
-            vcat(["elif [ \"\$GPU_BACKEND\" = \"cuda\" ]; then"], parallel_test_cuda) :
-            String[]),
+        cuda_branch,
         ["else"],
         parallel_generic,
         ["fi"],
@@ -226,7 +234,7 @@ function run_locally(
     println("  Target codename  : $codename")
     println("  Total commands   : $n_commands")
     println("  CPUs (max jobs)  : $n_cpus")
-    if is_test_mode
+    if use_gpu
         println("  GPUs (max jobs)  : $n_gpus_per_node (runtime-capped by detected count)")
         println("  Threads per job  : $threads_per_job")
     end
