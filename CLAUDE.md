@@ -1494,16 +1494,21 @@ The general-purpose driver for the `72q_BB_cycles_1_sweep` data (8 p × sigma �
 
 ## Gathering results: `postprocess.jl` (updated 2026-10-20 for the (p, sigma, sample) names)
 
-- **Bringing the results home** (2026-10-20): on Narval, from expts/,
-  `bash misc/compress.sh --results <codename>` packs ONLY `<codename>/results` (results
-  CSVs, per-sample failures, layer profiles, the reference BP / BP+OSD tables) into
-  `data/<codename>_results.tar.gz` — a separate name, so a full archive is never
-  replaced. Its paths start with `<codename>/results/`, so on the laptop `tar -xzf
-  <codename>_results.tar.gz -C data` fills `data/<codename>/results/` and leaves the
-  inputs (from the dataset zip) alone. `--all --results` is refused. All of
-  compress.sh's empty-array expansions now use `${exclude_args[@]+"…"}`: the plain form
-  is an unbound-variable error under `set -u` in macOS's bash 3.2 (so `--all` would
-  have failed there too). Checked with pv, GNU tar and a non-GNU tar.
+- **Bringing the results home** (2026-10-20, skeleton 2026-10-21): on Narval, from
+  expts/, `bash misc/compress.sh --results <codename>` packs everything EXCEPT the files
+  in `training_data/` and `testing_data/` — those two folders go in EMPTY, so the archive
+  has the folder's whole top-level skeleton (code/, correlated_weights/, models/, logs/,
+  results/, cluster/ with contents; cluster/logs only with `--all`, which now combines
+  with `--results`). It writes `data/<codename>_results.tar.gz` — a separate name, so a
+  full archive is never replaced — and `tar -xzf <codename>_results.tar.gz -C data`
+  recreates `data/<codename>/` on the laptop, leaving training/testing files already
+  there in place. The empty folders come from `--exclude='<dir>/<folder>/*'` (GNU tar
+  drops what is inside and keeps the folder); a check after packing lists the archive
+  and exits 1 if either folder is missing or not empty, since another tar's matching
+  might differ. All of compress.sh's empty-array expansions use
+  `${exclude_args[@]+"…"}`: the plain form is an unbound-variable error under `set -u`
+  in macOS's bash 3.2. Checked with pv, GNU tar, a non-GNU tar, and a tar made to drop
+  the folders (caught).
 - `julia --project="./" postprocess.jl --config=postprocess_configs/postprocess_panel_sweep.toml --task=gather`
   (from expts/, on the laptop: postprocess.jl loads PlotsForBPDecoder/Plots) writes
   into `<codename>/results/`: `decoder_statistics_NeuralBP.csv` (one row per results
