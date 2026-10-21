@@ -1648,7 +1648,15 @@ warmup 0, 10 epochs, the Poisson(3) 10k training set; 0 rollbacks in all 10 trai
   −0.08), and their per-qubit spread (sd 0.016–0.020) is the initial noise averaged
   over 90 layers.
 
-### Next: the enriched check node on the same run (prepared 2026-10-21, not yet run)
+### Next: the enriched check node on the same run (prepared and run 2026-10-21)
+
+- **Status**: the enriched submission ran on 2026-10-21; its 120 `_cer_enr` results
+  (written 16:57–17:17) and 5 `_cer_enr` models are in `data/72q_BB_cycles_1_sweep/`
+  beside the untouched 2026-10-20 `_cer` / `_no_cer_nocer` files. Not yet analysed;
+  the Bethe submission has not run. (Before it, `git pull` on Narval failed with
+  "unresolved deltas left after unpacking": `git fsck --full` showed missing trees and
+  blobs in Narval's clone with the quota fine; the repair given was `git fetch
+  --refetch origin`, or copying the packs of a fresh bare clone into `.git/objects/pack`.)
 
 - **Why the 2026-10-20 CER arm used only half the CER file**: its
   `hyperparams_baseline.toml` has no `check_node` key, so the default `"tanh"` ran,

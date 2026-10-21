@@ -94,7 +94,7 @@ seeds = [1, 2, 3, 4, 5]
 # expts/sweeps/enriched_submission.toml (run_label = "enr"), "cer_bethe" that of
 # bethe_submission.toml. Once those runs are in, gather all the arms with
 #     cer_arms = ["cer", "nocer", "cer_enr", "cer_bethe"]
-cer_arms = ["cer", "nocer"]
+cer_arms = ["cer", "nocer", "cer_enr"]
 run_label = ""
 # With cer_arms, seeds, test_pairs and test_samples all set, the gather warns
 # about every requested (arm, seed, test dataset) with no results file, or with
