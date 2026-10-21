@@ -31,25 +31,16 @@ run = true
 error_model = "Circuit"
 # codename directory (its results/ subfolder holds the inputs + output)
 codename = "72q_BB_cycles_1_sweep"
-# one or more standard-BP failures files — bare filenames inside
-# <workdir>/<codename>/results — parsed and stacked into one table
-files = [
-    "72q_BB_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
-    "72q_BB_p_0.0011_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
-    "72q_BB_p_0.0013_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
-    "72q_BB_p_0.0015_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
-    "72q_BB_p_0.0017_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
-    "72q_BB_p_0.0019_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
-    "72q_BB_p_0.002_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
-    "72q_BB_p_0.0024_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
-    "72q_BB_p_0.0028_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
-    "72q_BB_p_0.0032_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
-    "72q_BB_p_0.0036_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
-    "72q_BB_p_0.004_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
-    "72q_BB_p_0.0044_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
-    "72q_BB_p_0.0048_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt",
-    "72q_BB_p_0.005_cycles_1_BP+OSD_failure_rates_OSD_E_order_2.txt"
-]
+# Which tables: the files in <workdir>/<codename>/results matching `pattern`
+# (shell-style: * is any run of characters), or a `files = [...]` list of bare
+# names. The data ships one table per (p, sigma, sample) dataset, named
+# 72q_BB_<key>BP+OSD_failure_rates_OSD_E_order_2.txt with
+# <key> = p_<p>_sig_<sigma>_s_<sample>.
+pattern = "72q_BB_p_*BP+OSD_failure_rates_OSD_E_order_2.txt"
+# Then only these test datasets, as in [neural_gather]: `test_pairs` (left out =
+# every [p, sigma] pair) at `test_samples` (left out = every sample). The data has
+# samples 1–5 (1–3 at sigma = 0); the Neural BP run was tested on sample 1.
+test_samples = [1]
 # output CSV filename, written into <workdir>/<codename>/results
 # (canonical key is `output_file`; the old name `output_bposd_file` still works)
 output_file = "decoder_statistics_BP_OSD.csv"
@@ -64,30 +55,12 @@ run = true
 # error_model: "Ising" (rows have p, q, ...) or "Circuit" (p only)
 error_model = "Circuit"
 # codename directory (its results/ subfolder holds the inputs + output)
-codename = "72q_BB_cycles_1"
-# one or more plain-BP failures files — bare filenames inside
-# <workdir>/<codename>/results — parsed and stacked into one table
-files = [
-    "72q_BB_p_0.0001_cycles_1_BP_failure_rates.txt",
-    "72q_BB_p_0.0003_cycles_1_BP_failure_rates.txt",
-    "72q_BB_p_0.0005_cycles_1_BP_failure_rates.txt",
-    "72q_BB_p_0.0007_cycles_1_BP_failure_rates.txt",
-    "72q_BB_p_0.0009_cycles_1_BP_failure_rates.txt",
-    "72q_BB_p_0.0011_cycles_1_BP_failure_rates.txt",
-    "72q_BB_p_0.0013_cycles_1_BP_failure_rates.txt",
-    "72q_BB_p_0.0015_cycles_1_BP_failure_rates.txt",
-    "72q_BB_p_0.0017_cycles_1_BP_failure_rates.txt",
-    "72q_BB_p_0.0019_cycles_1_BP_failure_rates.txt",
-    "72q_BB_p_0.002_cycles_1_BP_failure_rates.txt",
-    "72q_BB_p_0.0024_cycles_1_BP_failure_rates.txt",
-    "72q_BB_p_0.0028_cycles_1_BP_failure_rates.txt",
-    "72q_BB_p_0.0032_cycles_1_BP_failure_rates.txt",
-    "72q_BB_p_0.0036_cycles_1_BP_failure_rates.txt",
-    "72q_BB_p_0.004_cycles_1_BP_failure_rates.txt",
-    "72q_BB_p_0.0044_cycles_1_BP_failure_rates.txt",
-    "72q_BB_p_0.0048_cycles_1_BP_failure_rates.txt",
-    "72q_BB_p_0.005_cycles_1_BP_failure_rates.txt"
-]
+codename = "72q_BB_cycles_1_sweep"
+# Which tables, as in [standardbp_gather]: one per dataset, named
+# 72q_BB_<key>_BP_failure_rates.txt.
+pattern = "72q_BB_p_*_BP_failure_rates.txt"
+# Only these test datasets (see [standardbp_gather]):
+test_samples = [1]
 # output CSV filename, written into <workdir>/<codename>/results
 output_file = "decoder_statistics_BP.csv"
 
@@ -95,31 +68,38 @@ output_file = "decoder_statistics_BP.csv"
 ## Gather multiple per-simulation output CSVs into a single DataFrame
 [neural_gather]
 run = true
-codename = "72q_BB_cycles_1"
-# per-simulation result CSVs — bare filenames inside <workdir>/<codename>/results
-files = [
-    "simulation_results_test_p_0.0001_s_1_nlayers_100_epochs_20_trained_using_train_p_0.0001_s_1.csv",
-    "simulation_results_test_p_0.0003_s_1_nlayers_100_epochs_20_trained_using_train_p_0.0003_s_1.csv",
-    "simulation_results_test_p_0.0005_s_1_nlayers_100_epochs_20_trained_using_train_p_0.0005_s_1.csv",
-    "simulation_results_test_p_0.0007_s_1_nlayers_100_epochs_20_trained_using_train_p_0.0007_s_1.csv",
-    "simulation_results_test_p_0.0009_s_1_nlayers_100_epochs_20_trained_using_train_p_0.0009_s_1.csv",
-    "simulation_results_test_p_0.0011_s_1_nlayers_100_epochs_20_trained_using_train_p_0.0011_s_1.csv",
-    "simulation_results_test_p_0.0013_s_1_nlayers_100_epochs_20_trained_using_train_p_0.0013_s_1.csv",
-    "simulation_results_test_p_0.0015_s_1_nlayers_100_epochs_20_trained_using_train_p_0.0015_s_1.csv",
-    "simulation_results_test_p_0.0017_s_1_nlayers_100_epochs_20_trained_using_train_p_0.0017_s_1.csv",
-    "simulation_results_test_p_0.0019_s_1_nlayers_100_epochs_20_trained_using_train_p_0.0019_s_1.csv",
-    "simulation_results_test_p_0.002_s_1_nlayers_100_epochs_20_trained_using_train_p_0.002_s_1.csv",
-    "simulation_results_test_p_0.0024_s_1_nlayers_100_epochs_20_trained_using_train_p_0.0024_s_1.csv",
-    "simulation_results_test_p_0.0028_s_1_nlayers_100_epochs_20_trained_using_train_p_0.0028_s_1.csv",
-    "simulation_results_test_p_0.0032_s_1_nlayers_100_epochs_20_trained_using_train_p_0.0032_s_1.csv",
-    "simulation_results_test_p_0.0036_s_1_nlayers_100_epochs_20_trained_using_train_p_0.0036_s_1.csv",
-    "simulation_results_test_p_0.004_s_1_nlayers_100_epochs_20_trained_using_train_p_0.004_s_1.csv",
-    "simulation_results_test_p_0.0044_s_1_nlayers_100_epochs_20_trained_using_train_p_0.0044_s_1.csv",
-    "simulation_results_test_p_0.0048_s_1_nlayers_100_epochs_20_trained_using_train_p_0.0048_s_1.csv",
-    "simulation_results_test_p_0.005_s_1_nlayers_100_epochs_20_trained_using_train_p_0.005_s_1.csv"
-
+codename = "72q_BB_cycles_1_sweep"
+# Which results CSVs to gather, in submit.sh's format: numbers, not "2p". Each
+# key narrows the selection, read off the file names; leave a key out (or set it
+# to []) to keep every value.
+#
+# The training dataset of the models, [p, sigma, sample]:
+train_instance = [0.0015, 0.003, 1]
+# Test datasets: every [p, sigma] pair below at every index in test_samples.
+test_pairs = [
+    [0.0001, 0.0], [0.0001, 0.0001], [0.0001, 0.0002],
+    [0.0003, 0.0], [0.0003, 0.0003], [0.0003, 0.0006],
+    [0.0005, 0.0], [0.0005, 0.0005], [0.0005, 0.001],
+    [0.0007, 0.0], [0.0007, 0.0007], [0.0007, 0.0014],
+    [0.0009, 0.0], [0.0009, 0.0009], [0.0009, 0.0018],
+    [0.0011, 0.0], [0.0011, 0.0011], [0.0011, 0.0022],
+    [0.0013, 0.0], [0.0013, 0.0013], [0.0013, 0.0026],
+    [0.0015, 0.0], [0.0015, 0.0015], [0.0015, 0.003],
 ]
-# output CSV filename, written into <workdir>/<codename>/results
+test_samples = [1]
+seeds = [1, 2, 3, 4, 5]
+# "cer" (run tag _cer) and/or "nocer" (_nocer); run_label = "big" selects the
+# _cer_big / _nocer_big files of a submission made with that label. An arm can
+# carry its own submission's label: "cer_enr" is the CER arm of
+# expts/sweeps/enriched_submission.toml (run_label = "enr"), "cer_bethe" that of
+# bethe_submission.toml. Once those runs are in, gather all the arms with
+#     cer_arms = ["cer", "nocer", "cer_enr", "cer_bethe"]
+cer_arms = ["cer", "nocer"]
+run_label = ""
+# With cer_arms, seeds, test_pairs and test_samples all set, the gather warns
+# about every requested (arm, seed, test dataset) with no results file, or with
+# more than one. Candidate files: every simulation_results_*.csv in results/,
+# unless `pattern` or `files` names others.
 output_neuralbp_file = "decoder_statistics_NeuralBP.csv"
 
 # ###### Plotting ############################################################
@@ -127,7 +107,7 @@ output_neuralbp_file = "decoder_statistics_NeuralBP.csv"
 [plot_standard_vs_neural]
 run = false
 # One entry per code — each code is drawn in a different colour.
-codenames = ["18q_BB_cycles_1", "72q_BB_cycles_1"]
+codenames = ["18q_BB_cycles_1", "72q_BB_cycles_1_sweep"]
 # Legend label for each code (same length/order as codenames). Shown as a
 # coloured marker in the legend, alongside the two decoder labels below.
 codename_labels = ["[[18, 4, 4]]", "[[72, 12, 6]]"]

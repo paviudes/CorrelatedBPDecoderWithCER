@@ -24,7 +24,9 @@
 # "simulation_results_*_seed_*.csv"), or both, and REPLACE their output file.
 # For (p, sigma, sample) data they add the columns the file NAMES carry — the
 # arm and the datasets for Neural BP, sigma for the reference tables; see
-# postprocess_configs/postprocess_panel_sweep.toml.
+# postprocess_configs/postprocess_panel_sweep.toml. neural_gather also selects
+# its files by submit.sh's keys: train_instance, test_pairs, test_samples, seeds,
+# cer_arms, run_label; the reference gathers by test_pairs and test_samples.
 #
 # ADD A NEW OPERATION in three steps:
 #   1. add a [section] to postprocess_panel.toml (with `run` + params),
@@ -42,6 +44,10 @@ using CSV
 using DataFrames
 using CorrelatedBPDecoderWithCER   # collect_standard_decoder_statistics, save_decoder_dataframe
 using PlotsForBPDecoder            # postprocess_neuralbp_results, plot_standard_vs_neural, plot_logical_error_rate
+
+# The (p, sigma, sample) settings submit.sh uses — train_instance, test_pairs,
+# test_samples — read by the same functions here, for neural_gather's selection.
+include("submission/dataset_settings.jl")
 
 # Fetch a required key from a section, with a clear error naming the section.
 function _require(section::AbstractDict, key::String, id::String)
@@ -176,7 +182,9 @@ What a Neural BP results file's name says (`NEURAL_RESULTS_NAME`), under the
 names in `NEURAL_NAME_COLUMNS`: the arm (the run tag without its underscore —
 `cer`, `nocer` — or, with no run tag, `cer` / `nocer` from the `_no_cer` mark),
 whether the model used CER, and the test and training datasets' p, sigma and
-sample. `nothing` for a name in an older format (no `sig_`).
+sample; plus "seed" (`missing` without `_seed_<n>`), which selects files but is
+not added as a column — the CSV has its own. `nothing` for a name in an older
+format (no `sig_`).
 """
 function neural_results_metadata(file_name::String)::Union{Dict{String, Any}, Nothing}
     name_match::Union{RegexMatch, Nothing} = match(NEURAL_RESULTS_NAME, file_name)
@@ -192,6 +200,11 @@ function neural_results_metadata(file_name::String)::Union{Dict{String, Any}, No
     if !isempty(run_tag)
         arm = String(lstrip(run_tag, '_'))
     end
+    seed_text::Union{AbstractString, Nothing} = name_match[:seed]
+    name_seed::Union{Int, Missing} = missing
+    if seed_text !== nothing
+        name_seed = parse(Int, seed_text)
+    end
     metadata::Dict{String, Any} = Dict{String, Any}(
         "arm"          => arm,
         "use_CER"      => use_cer,
@@ -204,8 +217,228 @@ function neural_results_metadata(file_name::String)::Union{Dict{String, Any}, No
         "train_p"      => parse(Float64, name_match[:train_p]),
         "train_sigma"  => parse(Float64, name_match[:train_sigma]),
         "train_sample" => parse(Int, name_match[:train_sample]),
+        "seed"         => name_seed,
     )
     return metadata
+end
+
+"""
+    same_dataset_number(first_value, second_value) -> Bool
+
+Whether two values of p (or of sigma) are one number: equal to 1e-9 relative,
+so a typed 0.0014 matches a file named for 2 × 0.0007 whatever its last digit.
+0 matches only 0.
+"""
+function same_dataset_number(first_value::Float64, second_value::Float64)::Bool
+    is_same::Bool = isapprox(first_value, second_value; rtol = 1e-9)
+    return is_same
+end
+
+"""
+The test datasets a gather section asks for, in submit.sh's format: the
+`test_pairs = [[p, sigma], …]` at every index in `test_samples`. Either left out
+(or empty) keeps every value. Read by neural_gather and the reference gathers
+(standardbp_gather, bp_gather) alike.
+"""
+struct TestDatasetSelection
+    test_pairs::Vector{DatasetPair}
+    test_samples::Vector{Int}
+end
+
+"""
+    test_dataset_selection(section, id) -> TestDatasetSelection
+
+The `test_pairs` and `test_samples` of a gather section.
+"""
+function test_dataset_selection(section::AbstractDict, id::String)::TestDatasetSelection
+    test_pairs::Vector{DatasetPair} = DatasetPair[]
+    if haskey(section, "test_pairs")
+        test_pairs = dataset_pairs(section["test_pairs"], "[$(id)] test_pairs")
+    end
+    test_samples::Vector{Int} = Int[]
+    if haskey(section, "test_samples")
+        test_samples = sample_indices(section["test_samples"], "[$(id)] test_samples")
+    end
+    selection::TestDatasetSelection = TestDatasetSelection(test_pairs, test_samples)
+    return selection
+end
+
+"""
+    admits_test_dataset(selection, test_p, test_sigma, test_sample) -> Bool
+
+Whether a test dataset, read off a file name, is one the selection asks for; p
+and sigma compared as numbers (`same_dataset_number`), not as text.
+"""
+function admits_test_dataset(selection::TestDatasetSelection, test_p::Float64, test_sigma::Float64,
+                             test_sample::Int)::Bool
+    is_admitted::Bool = true
+    if !isempty(selection.test_pairs)
+        is_admitted = any(pair -> same_dataset_number(test_p, pair[1]) && same_dataset_number(test_sigma, pair[2]),
+                          selection.test_pairs)
+    end
+    if !isempty(selection.test_samples)
+        is_admitted = is_admitted && test_sample in selection.test_samples
+    end
+    return is_admitted
+end
+
+"""
+    requested_datasets_without_files(selection, found_datasets) -> Vector{String}
+
+The keys of the requested test datasets (every pair at every sample) that none
+of `found_datasets` is; empty unless both `test_pairs` and `test_samples` are set.
+"""
+function requested_datasets_without_files(selection::TestDatasetSelection,
+                                          found_datasets::Vector{DatasetInstance})::Vector{String}
+    missing_keys::Vector{String} = String[]
+    if isempty(selection.test_pairs) || isempty(selection.test_samples)
+        return missing_keys
+    end
+    for instance in test_instance_list(selection.test_pairs, selection.test_samples)
+        is_found::Bool = any(found -> same_dataset_number(found[1], instance[1]) &&
+                                      same_dataset_number(found[2], instance[2]) && found[3] == instance[3],
+                             found_datasets)
+        if !is_found
+            push!(missing_keys, instance_key(instance))
+        end
+    end
+    return missing_keys
+end
+
+"""
+Which Neural BP results `neural_gather` keeps, from the same keys submit.sh
+writes: `train_instance = [p, sigma, sample]`, `test_pairs = [[p, sigma], …]`,
+`test_samples = […]`, `seeds = […]`, and `cer_arms` / `run_label`, which give the
+run tags `_<arm>[_<run_label>]`. A key left out (or empty) keeps every value.
+"""
+struct NeuralResultsSelection
+    train_instance::Union{DatasetInstance, Nothing}
+    test_pairs::Vector{DatasetPair}
+    test_samples::Vector{Int}
+    seeds::Vector{Int}
+    run_tags::Vector{String}
+end
+
+"""
+    selection_is_open(selection) -> Bool
+
+True when no key narrows the selection, so every results file is kept.
+"""
+function selection_is_open(selection::NeuralResultsSelection)::Bool
+    is_open::Bool = selection.train_instance === nothing && isempty(selection.test_pairs) &&
+                    isempty(selection.test_samples) && isempty(selection.seeds) && isempty(selection.run_tags)
+    return is_open
+end
+
+"""
+    setting_integers(spec, setting_name) -> Vector{Int}
+
+A list of integers (seeds) as the settings file gives them, each once; a bare
+number is a list of one.
+"""
+function setting_integers(spec::Any, setting_name::String)::Vector{Int}
+    items::Vector{Any} = Any[spec]
+    if spec isa AbstractVector
+        items = collect(Any, spec)
+    end
+    integers::Vector{Int} = Int[]
+    for item in items
+        parsed_value::Union{Int, Nothing} = nothing
+        if item isa Integer && !(item isa Bool)
+            parsed_value = Int(item)
+        elseif item isa AbstractFloat && isinteger(item)
+            parsed_value = Int(item)
+        elseif item isa AbstractString
+            parsed_value = tryparse(Int, strip(item))
+        end
+        if parsed_value === nothing
+            error("$(setting_name): $(repr(item)) is not an integer.")
+        end
+        push!(integers, parsed_value)
+    end
+    unique_integers::Vector{Int} = unique(integers)
+    return unique_integers
+end
+
+"""
+    neural_results_selection(section, id) -> NeuralResultsSelection
+
+The selection a [neural_gather] section asks for. `cer_arms` takes "cer" and
+"nocer" as in submit.sh, each optionally followed by its submission's run_label
+("cer_enr": run_label = "enr"), so arms of several submissions gather together;
+a `run_label` here is appended to every arm, and without `cer_arms` means both
+arms of that experiment.
+"""
+function neural_results_selection(section::AbstractDict, id::String)::NeuralResultsSelection
+    train_instance::Union{DatasetInstance, Nothing} = nothing
+    train_instance_setting::Any = get(section, "train_instance", Any[])
+    is_empty_setting::Bool = train_instance_setting isa AbstractVector && isempty(train_instance_setting)
+    if !is_empty_setting
+        train_instance = parse_dataset_instance(train_instance_setting, "[$(id)] train_instance")
+    end
+    test_datasets::TestDatasetSelection = test_dataset_selection(section, id)
+    seeds::Vector{Int} = Int[]
+    if haskey(section, "seeds")
+        seeds = setting_integers(section["seeds"], "[$(id)] seeds")
+    end
+    run_label::String = String(get(section, "run_label", ""))
+    arm_names::Vector{String} = String[]
+    if haskey(section, "cer_arms")
+        arms_setting::Any = section["cer_arms"]
+        if arms_setting isa AbstractString
+            push!(arm_names, String(arms_setting))
+        else
+            arm_names = String[String(arm) for arm in arms_setting]
+        end
+    end
+    if isempty(arm_names) && !isempty(run_label)
+        arm_names = ["cer", "nocer"]    # a label names an experiment; both of its arms
+    end
+    run_tags::Vector{String} = String[]
+    for arm in arm_names
+        # "cer" / "nocer", or one followed by the run_label of its submission:
+        # "cer_enr" is the CER arm of a submission made with run_label = "enr"
+        # (run tag _cer_enr), so one gather can hold several submissions' arms.
+        arm_match::Union{RegexMatch, Nothing} = match(r"^(cer|nocer)(_[A-Za-z0-9][A-Za-z0-9_-]*)?$", arm)
+        if arm_match === nothing || occursin("seed", lowercase(arm))
+            error("[$(id)] cer_arms: \"$(arm)\" — use \"cer\" or \"nocer\", as in submit.sh, optionally followed by " *
+                  "the run_label of its submission: \"cer_enr\" for the CER arm of run_label = \"enr\".")
+        end
+        run_tag::String = "_$(arm)"
+        if !isempty(run_label)
+            run_tag *= "_$(run_label)"
+        end
+        push!(run_tags, run_tag)
+    end
+    selection::NeuralResultsSelection = NeuralResultsSelection(train_instance, test_datasets.test_pairs,
+                                                               test_datasets.test_samples, seeds, run_tags)
+    return selection
+end
+
+"""
+    selection_admits(selection, metadata) -> Bool
+
+Whether a results file, by what its name says, is one the selection asks for.
+p and sigma are compared as numbers (`same_dataset_number`), not as text.
+"""
+function selection_admits(selection::NeuralResultsSelection, metadata::Dict{String, Any})::Bool
+    is_admitted::Bool = true
+    if selection.train_instance !== nothing
+        training::DatasetInstance = selection.train_instance
+        is_admitted = is_admitted && same_dataset_number(metadata["train_p"], training[1]) &&
+                      same_dataset_number(metadata["train_sigma"], training[2]) &&
+                      metadata["train_sample"] == training[3]
+    end
+    test_datasets::TestDatasetSelection = TestDatasetSelection(selection.test_pairs, selection.test_samples)
+    is_admitted = is_admitted && admits_test_dataset(test_datasets, metadata["test_p"], metadata["test_sigma"],
+                                                     metadata["test_sample"])
+    if !isempty(selection.seeds)
+        is_admitted = is_admitted && metadata["seed"] !== missing && metadata["seed"] in selection.seeds
+    end
+    if !isempty(selection.run_tags)
+        is_admitted = is_admitted && metadata["run_tag"] in selection.run_tags
+    end
+    return is_admitted
 end
 
 # ----------------------------------------------------------------------------
@@ -224,8 +457,11 @@ end
 # 72q_BB_p_0.0005_sig_0.001_s_2_BP_failure_rates.txt) gets the columns
 # results_file, decoder, test_key, test_p, test_sigma, test_sample from its name,
 # and its error_model_parameters_description becomes testing_data/test_<key>.txt:
-# the file's own table carries p and the sample but not sigma. The output file is
-# REPLACED on every run (it used to be appended to, so a second run doubled it).
+# the file's own table carries p and the sample but not sigma. `test_pairs` and
+# `test_samples` (TestDatasetSelection, as in neural_gather) narrow the files to
+# those test datasets; a name with no dataset in it is then left out. The output
+# file is REPLACED on every run (it used to be appended to, so a second run
+# doubled it).
 function run_standard_gather(section::AbstractDict, id::String, workdir::String)::Nothing
     error_model_text::String = lowercase(strip(String(_require(section, "error_model", id))))
     if !(error_model_text in ("ising", "circuit"))
@@ -239,7 +475,49 @@ function run_standard_gather(section::AbstractDict, id::String, workdir::String)
     codename::String = String(_require(section, "codename", id))
     prefix::String = joinpath(workdir, codename)
     results_dir::String = joinpath(prefix, "results")
-    failures_files::Vector{String} = gather_file_names(section, id, results_dir)
+    candidate_files::Vector{String} = gather_file_names(section, id, results_dir)
+
+    # Keep the requested test datasets, read off each name.
+    dataset_selection::TestDatasetSelection = test_dataset_selection(section, id)
+    selects_datasets::Bool = !isempty(dataset_selection.test_pairs) || !isempty(dataset_selection.test_samples)
+    failures_files::Vector{String} = String[]
+    found_datasets::Vector{DatasetInstance} = DatasetInstance[]
+    n_not_selected::Int = 0
+    for candidate_file in candidate_files
+        candidate_match::Union{RegexMatch, Nothing} = match(STANDARD_RESULTS_NAME, candidate_file)
+        if candidate_match === nothing
+            if selects_datasets
+                n_not_selected += 1    # no dataset in the name to select it by
+            else
+                push!(failures_files, candidate_file)
+            end
+            continue
+        end
+        candidate_dataset::DatasetInstance = (parse(Float64, candidate_match[:test_p]),
+                                              parse(Float64, candidate_match[:test_sigma]),
+                                              parse(Int, candidate_match[:test_sample]))
+        is_requested::Bool = admits_test_dataset(dataset_selection, candidate_dataset[1], candidate_dataset[2],
+                                                 candidate_dataset[3])
+        if is_requested
+            push!(failures_files, candidate_file)
+            push!(found_datasets, candidate_dataset)
+        else
+            n_not_selected += 1
+        end
+    end
+    if isempty(failures_files)
+        error("[$(id)] none of the $(length(candidate_files)) candidate file(s) in $(results_dir) is a requested " *
+              "test dataset (test_pairs / test_samples).")
+    end
+    missing_keys::Vector{String} = requested_datasets_without_files(dataset_selection, found_datasets)
+    if !isempty(missing_keys)
+        more_text::String = ""
+        if length(missing_keys) > 10
+            more_text = "\n  … and $(length(missing_keys) - 10) more"
+        end
+        @warn "[$(id)] $(length(missing_keys)) requested test dataset(s) have no table in $(results_dir):\n  " *
+              join(first(missing_keys, 10), "\n  ") * more_text
+    end
 
     # Parse each failures file and stack the tables. Files that produce no rows
     # (missing/empty) are skipped by the collector, with a warning.
@@ -288,41 +566,130 @@ function run_standard_gather(section::AbstractDict, id::String, workdir::String)
 
     output_path::String = joinpath(results_dir, _gather_output_filename(section, id))
     CSV.write(output_path, stats_frame)
+    selection_text::String = ""
+    if selects_datasets
+        selection_text = "; $(n_not_selected) outside test_pairs / test_samples"
+    end
     println("  [$(id)] standard ($(error_model)) -> $(output_path)  " *
-            "($(nrow(stats_frame)) rows from $(length(failures_files)) file(s))")
+            "($(nrow(stats_frame)) rows from $(length(failures_files)) file(s)$(selection_text))")
     return nothing
 end
 
-# Gather Neural BP results CSVs into one table: the files a `pattern` matches (e.g.
-# "simulation_results_*_seed_*.csv") and/or a `files` list. Each row gets
-# results_file and, for a (p, sigma, sample) name, the columns NEURAL_NAME_COLUMNS
-# read from the name — the arm and the test / training datasets live only there.
-# Rows are stacked with cols = :union (older files lack some columns) and sorted by
-# file name. The output file is REPLACED on every run (it used to be appended to).
+"""
+    report_missing_combinations(selection, kept_metadata, id) -> Nothing
+
+When the selection names every axis — `cer_arms`, `seeds`, `test_pairs` and
+`test_samples` — warn about each requested (arm, seed, test dataset) with no
+results file, and about any with more than one (two training datasets, say,
+when `train_instance` is not set), since a seed-paired comparison needs exactly
+one of each.
+"""
+function report_missing_combinations(selection::NeuralResultsSelection, kept_metadata::Vector{Dict{String, Any}},
+                                     id::String)::Nothing
+    names_every_axis::Bool = !isempty(selection.run_tags) && !isempty(selection.seeds) &&
+                             !isempty(selection.test_pairs) && !isempty(selection.test_samples)
+    if !names_every_axis
+        return nothing
+    end
+    requested_instances::Vector{DatasetInstance} = test_instance_list(selection.test_pairs, selection.test_samples)
+    files_per_combination::Dict{Tuple{String, Int, String}, Int} = Dict{Tuple{String, Int, String}, Int}()
+    for metadata in kept_metadata
+        # The requested test dataset this file was admitted as, matched by number
+        # as selection_admits matches it, so a key whose text differs in the last
+        # digit still fills its slot.
+        matching_index::Union{Int, Nothing} = findfirst(
+            instance -> same_dataset_number(metadata["test_p"], instance[1]) &&
+                        same_dataset_number(metadata["test_sigma"], instance[2]) &&
+                        metadata["test_sample"] == instance[3],
+            requested_instances)
+        if metadata["seed"] === missing || matching_index === nothing
+            continue    # neither can happen once every axis selects; such a file has no slot
+        end
+        combination::Tuple{String, Int, String} = (metadata["run_tag"], metadata["seed"],
+                                                   instance_key(requested_instances[matching_index]))
+        files_per_combination[combination] = get(files_per_combination, combination, 0) + 1
+    end
+    missing_combinations::Vector{String} = String[]
+    repeated_combinations::Vector{String} = String[]
+    for run_tag in selection.run_tags
+        for seed in selection.seeds
+            for instance in requested_instances
+                combination::Tuple{String, Int, String} = (run_tag, seed, instance_key(instance))
+                n_files::Int = get(files_per_combination, combination, 0)
+                label::String = "$(lstrip(run_tag, '_')), seed $(seed), test_$(combination[3])"
+                if n_files == 0
+                    push!(missing_combinations, label)
+                elseif n_files > 1
+                    push!(repeated_combinations, "$(label): $(n_files) files")
+                end
+            end
+        end
+    end
+    if !isempty(missing_combinations)
+        more_text::String = ""
+        if length(missing_combinations) > 10
+            more_text = "\n  … and $(length(missing_combinations) - 10) more"
+        end
+        @warn "[$(id)] $(length(missing_combinations)) requested (arm, seed, test dataset) combination(s) have no " *
+              "results file (a pair the data lacks at a sample shows up here too):\n  " *
+              join(first(missing_combinations, 10), "\n  ") * more_text
+    end
+    if !isempty(repeated_combinations)
+        @warn "[$(id)] $(length(repeated_combinations)) combination(s) have more than one results file; set " *
+              "train_instance (or narrow `pattern`) to keep one:\n  " * join(first(repeated_combinations, 10), "\n  ")
+    end
+    return nothing
+end
+
+# Gather Neural BP results CSVs into one table. Which files: `files` and/or
+# `pattern` (default: every simulation_results_*.csv), then narrowed by the same
+# keys submit.sh writes — train_instance, test_pairs, test_samples, seeds,
+# cer_arms / run_label (NeuralResultsSelection) — read off each file's NAME. Each
+# row gets results_file and, for a (p, sigma, sample) name, the columns
+# NEURAL_NAME_COLUMNS from the name: the arm and the test / training datasets live
+# only there. Rows are stacked with cols = :union (older files lack some columns)
+# and sorted by file name. The output file is REPLACED on every run (it used to be
+# appended to).
 function run_neural_gather(section::AbstractDict, id::String, workdir::String)::Nothing
     codename::String = String(_require(section, "codename", id))
     results_dir::String = joinpath(workdir, codename, "results")
-    file_names::Vector{String} = gather_file_names(section, id, results_dir)
+    candidate_section::AbstractDict = section
+    if !haskey(section, "files") && !haskey(section, "pattern")
+        candidate_section = Dict{String, Any}("pattern" => "simulation_results_*.csv")
+    end
+    file_names::Vector{String} = gather_file_names(candidate_section, id, results_dir)
+    selection::NeuralResultsSelection = neural_results_selection(section, id)
+    is_open::Bool = selection_is_open(selection)
 
     frames::Vector{DataFrame} = DataFrame[]
+    kept_metadata::Vector{Dict{String, Any}} = Dict{String, Any}[]
     missing_files::Vector{String} = String[]
     unparsed_names::Vector{String} = String[]
+    n_not_selected::Int = 0
     for file_name in file_names
         file_path::String = joinpath(results_dir, file_name)
         if !isfile(file_path)
             push!(missing_files, file_name)
             continue
         end
-        results_frame::DataFrame = CSV.read(file_path, DataFrame)
-        n_rows::Int = nrow(results_frame)
-        name_frame::DataFrame = DataFrame(results_file = fill(file_name, n_rows))
         metadata::Union{Dict{String, Any}, Nothing} = neural_results_metadata(file_name)
         if metadata === nothing
             push!(unparsed_names, file_name)
-        else
+            if !is_open
+                continue    # nothing to select it by
+            end
+        elseif !is_open && !selection_admits(selection, metadata)
+            n_not_selected += 1
+            continue
+        end
+        results_frame::DataFrame = CSV.read(file_path, DataFrame)
+        n_rows::Int = nrow(results_frame)
+        name_frame::DataFrame = DataFrame(results_file = fill(file_name, n_rows))
+        if metadata !== nothing
             for column_name in NEURAL_NAME_COLUMNS
                 name_frame[!, column_name] = fill(metadata[column_name], n_rows)
             end
+            push!(kept_metadata, metadata)
         end
         push!(frames, hcat(name_frame, results_frame; makeunique = true))
     end
@@ -331,12 +698,19 @@ function run_neural_gather(section::AbstractDict, id::String, workdir::String)::
               join(missing_files, "\n  ")
     end
     if !isempty(unparsed_names)
-        @warn "[$(id)] $(length(unparsed_names)) file name(s) are not of the (p, sigma, sample) form; their rows " *
-              "have no arm or dataset columns:\n  " * join(first(unparsed_names, 5), "\n  ")
+        unparsed_fate::String = "their rows have no arm or dataset columns"
+        if !is_open
+            unparsed_fate = "they are left out, having nothing to select them by"
+        end
+        @warn "[$(id)] $(length(unparsed_names)) file name(s) are not of the (p, sigma, sample) form; " *
+              "$(unparsed_fate):\n  " * join(first(unparsed_names, 5), "\n  ")
     end
     if isempty(frames)
-        error("[$(id)] none of the $(length(file_names)) file(s) could be read from $(results_dir).")
+        error("[$(id)] nothing gathered from $(results_dir): $(length(file_names)) candidate file(s), " *
+              "$(n_not_selected) outside the selection (train_instance / test_pairs / test_samples / seeds / " *
+              "cer_arms / run_label).")
     end
+    report_missing_combinations(selection, kept_metadata, id)
     gathered_frame::DataFrame = reduce((left, right) -> vcat(left, right; cols = :union), frames)
     sort!(gathered_frame, :results_file)
 
@@ -350,8 +724,12 @@ function run_neural_gather(section::AbstractDict, id::String, workdir::String)::
         end
         arm_counts_text = " (" * join(arm_counts, ", ") * ")"
     end
-    println("  [$(id)] gathered $(nrow(gathered_frame)) row(s) from $(length(frames)) file(s)$(arm_counts_text) " *
-            "-> $(output_path)")
+    selection_text::String = ""
+    if !is_open
+        selection_text = "; $(n_not_selected) outside the selection"
+    end
+    println("  [$(id)] gathered $(nrow(gathered_frame)) row(s) from $(length(frames)) file(s)$(arm_counts_text)" *
+            "$(selection_text) -> $(output_path)")
     return nothing
 end
 

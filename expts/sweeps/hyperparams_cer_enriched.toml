@@ -1,0 +1,128 @@
+# =============================================================================
+# hyperparams_cer_enriched.toml -- the CER arm with the ENRICHED check node
+#
+# The 72q_BB_cycles_1_sweep run's hyperparams_baseline.toml (the 2026-10-20
+# submission), UNCHANGED down to the "check node" block at the end. So the CER
+# arm trained from this file differs from the 2026-10-20 CER arm in the check
+# node alone, and at the same seed it starts from the same initial weights and
+# sees the same 10^4-sample training draw and batch order (alpha is set, not
+# drawn at random).
+#
+# It must sit in the run's models/ folder, next to hyperparams_baseline.toml:
+#
+#     cd expts
+#     cp sweeps/hyperparams_cer_enriched.toml ../data/72q_BB_cycles_1_sweep/models/
+#
+# Submit with sweeps/enriched_submission.toml (it says how).
+#
+# =============================================================================
+
+# Whether to retrain the model even if trained weights are available.
+retrain = true
+
+# Learning rate for training the Neural BP model using the ADAM optimizer
+learning_rate = 0.001
+
+# Gradient clipping threshold
+max_grad_norm = 2.0
+
+# L2 regularization strength for ADAM optimizer
+weight_decay = 0.0001
+
+# Number of consecutive NaN occurrences in the loss before skipping the batch during training
+nanskip = 5
+
+# Epsilon parameter for the ADAM optimizer to improve numerical stability
+adam_eps = 0.0001
+
+# Batch size for training
+batch_size = 20
+
+# Number of training epochs
+n_epochs = 10
+
+# Number of layers to leave unconstrained in the loss function.
+warmup_layers = 0
+
+# Initial conditions for the learnable parameters: all weights are initialized to Gaussian random values around 1, with a standard deviation of σ. We will specify σ here.
+initial_conditions_scale = 0.1
+
+# Whether to simulate online training by generating random batches of training samples on the fly instead of reading from a file.
+# Note: we don't have an actual implementation for online training yet, so this will just read random batches from the training dataset to simulate the online training scenario.
+online_training = true
+
+# If `online_training` is true, this parameter specifies how many random batches we will generate (or read from the training dataset) for each epoch. If `online_training` is false, this parameter is ignored and we simply use all the batches from the training dataset as usual.
+n_gradient_updates_per_epoch = 500
+
+# Number of error samples to train on. 0 = every sample in the training file.
+training_samples = 10000
+
+# A guess for the weight of errors at the boundary between the correctable and
+# uncorrectable regions; most training samples will have this weight. 0 = no weighting.
+failure_weight_boundary = 3
+
+# Whether to use CER (Cycle Error Reconstruction) data for decoding. If false, we will append the results and models files with `_no_cer`.
+use_CER = true
+
+# Tag appended to model + results filenames so sweep points never collide.
+run_tag = "_test"
+
+# Softmin temperature over the scored layers, "min,max,decay,direction": anneals from max to min over epochs.
+# Only relevant for loss_layer_selection = "softmin".
+loss_layer_temperature = "2e-1,1e0,0.7,down"
+
+# RNG seed. If seeded: runs from it are reproducible, and every output
+# it produces is tagged `_seed_1` —
+#     models/neuralbp_weights_..._trained_using_train_p_..._seed_1.json
+#     results/simulation_results_..._trained_using_train_p_..._seed_1.csv
+#     logs/debugging_train_p_..._seed_1.csv
+# so they neither collide with nor are found by the untagged files produced
+# before seeding existed. The seed is also recorded INSIDE the weights JSON and
+# as a `seed` column in the results CSV.
+#
+# Comment this line out to return to an unseeded, non-deterministic run. Override
+# it per-run with `--seed <n>` on the command line, which is how to sweep seeds
+# without writing one TOML per seed.
+seed = 1
+
+# --- Single-qubit prior rescaling: an INFERENCE TEMPERATURE ------------------
+# Rescale the CER single qubit error rates so their median lands on this value.
+# 0 (the default) disables it and leaves the rates exactly as parsed.
+#
+# NOTE: if the highest single-qubit rate is already at or above this value, the
+# rates are left exactly as parsed. 
+single_qubit_rescale = 0.1
+
+# Rule to combine the outputs of different layers when computing the loss.
+loss_layer_selection = "ramp"
+
+# Rule to determine which layer's output is used for committing the final decision.
+commit_layer_rule = "last"
+
+# Backpropagation settings.
+# Whether to run a manual backpropagation step for each batch, instead of using an automatic differentiation framework.
+# If `USE_GPU` is true, manual backpropagation will still be performed on the GPU.
+manual_backprop = true
+
+# --- check node: the CER pair couplings inside each check -------------------
+# "tanh" (the default, and the 2026-10-20 run) uses only the per-qubit rates of
+# the CER file, as priors. "enriched" also puts a correlation table inside each
+# check factor, psi_c(x) = 1[parity of x = syndrome bit] * exp(alpha * T_c(x)),
+# and sends the exact marginal of that factor (src/soft_constraints.jl).
+check_node = "enriched"
+# The PAIRWISE table: T_c(x) = sum over the check's pairs of J_ik x_i x_k, the
+# 540 couplings J_ik of the CER file (its pair lines), exactly as in the
+# 2026-10-19 enriched_vs_nocer sweep.
+enriched_table = "pairwise"
+# alpha starts at the unit-consistent value for the TRAINING set:
+# single_qubit_rescale = 0.1 maps the median per-qubit rate m to 0.1, which
+# softens the per-qubit log-odds by ln 9 / ln((1 - m) / m), and the table is
+# softened by the same factor. m = 0.01653 for p_0.0015_sig_0.003_s_1, so
+# alpha* = 0.538. Learned from there (it moved by under 0.03 in every earlier
+# run). The learned value is used unchanged on every test set, whose own
+# alpha* runs from 0.32 (p = 1e-4) to 0.54 (p = 1.5e-3).
+coupling_scale_init = 0.538
+coupling_scale_learnable = true
+# Refuse to run on a CER file without pairs: the arm would silently be the tanh
+# arm under another name.
+require_correlations = true

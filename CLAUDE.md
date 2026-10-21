@@ -1513,11 +1513,43 @@ The general-purpose driver for the `72q_BB_cycles_1_sweep` data (8 p × sigma �
   (from expts/, on the laptop: postprocess.jl loads PlotsForBPDecoder/Plots) writes
   into `<codename>/results/`: `decoder_statistics_NeuralBP.csv` (one row per results
   CSV), `decoder_statistics_BP_OSD.csv` and `decoder_statistics_BP.csv` (one row per
-  reference table). The older panels all point at `data/update_23July2026`, which is
-  not on the laptop.
+  reference table). The default panel (`postprocess_panel.toml`, no `--config`) points
+  at the sweep too since 2026-10-21, with the same three gathers. Its
+  `standardbp_gather` / `bp_gather` had kept the July `files` lists
+  (`72q_BB_p_<p>_cycles_1_…`), which name nothing in the sweep, so they failed with
+  "no rows collected"; they now use the sweep panel's patterns. The other panels point
+  at `data/update_23July2026`, which is not on the laptop.
 - Gather sections take `pattern` (shell-style `*`/`?`, one or a list; `glob_regex`)
   and/or `files`, and REPLACE their output. They used to call `save_decoder_dataframe`,
   which APPENDS to an existing file, so every re-run duplicated all rows.
+- **`neural_gather` selects by the submission's own keys (2026-10-21)**:
+  `train_instance = [p, sigma, sample]`, `test_pairs = [[p, sigma], …]` × `test_samples`,
+  `seeds`, `cer_arms` (`"cer"` / `"nocer"`) and `run_label` (→ run tags
+  `_<arm>[_<label>]`; a label with no arms means both). Each narrows the candidates
+  (every `simulation_results_*.csv` unless `pattern`/`files` say otherwise) by what the
+  file NAME says — p and sigma compared as numbers (`same_dataset_number`, 1e-9
+  relative), not text; a key left out or empty keeps every value. The parsers are the
+  submission's: `submission/dataset_settings.jl` (new file; `python_float_text`,
+  `dataset_key`, `DatasetPair`/`DatasetInstance`, `parse_dataset_instance`,
+  `dataset_pairs`, `sample_indices`, `test_instance_list`), included by both
+  `batch_commands.jl` and `postprocess.jl`, so "2p" is refused in both. With arms,
+  seeds, pairs and samples all set, the gather warns about every requested (arm, seed,
+  test dataset) with no file or with more than one (two training sets with
+  `train_instance` open, say); nothing selected is an error. Checked through a Python
+  mirror on the 240 real results names: the panel keeps 240 (0 missing, 0 repeated);
+  `seeds = [1]` 48; the 8 sigma = 0 pairs 80; `test_samples = [1, 2]` 240 kept + 240
+  missing; `cer_arms = ["cer"]` 120; `run_label = "big"` or a wrong `train_instance`
+  → error; every key removed or empty → 240. The name's seed equals the CSV's `seed`
+  column in all 240.
+- **The reference gathers take `test_pairs` / `test_samples` too** (2026-10-21,
+  `TestDatasetSelection`, `admits_test_dataset`, `requested_datasets_without_files`,
+  shared with neural_gather): files whose name carries no dataset are then left out,
+  a requested dataset with no table is warned about, none at all is an error. The data
+  has 104 tables per decoder (samples 1–5, 1–3 at sigma = 0); both panels say
+  `test_samples = [1]`, which gives exactly the 24 test datasets of the Neural BP run,
+  so `test_key` joins the three CSVs one to one (checked: the 24 BP, 24 BP+OSD and 24
+  neural keys are the same set; every table's own p and sample agree with its name).
+  Leave `test_samples` out to gather all 104.
 - **The arm and the datasets are only in the file names**: a results CSV has `seed`,
   `check_node`, the coset/convergence counts and the test file's path, but no
   `use_CER`, run tag or sigma column. `neural_gather` adds `results_file`, `arm`
@@ -1538,7 +1570,131 @@ The general-purpose driver for the `72q_BB_cycles_1_sweep` data (8 p × sigma �
 - **The plot sections are not (p, sigma)-aware**: `_logical_error_rate_vs_p` groups rows
   by `test_p_<p>` alone and averages the rest, so on this run it would merge sigma = 0,
   p, 2p and both arms into one point per p. Off in the sweep panel until they learn the
-  new columns.
+  new columns. `misc/compare_decoders.py` (below) is the (p, sigma)-aware comparison.
+
+## Measured 2026-10-21: the `72q_BB_cycles_1_sweep` run against BP and BP+OSD
+
+The run: trained on `p_0.0015_sig_0.003_s_1`, tested on the 24 sets (8 p × sigma ∈
+{0, p, 2p}) at sample 1, 10⁶ shots each, cer / nocer × seeds 1–5. **Both arms use the
+TANH check node** (so CER = per-qubit priors only, no couplings), ramp + last at
+warmup 0, 10 epochs, the Poisson(3) 10k training set; 0 rollbacks in all 10 trainings.
+
+- **Tools.** `python3 misc/compare_decoders.py --workdir <codename> [--seed N]` reads the
+  three gathered CSVs (+ `results/reference_decoders_rerun.csv` if present) and writes
+  `results/decoder_comparison.csv` (failures and LER of every decoder per test set) and
+  `plots/decoder_comparison.{pdf,png}` (LER vs p per sigma, seed bands, CER/no-CER
+  ratio row). `python3 misc/reference_decoders.py --workdir <codename> --keys … |
+  --all-keys --configs <bp|osd0|osd_e<k>|osd_cs<k>>:<cer|mean|number>:<max_iter>`
+  re-runs ldpc BP / BP+OSD (each distinct syndrome once; loads ldpc's decoder modules
+  without its `__init__`, which needs stim), refuses a `--testing-dir` whose samples
+  differ from the ones the per-sample failure files list, and upserts
+  `results/reference_decoders_rerun.csv`.
+- **Seeds.** The user's rule: a FIXED seed (1) is the fair number; the best seed is
+  chosen on the test data, so optimistic. Best = lowest geometric-mean LER over the 24
+  sets (total failures and mean rank agree): **nocer 1, cer 3**. nocer seed 5 is 2.2×
+  worse than seed 1 in geometric mean with no rollback — a genuinely worse model.
+- **The shipped reference tables are a weak baseline.** They are ldpc with a uniform
+  prior of **0.1** (6–100× the sets' mean single-qubit rate), 500 iterations,
+  product-sum, parallel, and **OSD-E of order 2**, which is OSD-0 in practice (osd0 / E1
+  / E2 / E3 give 3601 / 3600 / 3599 / 3598 on `p_0.0005_sig_0.0005_s_1`). Reproduced to
+  the failure (`bp:0.1:500`, `osd_e2:0.1:500`) on the 5 sweep sets whose test files are
+  on the laptop — `data/72q_BB_cycles_1_trainable_alpha/testing_data` holds the sweep's
+  own samples for `p_0.0005_sig_{0.0,0.0005,0.001}_s_1` and `p_0.0015_sig_{0.0,0.0015}_s_1`
+  (every failing sample's error weight in the sweep's per-sample files matches). Against
+  them the NBP fails 0.10× BP+OSD (geometric mean; 0.013–0.38) and BP+OSD 0.40× BP on
+  every set; the shipped decoders scale as p^0.93 (they fail on single-fault patterns),
+  the NBPs as p^2.
+- **With the sets' own rates the picture changes** (failures per 10⁶; NBP at seed 1,
+  best seed in brackets where it differs):
+
+  | set | shipped BP+OSD | BP, CER rates, 90 / 500 it | BP+OSD-CS10, CER rates, 90 / 500 it | BP+OSD-CS10, mean rate, 500 it | NBP nocer | NBP cer |
+  |---|---|---|---|---|---|---|
+  | p.0005 σ0 | 3155 | 2002 / 179 | 466 / 156 | 174 | 193 | 217 (216) |
+  | p.0005 σ.0005 | 3599 | 2711 / 245 | 535 / 217 | 251 | 257 | 235 (229) |
+  | p.0005 σ.001 | 4572 | 1894 / 388 | 534 / 343 | 428 | 433 | 359 (354) |
+  | p.0015 σ0 | 8701 | 3295 / 2120 | 2151 / 1815 | 2129 | 2066 | 2242 (2098) |
+  | p.0015 σ.0015 | 9771 | 6146 / 2784 | 2909 / 2430 | 2966 | 2782 | 2939 (2509) |
+
+  BP needs ~500 iterations here (it is 1.5–11× worse at 90); at the NBP's 90-iteration
+  budget the NBP beats BP by that much and BP+OSD-CS10 by up to ~55% at p = .0005 (tie
+  at .0015). Given 500 iterations, plain BP with the CER rates is level with the NBP
+  (±20%), and **BP+OSD-CS10 with the CER rates has fewer failures than every NBP model on
+  all 5 sets** (3–19% below the best of the 10 models on each set; the two 3% cases are
+  within noise). NBP no-CER ≈ BP+OSD-CS10 at
+  the mean rate (−6% to +11%). The other 19 sets need the run on Narval (`--all-keys`,
+  ~5 s per config per set). Not yet measured: the NBP with a BP+OSD fallback on its
+  convergence failures (the 2026-10-19 pipeline), which is the comparison that matters
+  if OSD is downstream.
+- **CER vs no-CER (tanh, priors only)**, geometric-mean LER ratio cer/nocer per sigma
+  group (sets where CER is lower): seed 1 — σ = 0 1.38 (1/8; the p = 1e-4 point is 57 vs
+  9 failures), σ = p 0.93 (7/8), σ = 2p 0.84 (8/8); best seeds 1.03 / 0.92 / 0.82; median
+  over seeds 1.25 / 0.84 / 0.73. The σ = 0 numbers are pulled up by the p = 1e-4 set,
+  which is bimodal: cer seeds 1–5 fail 57 / 65 / 7 / 52 / 9 times, nocer 9 / 12 / 9 / 6 /
+  70 — the "block" signature (one frequent pattern failing on every occurrence), in 3 of
+  5 CER models and 1 of 5 no-CER. Without that set, σ = 0 is 1.11 / 1.07 / 1.01. The
+  priors help in proportion to the gate-rate spread and not at all without it. Coset vs convergence over the 24 sets: nocer s1 11492 /
+  16452, cer s1 12404 / 14452 — the usual trade.
+- **The same rates help the classical decoders as much or more** (5 local sets, CER
+  rates vs the uniform mean rate, 500 it): plain BP −10% / −25% / −15% / −25% / −25%
+  and BP+OSD-CS10 −10% / −15% / −14% / −18% / −20% on p.0005 σ0, p.0015 σ0, p.0005 σp,
+  p.0015 σp, p.0005 σ2p — INCLUDING σ = 0, where the NBP CER arm gains nothing (+12%,
+  +9% at seed 1). At σ = 0 the 72 rates are nearly flat (max/min 1.3; 2.6 at σ = p, ~4
+  at σ = 2p) and their pattern correlates 0.37 with the training set's (0.97 for the
+  σ = p set), so the likely reason is that the CER model learned on the σ = 2p pattern
+  and does not transfer to σ = 0's (inference, untested). The no-CER models did NOT
+  quietly learn the training device's per-qubit pattern: their 90 × 72
+  `weights_llrs` (layer-major), averaged over layers, correlate +0.23 / +0.14 / +0.03 /
+  +0.14 / −0.04 with the training rates' log-odds (control, the s_2 pattern: −0.04 to
+  −0.08), and their per-qubit spread (sd 0.016–0.020) is the initial noise averaged
+  over 90 layers.
+
+### Next: the enriched check node on the same run (prepared 2026-10-21, not yet run)
+
+- **Why the 2026-10-20 CER arm used only half the CER file**: its
+  `hyperparams_baseline.toml` has no `check_node` key, so the default `"tanh"` ran,
+  and tanh reads only the per-qubit rates (as priors). The file's 540 pair couplings
+  J_ik enter only through `check_node = "enriched"`.
+- **Files (tracked, `expts/sweeps/`)**: `hyperparams_cer_enriched.toml` and
+  `hyperparams_cer_bethe.toml` are that baseline byte for byte plus a check-node
+  block (`check_node = "enriched"`, `enriched_table = "pairwise"` / `"bethe"`,
+  `coupling_scale_init = 0.538` learned, `require_correlations = true`); at the same
+  seed they start from the same weights, training draw and batch order as the
+  2026-10-20 CER arm (α is set, not drawn). `enriched_submission.toml` /
+  `bethe_submission.toml` are batch_run.jl settings: the 2026-10-20 datasets and
+  seeds, `cer_arms = ["cer"]` (the no-CER arm would only repeat itself),
+  `run_label = "enr"` / `"bethe"` (run tags `_cer_enr` / `_cer_bethe`, beside the old
+  files), `trainings_per_gpu = 2` (enriched kernels are heavier: 3 training tasks),
+  `wall_time = "2:00:00"` (batch_run.jl estimates 10 epochs × 300 s + 600 s = 60 min,
+  which a 1 h wall refuses). Run on Narval from expts/: copy the hyperparams file into
+  `../data/72q_BB_cycles_1_sweep/models/`, then `julia --project="./../" batch_run.jl
+  --settings sweeps/enriched_submission.toml` and the printed `submit_<ts>.sh`. The
+  Bethe one first needs `misc/build_bethe_tables.py` for the 24 s_1 keys (the
+  training key is one of them; the loop is in its settings file), and should start
+  after the enriched training job is running: each submission prepares the depot
+  behind its own lock, so two at once could rebuild CUDA_Runtime_jll concurrently.
+  Checked with the batch_run Python mirror + stub-executed template: 3/3 train tasks,
+  5 models `…_cer_enr_seed_<n>.json`, 24/24 test tasks, 120 results, the derived
+  TOMLs carry the enriched keys, the commands are the 2026-10-20 ones but for the
+  hyperparams path.
+- **Why not `sweep_hyperparams.sh`** for this run: its jobs stage the WHOLE codename
+  directory (`tar -chf - -C $WORKDIR $CODENAME`), ~30 GB here (208 files of 144 MB),
+  on every array task, and it writes softmin + first unless told otherwise; the
+  submission pipeline stages only the files a slice reads and is what produced the
+  results being compared.
+- **α**: 0.538 is α* for the TRAINING set (median raw rate 0.01653). The learned α is
+  used unchanged on every test set, whose own α* runs from 0.32 (p = 1e-4) to 0.54,
+  so at low p the couplings are relatively too strong (up to 1.7×); a test-time
+  rescale α_test = α · α*(test) / α*(train) is not implemented. Same argument for the
+  Bethe table (its T is in raw units; the priors are rescaled), hence 0.538 there too
+  rather than the raw-units Bayesian 1.
+- **Gathering them**: `neural_gather`'s `cer_arms` now also takes an arm with its
+  submission's label (`"cer_enr"`, `"cer_bethe"`: `^(cer|nocer)(_<label>)?$`, no
+  "seed"), so `cer_arms = ["cer", "nocer", "cer_enr", "cer_bethe"]` gathers all four
+  (commented in both panels). `compare_decoders.py` takes every gathered arm by
+  default (nocer first, then cer, then the rest), prints each arm's ratio to the first
+  per sigma group, and draws one ratio line per arm. Checked on the 240 real names
+  plus 240 synthetic `_cer_enr` / `_cer_bethe` ones (mirror of the selection: 360 /
+  480 kept, `cer_seed`, `CER`, `enr` refused) and a synthetic 4-arm figure.
 
 ## Run tags (changed 2026-10-09)
 

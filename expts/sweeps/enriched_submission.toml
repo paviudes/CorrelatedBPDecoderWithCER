@@ -1,0 +1,90 @@
+# =============================================================================
+# enriched_submission.toml -- batch_run.jl settings: the CER arm with the
+# ENRICHED check node (pairwise couplings), on the 72q_BB_cycles_1_sweep data,
+# to set beside the 2026-10-20 run's CER-tanh and no-CER arms.
+#
+# On Narval, from expts/:
+#
+#     cp sweeps/hyperparams_cer_enriched.toml ../data/72q_BB_cycles_1_sweep/models/
+#     julia --project="./../" batch_run.jl --settings sweeps/enriched_submission.toml
+#     bash ../data/72q_BB_cycles_1_sweep/cluster/submit_<timestamp>.sh
+#
+# (batch_run.jl prints the last line with the real timestamp.) Warm the depot on
+# the login node first if anything changed since the last run:
+# bash misc/precompile_depot.sh.
+#
+# WHAT IT RUNS: 5 models (cer, seeds 1-5) trained on p_0.0015_sig_0.003_s_1, then
+# 5 x 24 = 120 tests on the same 24 datasets at sample 1. Everything but the
+# check node is the 2026-10-20 run's (hyperparams_cer_enriched.toml is its
+# hyperparams_baseline.toml plus the check-node block), so the existing _cer and
+# _nocer results are the other two arms; nothing of them is re-run.
+#
+# NAMES: run_label = "enr" gives the run tag _cer_enr, so the files are
+#     models/neuralbp_weights_nlayers_90_epochs_10_trained_using_train_p_0.0015_sig_0.003_s_1_cer_enr_seed_<n>.json
+#     results/simulation_results_test_<key>_nlayers_90_epochs_10_trained_using_train_p_0.0015_sig_0.003_s_1_cer_enr_seed_<n>.csv
+# beside, never over, the _cer / _nocer files. To gather all three arms, set
+# cer_arms = ["cer", "nocer", "cer_enr"] in the panel's [neural_gather].
+#
+# WALLTIME: the enriched node is ~10x the check-node arithmetic of tanh. A wave of
+# 2 enriched + 2 tanh trainings sharing an A100 took ~25 min for 5 epochs
+# (2026-10-19); these models train 10 epochs, so batch_run.jl estimates 10 x 300 s
+# + 600 s of startup = 60 min, which a 1 h wall refuses. 2 h holds it twice over
+# (and <= 3 h is the shortest Alliance walltime class, so it costs nothing in the
+# queue). Two trainings per card, not four, since the enriched kernels keep the
+# card busier: 3 training tasks. Testing: 24 tasks of 5 tests, ~25 min.
+# =============================================================================
+
+# --- data ---
+workdir          = "./../data"
+dirnames         = ["72q_BB_cycles_1_sweep"]
+
+# --- datasets: the 2026-10-20 run's, unchanged ---
+train_instance   = [0.0015, 0.003, 1]
+test_pairs       = [
+    [0.0001, 0.0], [0.0001, 0.0001], [0.0001, 0.0002],
+    [0.0003, 0.0], [0.0003, 0.0003], [0.0003, 0.0006],
+    [0.0005, 0.0], [0.0005, 0.0005], [0.0005, 0.001],
+    [0.0007, 0.0], [0.0007, 0.0007], [0.0007, 0.0014],
+    [0.0009, 0.0], [0.0009, 0.0009], [0.0009, 0.0018],
+    [0.0011, 0.0], [0.0011, 0.0011], [0.0011, 0.0022],
+    [0.0013, 0.0], [0.0013, 0.0013], [0.0013, 0.0026],
+    [0.0015, 0.0], [0.0015, 0.0015], [0.0015, 0.003],
+]
+test_samples     = [1]
+
+# --- arms and seeds ---
+# The CER arm only: it carries the check node of hyperparams_file. (A "nocer"
+# arm is always the tanh rule, so it would repeat the 2026-10-20 no-CER models.)
+cer_arms         = ["cer"]
+seeds            = [1, 2, 3, 4, 5]
+run_label        = "enr"
+
+# --- model ---
+hyperparams_file = "hyperparams_cer_enriched.toml"
+n_hidden_layers  = 90
+heap_size_hint   = "4G"
+
+# --- which jobs ---
+train            = true
+test             = true
+
+# --- devices ---
+gpu_for_training  = true
+gpu_for_testing   = true
+trainings_per_gpu = 2
+
+# --- backend ---
+cluster_backend  = "SLURM"
+
+# --- HPC resources: one whole Narval A100 per array task (12 cores, 32 GB) ---
+account          = "def-jemerson_gpu"
+n_gpus_per_node  = 1
+gpu_type         = "a100"
+cuda_module      = "cuda"
+n_cpus           = 12
+mem_per_gpu      = "32G"
+mem_per_cpu      = "4G"
+vram_per_gpu     = 0
+max_nodes        = 24
+wall_time        = "2:00:00"
+email            = "pavithran.sridhar@gmail.com"

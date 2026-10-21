@@ -1,0 +1,89 @@
+# =============================================================================
+# bethe_submission.toml -- batch_run.jl settings: the CER arm with the enriched
+# check node on the BETHE table, on the 72q_BB_cycles_1_sweep data. The same as
+# enriched_submission.toml in everything but the table (and the run label).
+#
+# The Bethe table of a dataset is its checks' 6-bit joint over the product of the
+# marginals, estimated from that dataset's training file -- the full local
+# statistics that the pairwise couplings of the CER file only approximate
+# (CLAUDE.md, "The pairwise factor is mis-specified on this data"). A model
+# trained here reads the training key's table, and each test reads its test
+# key's, so build all 24 first. On Narval, from expts/ (needs numpy, e.g.
+# `module load scipy-stack`; about a second per key):
+#
+#     for key in $(ls ../data/72q_BB_cycles_1_sweep/testing_data | sed -n 's/^test_\(p_.*_s_1\)\.txt$/\1/p'); do
+#         python3 misc/build_bethe_tables.py --workdir 72q_BB_cycles_1_sweep --key "$key"
+#     done
+#
+# (The training key, p_0.0015_sig_0.003_s_1, is one of the 24.) batch_run.jl
+# refuses to write the jobs while any table is missing, and names it. Then:
+#
+#     cp sweeps/hyperparams_cer_bethe.toml ../data/72q_BB_cycles_1_sweep/models/
+#     julia --project="./../" batch_run.jl --settings sweeps/bethe_submission.toml
+#     bash ../data/72q_BB_cycles_1_sweep/cluster/submit_<timestamp>.sh
+#
+# Submit it AFTER the enriched submission's training job has started running
+# (or after it has finished): each submission prepares the shared Julia depot
+# behind its own lock, so two starting at once could rebuild CUDA_Runtime_jll at
+# the same time, which is the race that killed 3 of 8 tasks on 2026-10-01.
+#
+# NAMES: run_label = "bethe" gives the run tag _cer_bethe:
+#     models/neuralbp_weights_nlayers_90_epochs_10_trained_using_train_p_0.0015_sig_0.003_s_1_cer_bethe_seed_<n>.json
+# Gather with cer_arms = ["cer", "nocer", "cer_enr", "cer_bethe"].
+#
+# WALLTIME and layout as in enriched_submission.toml: 3 training tasks of up to
+# 2 models (estimate 60 min of the 2 h wall), 24 test tasks of 5.
+# =============================================================================
+
+# --- data ---
+workdir          = "./../data"
+dirnames         = ["72q_BB_cycles_1_sweep"]
+
+# --- datasets: the 2026-10-20 run's, unchanged ---
+train_instance   = [0.0015, 0.003, 1]
+test_pairs       = [
+    [0.0001, 0.0], [0.0001, 0.0001], [0.0001, 0.0002],
+    [0.0003, 0.0], [0.0003, 0.0003], [0.0003, 0.0006],
+    [0.0005, 0.0], [0.0005, 0.0005], [0.0005, 0.001],
+    [0.0007, 0.0], [0.0007, 0.0007], [0.0007, 0.0014],
+    [0.0009, 0.0], [0.0009, 0.0009], [0.0009, 0.0018],
+    [0.0011, 0.0], [0.0011, 0.0011], [0.0011, 0.0022],
+    [0.0013, 0.0], [0.0013, 0.0013], [0.0013, 0.0026],
+    [0.0015, 0.0], [0.0015, 0.0015], [0.0015, 0.003],
+]
+test_samples     = [1]
+
+# --- arms and seeds ---
+cer_arms         = ["cer"]
+seeds            = [1, 2, 3, 4, 5]
+run_label        = "bethe"
+
+# --- model ---
+hyperparams_file = "hyperparams_cer_bethe.toml"
+n_hidden_layers  = 90
+heap_size_hint   = "4G"
+
+# --- which jobs ---
+train            = true
+test             = true
+
+# --- devices ---
+gpu_for_training  = true
+gpu_for_testing   = true
+trainings_per_gpu = 2
+
+# --- backend ---
+cluster_backend  = "SLURM"
+
+# --- HPC resources: one whole Narval A100 per array task (12 cores, 32 GB) ---
+account          = "def-jemerson_gpu"
+n_gpus_per_node  = 1
+gpu_type         = "a100"
+cuda_module      = "cuda"
+n_cpus           = 12
+mem_per_gpu      = "32G"
+mem_per_cpu      = "4G"
+vram_per_gpu     = 0
+max_nodes        = 24
+wall_time        = "2:00:00"
+email            = "pavithran.sridhar@gmail.com"
