@@ -9,6 +9,9 @@ include("test_soft_constraints.jl")
 # Which samples of the training pool the batches are drawn from. @testsets at
 # include time.
 include("test_sample_selection.jl")
+# The test-time α transfer (coupling_scale_transfer = "alpha_star"). @testsets at
+# include time.
+include("test_coupling_scale_transfer.jl")
 # The hand-written backward pass, one forward rule at a time. @testsets at
 # include time; the GPU testset runs on plain Arrays when no backend is present.
 include("test_backward_pass.jl")

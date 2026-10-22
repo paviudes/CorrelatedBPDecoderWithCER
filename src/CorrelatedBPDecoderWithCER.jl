@@ -162,7 +162,10 @@ export CHECK_NODE_TANH, CHECK_NODE_ENRICHED, check_node_code, check_node_name, S
 # Neural belief propagation
 include("neuralbase.jl")
 export NeuralBPBase, NeuralBP, add_soft_constraints_to_neuralbpbase, parse_cer_data,
-       rescale_single_qubit_error_rates
+       rescale_single_qubit_error_rates,
+       COUPLING_SCALE_TRANSFER_NONE, COUPLING_SCALE_TRANSFER_ALPHA_STAR, COUPLING_SCALE_TRANSFER_TAG,
+       coupling_scale_transfer_mode, prior_softening_factor, CouplingScaleTransfer,
+       transfer_coupling_scale, training_key_cer_data_file
 
 # Nachmani Neural BP model
 include("nachmani.jl")

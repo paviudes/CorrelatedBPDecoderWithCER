@@ -127,6 +127,22 @@ if abspath(PROGRAM_FILE) == @__FILE__
         end
     end
 
+    # Which α a TEST decodes with (src/neuralbase.jl, "Carrying α to another test
+    # set"): the learned one ("none", every earlier run) or the learned one carried
+    # to the test key's prior scale ("alpha_star"). Test-time only, and it tags the
+    # results files but not the weights file, so the trained model is the one loaded.
+    coupling_scale_transfer::String = coupling_scale_transfer_mode(
+        String(get(hyperparams, "coupling_scale_transfer", COUPLING_SCALE_TRANSFER_NONE)))
+    transfer_tag::String = ""
+    if coupling_scale_transfer == COUPLING_SCALE_TRANSFER_ALPHA_STAR
+        if check_node != "enriched"
+            throw(ArgumentError(
+                "coupling_scale_transfer = \"$(COUPLING_SCALE_TRANSFER_ALPHA_STAR)\" rescales the " *
+                "enriched check node's α; check_node = \"$(check_node)\" has no α to rescale."))
+        end
+        transfer_tag = COUPLING_SCALE_TRANSFER_TAG
+    end
+
     # Train the Neural BP model
     base::NeuralBPBase = load_base_BP_model(
         parity_check_matrix_file, logicals_file, n_hidden_layers;
@@ -183,13 +199,29 @@ if abspath(PROGRAM_FILE) == @__FILE__
     results_file = "$(results_dir)/simulation_results_$(testing_source)_" *
                "nlayers_$(n_hidden_layers)_" *
                "epochs_$(n_epochs)_" *
-               "trained_using_$(training_source)$(cer_tag)$(run_tag)$(seed_tag).csv"
-    
+               "trained_using_$(training_source)$(cer_tag)$(run_tag)$(transfer_tag)$(seed_tag).csv"
+
     if isfile(results_file)
         println("Results file already exists: $(results_file). Skipping testing of the Neural BP model and loading results from file.")
         results_df = collect_decoder_statistics(results_file)
         print_simulation_results_to_console(results_df)
         exit(0)
+    end
+
+    # The α this test decodes with. The learned one is recorded either way, so a
+    # results CSV says both what was trained and what was used.
+    learned_coupling_scale::Float32 = effective_coupling_scale(bpnn)
+    if coupling_scale_transfer == COUPLING_SCALE_TRANSFER_ALPHA_STAR
+        training_cer_data_path::String = training_key_cer_data_file(prefix, training_source)
+        coupling_transfer::CouplingScaleTransfer = transfer_coupling_scale(
+            learned_coupling_scale, cer_data_file, training_cer_data_path,
+            Float32(get(hyperparams, "single_qubit_rescale", 0.0f0)))
+        bpnn.coupling_logit .= logit_from_coupling_scale(coupling_transfer.transferred_coupling_scale)
+        print_info("[coupling_scale_transfer=alpha_star] α = $(learned_coupling_scale) (learned) × " *
+                   "$(round(coupling_transfer.test_softening_factor, digits = 4)) (α* of $(basename(cer_data_file))) / " *
+                   "$(round(coupling_transfer.training_softening_factor, digits = 4)) (α* of " *
+                   "$(basename(training_cer_data_path))) = $(effective_coupling_scale(bpnn)). " *
+                   "Results tagged `$(transfer_tag)`.")
     end
 
     # `--diagnose` splits failures into coset vs convergence failures. It replaces
@@ -291,6 +323,10 @@ if abspath(PROGRAM_FILE) == @__FILE__
     push!(extra_result_columns, "enriched_table" => enriched_table)
     push!(extra_result_columns, "coupling_scale" => effective_coupling_scale(bpnn))
     push!(extra_result_columns, "coupling_logit" => bpnn.coupling_logit[1])
+    # How the α above was chosen, and the trained α it came from (equal to it under
+    # "none"). Recorded for every run, so the column set does not depend on the mode.
+    push!(extra_result_columns, "coupling_scale_transfer" => coupling_scale_transfer)
+    push!(extra_result_columns, "learned_coupling_scale" => learned_coupling_scale)
 
     # Diagnostic aggregates. `num_failures` (already recorded) is the sum of
     # num_coset_failures and num_convergence_failures; splitting it is the whole

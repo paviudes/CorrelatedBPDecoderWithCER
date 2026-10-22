@@ -563,3 +563,142 @@ function rescale_single_qubit_error_rates(
     end
     return rescaled_rates
 end
+
+# ============================================================================
+#        Carrying α to another test set: the prior softening factor α*
+# ============================================================================
+# `rescale_single_qubit_error_rates` softens the priors and leaves the couplings
+# J as parsed. For the median qubit the softening is a ratio of log-odds,
+#
+#     α* = ln((1 − t)/t) / ln((1 − m)/m),     t the target median, m the raw median,
+#
+# and α* × J puts the couplings in the same (softened) units as the priors. It
+# depends on the key's rates — 0.538 on p_0.0015_sig_0.003_s_1, 0.395 on
+# p_0.0005_sig_0.0_s_1, 0.318 on p_0.0001_sig_0.0_s_1 — while J itself grows as p
+# falls (median strong pair 2.8 → 4.6), so a learned α used unchanged on every test
+# set sends couplings up to 1.6× stronger than any the model was trained with.
+# `coupling_scale_transfer = "alpha_star"` keeps the learned α's ratio to α*:
+#
+#     α_test = α_learned · α*(test key) / α*(training key).
+#
+# Test-time only: training never reads it, and the weights filename is unchanged,
+# so the trained model is the one loaded. Measured 2026-10-22 with the numpy mirror
+# of the test forward (misc/nbp_mirror.py): it removes the weight-3 "block"
+# failures at p = 5e-4, σ = 0 in all 5 seeds (CLAUDE.md, 2026-10-22).
+# ============================================================================
+
+const COUPLING_SCALE_TRANSFER_NONE::String = "none"
+const COUPLING_SCALE_TRANSFER_ALPHA_STAR::String = "alpha_star"
+
+"Tag of a test decoded with `coupling_scale_transfer = \"alpha_star\"`. It goes after
+`run_tag` in the results name (and so in the per-sample and layer-profile names derived
+from it), never in the weights name: a transferred test can then neither overwrite the
+learned-α test of the same model nor be skipped because that test's results exist."
+const COUPLING_SCALE_TRANSFER_TAG::String = "_alphastar"
+
+function coupling_scale_transfer_mode(transfer_name::AbstractString)::String
+    """
+    Validate `coupling_scale_transfer`: "none" (the default — the learned α on every
+    test set, as in every earlier run) or "alpha_star" (see the block above).
+    """
+    normalised_name::String = lowercase(strip(String(transfer_name)))
+    if !(normalised_name in (COUPLING_SCALE_TRANSFER_NONE, COUPLING_SCALE_TRANSFER_ALPHA_STAR))
+        throw(ArgumentError(
+            "coupling_scale_transfer = \"$(transfer_name)\" is not one of " *
+            "\"$(COUPLING_SCALE_TRANSFER_NONE)\" or \"$(COUPLING_SCALE_TRANSFER_ALPHA_STAR)\"."))
+    end
+    return normalised_name
+end
+
+function prior_softening_factor(
+    single_qubit_error_rates::Dict{Int, Float32},
+    target_median::Float32
+)::Float64
+    """
+    α* of one CER file's raw single-qubit rates: ln((1 − t)/t) / ln((1 − m)/m), the
+    factor by which `rescale_single_qubit_error_rates(rates, t)` softens the median
+    qubit's prior log-odds (m the median raw rate, t = `target_median`).
+
+    Exactly 1 whenever that function leaves the rates alone — rescaling disabled
+    (t ≤ 0), no rates, or a maximum already at t — because the priors are then in
+    the same raw units as J. The tests check it against the rescale itself.
+    """
+    softening_factor::Float64 = 1.0
+    if target_median <= 0f0 || isempty(single_qubit_error_rates)
+        return softening_factor
+    end
+    observed_rates::Vector{Float32} = collect(values(single_qubit_error_rates))
+    if maximum(observed_rates) >= target_median
+        return softening_factor
+    end
+    observed_median::Float64 = Float64(median(observed_rates))
+    if observed_median <= 0.0
+        throw(ArgumentError(
+            "prior_softening_factor: median single-qubit rate is $(observed_median); " *
+            "the priors cannot be rescaled from it."))
+    end
+    target::Float64 = Float64(target_median)
+    raw_median_log_odds::Float64 = log((1.0 - observed_median) / observed_median)
+    softening_factor = log((1.0 - target) / target) / raw_median_log_odds
+    return softening_factor
+end
+
+struct CouplingScaleTransfer
+    """
+    The α a test decodes with under `coupling_scale_transfer = "alpha_star"`, and
+    what it was computed from.
+    """
+    learned_coupling_scale::Float32
+    test_softening_factor::Float64
+    training_softening_factor::Float64
+    transferred_coupling_scale::Float32
+end
+
+function transfer_coupling_scale(
+    learned_coupling_scale::Float32,
+    test_cer_data_file::String,
+    training_cer_data_file::String,
+    target_median::Float32
+)::CouplingScaleTransfer
+    """
+    α_test = α_learned · α*(test) / α*(training), each α* the `prior_softening_factor`
+    of one CER file's raw single-qubit rates at the same `single_qubit_rescale`
+    target. `training_cer_data_file` is the CER file of the key the model was trained
+    on (`training_key_cer_data_file`), `test_cer_data_file` the one the test reads.
+    """
+    for cer_data_file in (test_cer_data_file, training_cer_data_file)
+        if !isfile(cer_data_file)
+            throw(ArgumentError("transfer_coupling_scale: no CER file at $(cer_data_file)."))
+        end
+    end
+    test_rates::Dict{Int, Float32} = parse_cer_data(test_cer_data_file; verbose = false)[3]
+    training_rates::Dict{Int, Float32} = parse_cer_data(training_cer_data_file; verbose = false)[3]
+    test_factor::Float64 = prior_softening_factor(test_rates, target_median)
+    training_factor::Float64 = prior_softening_factor(training_rates, target_median)
+    transferred::Float32 = Float32(Float64(learned_coupling_scale) * test_factor / training_factor)
+    transfer::CouplingScaleTransfer =
+        CouplingScaleTransfer(learned_coupling_scale, test_factor, training_factor, transferred)
+    return transfer
+end
+
+function training_key_cer_data_file(prefix::String, training_source::String)::String
+    """
+    The CER file of the key a model was trained on, from the training file's name
+    without its extension: `train_<key>` → `<prefix>/correlated_weights/
+    correlated_weights_<key>.txt`, the naming every dataset here uses. Throws when the
+    name is not `train_<key>` or the file is missing, rather than guessing.
+    """
+    training_prefix::String = "train_"
+    if !startswith(training_source, training_prefix)
+        throw(ArgumentError(
+            "training_key_cer_data_file: the training file \"$(training_source)\" is not named " *
+            "train_<key>, so the CER file of its key cannot be found."))
+    end
+    training_key::String = String(chopprefix(training_source, training_prefix))
+    cer_data_file::String = "$(prefix)/correlated_weights/correlated_weights_$(training_key).txt"
+    if !isfile(cer_data_file)
+        throw(ArgumentError(
+            "training_key_cer_data_file: no CER file for the training key at $(cer_data_file)."))
+    end
+    return cer_data_file
+end

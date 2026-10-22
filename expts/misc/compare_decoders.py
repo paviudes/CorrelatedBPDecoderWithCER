@@ -51,7 +51,8 @@ RERUN_STYLES = {
     "osd_cs10:cer:500": dict(marker="*", color="#1b9e77", fillstyle="full"),
     "osd_cs10:mean:500": dict(marker="*", color="#1b9e77", fillstyle="none"),
 }
-ARM_NAMES = {"nocer": "Neural BP, no CER", "cer": "Neural BP, CER priors",
+ARM_NAMES = {"cer_enr_alphastar": "Neural BP, CER priors + couplings, α carried to each test set",
+             "nocer": "Neural BP, no CER", "cer": "Neural BP, CER priors",
              "cer_enr": "Neural BP, CER priors + couplings (enriched)",
              "cer_bethe": "Neural BP, CER priors + Bethe table"}
 ARM_MARKERS = ["o", "s", "D", "^", "v", "P"]
@@ -273,6 +274,8 @@ def main(argv: List[str]) -> int:
     figure, axes = plt.subplots(2, n_columns, figsize=(4.6 * n_columns, 7.6), sharex=True, sharey="row",
                                 gridspec_kw=dict(height_ratios=[2.2, 1]), squeeze=False)
     handles: Dict[str, object] = {}
+    # Every fixed-seed ratio drawn in the bottom row, which shares one y axis.
+    plotted_ratios: List[float] = []
     for column_index, (ratio, label) in enumerate(groups):
         rows = table[table["sigma_over_p"] == ratio]
         p_values = rows["test_p"].values
@@ -322,6 +325,7 @@ def main(argv: List[str]) -> int:
                     short_name = ""
                 numerator = rows[f"{compared_arm}_seed{fixed}_failures"].values.astype(float)
                 fixed_ratio = numerator / denominator
+                plotted_ratios.extend(float(value) for value in fixed_ratio if np.isfinite(value) and value > 0)
                 lower, upper = poisson_ratio_interval(numerator, denominator)
                 bottom.errorbar(p_values, fixed_ratio, yerr=[fixed_ratio - lower, upper - fixed_ratio], fmt="-",
                                 marker=ARM_MARKERS[arm_index % len(ARM_MARKERS)], color=color, ms=4, capsize=2,
@@ -339,7 +343,6 @@ def main(argv: List[str]) -> int:
                             label=f"{short_name} median over seeds / median".strip())
             bottom.axhline(1.0, color="black", lw=0.8)
             bottom.set_yscale("log")
-            bottom.set_ylim(0.4, 8.0)
             bottom.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:g}"))
             bottom.yaxis.set_minor_formatter(FuncFormatter(lambda value, _: f"{value:g}" if value in (0.5, 0.7, 2, 3, 5) else ""))
             bottom.grid(True, which="both", alpha=0.25)
@@ -353,6 +356,13 @@ def main(argv: List[str]) -> int:
                 bottom.legend(fontsize=7.5, loc="upper right")
         else:
             bottom.set_visible(False)
+
+    # One limit for the shared ratio axis: 0.4–8 unless a ratio falls outside it
+    # (the enriched arm reaches ~90x at p = 1e-4).
+    if plotted_ratios:
+        ratio_floor: float = min(0.4, 0.8 * min(plotted_ratios))
+        ratio_ceiling: float = max(8.0, 1.3 * max(plotted_ratios))
+        axes[1, 0].set_ylim(ratio_floor, ratio_ceiling)
 
     train_text = ", ".join(sorted(set(datasets["train_key"])))
     sample_text = ", ".join(str(sample) for sample in sorted(set(datasets["test_sample"])))

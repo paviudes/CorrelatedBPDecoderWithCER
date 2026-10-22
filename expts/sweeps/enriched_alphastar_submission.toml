@@ -1,0 +1,79 @@
+# =============================================================================
+# enriched_alphastar_submission.toml -- batch_run.jl settings: TEST the five
+# _cer_enr models (trained 2026-10-21) on the 24 datasets again, with alpha
+# carried to each test set (coupling_scale_transfer = "alpha_star"). Nothing is
+# trained.
+#
+# On Narval, from expts/, after pulling the code that has coupling_scale_transfer:
+#
+#     bash misc/precompile_depot.sh            # login node: the package source changed
+#     cp sweeps/hyperparams_cer_enriched_alphastar.toml ../data/72q_BB_cycles_1_sweep/models/
+#     julia --project="./../" batch_run.jl --settings sweeps/enriched_alphastar_submission.toml
+#     sbatch ../data/72q_BB_cycles_1_sweep/cluster/test_<timestamp>.sh
+#
+# (batch_run.jl prints the last line with the real timestamp.)
+#
+# NAMES: run_label MUST stay "enr" -- it names the models to load
+#     models/neuralbp_weights_nlayers_90_epochs_10_trained_using_train_p_0.0015_sig_0.003_s_1_cer_enr_seed_<n>.json
+# and the transfer adds _alphastar to the results only:
+#     results/simulation_results_test_<key>_nlayers_90_epochs_10_trained_using_train_p_0.0015_sig_0.003_s_1_cer_enr_alphastar_seed_<n>.csv
+# so the learned-alpha _cer_enr results stay as they are. A test job loads only
+# models that are on disk (batch_run.jl drops a command whose model is missing).
+# To gather: cer_arms = ["cer", "nocer", "cer_enr", "cer_enr_alphastar"].
+#
+# WALLTIME: 120 tests in 24 tasks of 5; batch_run.jl estimates 600 s + 5 x 150 s
+# = 23 min. The 2026-10-21 enriched test job took ~20 min for the same 120 tests.
+# =============================================================================
+
+# --- data ---
+workdir          = "./../data"
+dirnames         = ["72q_BB_cycles_1_sweep"]
+
+# --- datasets: the 2026-10-20 run's, unchanged ---
+train_instance   = [0.0015, 0.003, 1]
+test_pairs       = [
+    [0.0001, 0.0], [0.0001, 0.0001], [0.0001, 0.0002],
+    [0.0003, 0.0], [0.0003, 0.0003], [0.0003, 0.0006],
+    [0.0005, 0.0], [0.0005, 0.0005], [0.0005, 0.001],
+    [0.0007, 0.0], [0.0007, 0.0007], [0.0007, 0.0014],
+    [0.0009, 0.0], [0.0009, 0.0009], [0.0009, 0.0018],
+    [0.0011, 0.0], [0.0011, 0.0011], [0.0011, 0.0022],
+    [0.0013, 0.0], [0.0013, 0.0013], [0.0013, 0.0026],
+    [0.0015, 0.0], [0.0015, 0.0015], [0.0015, 0.003],
+]
+test_samples     = [1]
+
+# --- arms and seeds: the _cer_enr models ---
+cer_arms         = ["cer"]
+seeds            = [1, 2, 3, 4, 5]
+run_label        = "enr"
+
+# --- model ---
+hyperparams_file = "hyperparams_cer_enriched_alphastar.toml"
+n_hidden_layers  = 90
+heap_size_hint   = "4G"
+
+# --- which jobs: test only ---
+train            = false
+test             = true
+
+# --- devices ---
+gpu_for_training  = true
+gpu_for_testing   = true
+trainings_per_gpu = 2
+
+# --- backend ---
+cluster_backend  = "SLURM"
+
+# --- HPC resources: one whole Narval A100 per array task (12 cores, 32 GB) ---
+account          = "def-jemerson_gpu"
+n_gpus_per_node  = 1
+gpu_type         = "a100"
+cuda_module      = "cuda"
+n_cpus           = 12
+mem_per_gpu      = "32G"
+mem_per_cpu      = "4G"
+vram_per_gpu     = 0
+max_nodes        = 24
+wall_time        = "1:00:00"
+email            = "pavithran.sridhar@gmail.com"

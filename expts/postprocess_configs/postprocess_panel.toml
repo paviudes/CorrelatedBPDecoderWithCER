@@ -94,6 +94,8 @@ seeds = [1, 2, 3, 4, 5]
 # expts/sweeps/enriched_submission.toml (run_label = "enr"), "cer_bethe" that of
 # bethe_submission.toml. Once those runs are in, gather all the arms with
 #     cer_arms = ["cer", "nocer", "cer_enr", "cer_bethe"]
+# The _cer_enr models tested with alpha carried to each test set
+# (sweeps/enriched_alphastar_submission.toml) are the arm "cer_enr_alphastar".
 cer_arms = ["cer", "nocer", "cer_enr"]
 run_label = ""
 # With cer_arms, seeds, test_pairs and test_samples all set, the gather warns

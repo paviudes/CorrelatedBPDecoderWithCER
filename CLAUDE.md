@@ -1648,12 +1648,120 @@ warmup 0, 10 epochs, the Poisson(3) 10k training set; 0 rollbacks in all 10 trai
   −0.08), and their per-qubit spread (sd 0.016–0.020) is the initial noise averaged
   over 90 layers.
 
+### Measured 2026-10-22: the enriched arm (`_cer_enr`) on the same run, and why it fails at low p
+
+`cer_enr` = CER priors + the pairwise enriched node, α learned from 0.538 (5 seeds: 0.513,
+0.580, 0.509, 0.514, 0.505), otherwise the 2026-10-20 CER arm; 10/10 epochs, 0 NaN skips.
+
+- **Failures over the 24 sets, seed 1** (shipped BP / BP+OSD are prior 0.1, OSD-0-like):
+
+  | | BP | BP+OSD | nocer | cer | cer_enr |
+  |---|---|---|---|---|---|
+  | σ = 0 | 93312 | 38578 | 5984 | 7009 | 8376 |
+  | σ = p | 107982 | 43566 | 7903 | 7700 | 7564 |
+  | σ = 2p | 134599 | 56580 | 14057 | 12147 | 12812 |
+  | coset / conv (all) | | | 11492 / 16452 | 12404 / 14452 | 17762 / 10990 |
+
+  Summed over 5 seeds and the 3 sigmas, per p: cer_enr / cer = 21.5, 4.2, 2.0, 1.15, then
+  0.92, 0.89, 0.89, 0.90 at p = 1e-4 … 1.5e-3 (cer_enr / nocer 0.71–0.78 from 9e-4 up).
+  So the couplings help ~10% on top of the priors near the training p and blow up below
+  ~7e-4, in EVERY seed (p = 1e-4 σ = 0: 399–1257 vs cer 7–65, nocer 6–70).
+- **By σ AND p** (5-seed sums; cer_enr / cer, seeds where cer_enr is lower):
+
+  | | p ≤ 3e-4 | p = 5–7e-4 | p ≥ 9e-4 |
+  |---|---|---|---|
+  | σ = 0 | 7.8 (0/5) | 2.2 (0/5) | **0.71 (5/5)** |
+  | σ = p | 9.0 (0/5) | 1.23 (4/5; seed 2 dominates) | **0.86 (5/5)** |
+  | σ = 2p | 4.1 (0/5) | 1.05 (1/5) | 1.03 (0/5) |
+
+  At σ = 2p — the training set's shape — the couplings add nothing over the priors
+  (training set itself 21788 vs 21689); their gain is at σ = 0 and σ = p near the
+  training p. Priors alone vs nocer at p ≥ 9e-4: 1.09 / 0.85 / 0.76 at σ = 0 / p / 2p.
+  The σ-group totals are 80–90% p ≥ 9e-4 sets, so "cer_enr lowest at σ = p" (7564 vs
+  7700, seed 1) is a −14% high-p gain netted against a 9× low-p loss, not a σ effect.
+  Lowest NBP per set: σ = 0 nocer at p ≤ 7e-4, cer_enr above; σ = p cer at p ≤ 7e-4,
+  cer_enr above; σ = 2p cer everywhere except p = 9e-4.
+- **The excess is weight-3 convergence failures**: p = 1e-4 σ = 0 seed 1, 786 of 814;
+  p = 5e-4 σ = 0, 756 of 964 — a few frequent cascade "blocks" (seed + two lattice
+  neighbours, J ≈ 4.7 on both pairs, one check each, syndrome weight 5; (16,32,62) 258×,
+  (15,35,45) 258×, (10,30,40) 229×) failed on (nearly) every occurrence, stuck at syndrome
+  weight 3. Knife-edge: the GPU run fails (10,30,40) on 225 of 229 occurrences, and which
+  blocks fail changes with the seed (p = 1e-4: 12 failing samples common to all 5 seeds,
+  1787 in any). Seed 2 (largest α, 0.580) is the worst on most low-p sets.
+- **Cause: one α for every test set, while the couplings grow as p falls.** J_ik in the
+  test key's CER file is a marginal log-odds ratio, ≈ ln(q/p) for a cascade pair, so the
+  median strong J is 2.8 on the training key and 4.6 at p = 1e-4; the priors are rescaled
+  to median 0.1 at every p, so α* = ln 9 / ln((1−m)/m) falls from 0.538 (training) to 0.395
+  (p = 5e-4 σ = 0) and 0.318 (p = 1e-4). α* × J (median strong pair) stays ≈ 1.4–1.5, but
+  the learned α × J reaches 1.6× the training value at p = 1e-4.
+- **Test-time rescale α_test = α · α*(test)/α*(train) fixes it** (`misc/nbp_mirror.py`,
+  the numpy mirror of the test forward; enriched mirror ≠ GPU on knife-edge blocks, so
+  compare mirror with mirror). p = 5e-4 σ = 0, weight-3 failures (9401 samples), seeds 1–5:
+  learned α 470 / 1842 / 941 / 949 / 251 → rescaled (0.37–0.43) 6 / 10 / 2 / 5 / 3;
+  training-set J with the learned α also fixes 4 of 5 seeds (3 / 4 / 4 / 248 / 4); α = 0 gives 5 (seed 1).
+  Totals with the rescale: **158 / 155 / 152 / 152 / 153** (GPU, learned α: 964 / 1886 / 1361 /
+  965 / 689; nocer 193–477, cer 206–630), so the enriched arm becomes the best decoder
+  there and its seed spread vanishes. Controls: p = 5e-4 σ = p seed 1, 232 (GPU) → 212;
+  first 250k of p = 1.5e-3 σ = 0 seed 1, 445 → 460 (GPU 446; cer 595, nocer 536), i.e.
+  unchanged where α* barely moves. p ≤ 3e-4 is not on the laptop: untested, but its
+  excess is the same weight-3 signature. Now a Julia option (next bullet).
+- **`coupling_scale_transfer = "none" | "alpha_star"`** (hyperparameters TOML, added
+  2026-10-22; default "none" = every earlier run). Test-time only, enriched node only
+  (a tanh model is refused: it has no α). "alpha_star" sets the loaded model's logit to
+  α_learned · α*(test)/α*(train) before testing (`transfer_coupling_scale`,
+  `prior_softening_factor`, `training_key_cer_data_file` in `src/neuralbase.jl`; α* =
+  ln((1−t)/t)/ln((1−m)/m), t = `single_qubit_rescale`, exactly 1 wherever the rescale
+  leaves the rates alone; the training key's CER file is found from `--train
+  train_<key>.txt`). The results, per-sample and layer-profile names get `_alphastar`
+  after the run tag (`COUPLING_SCALE_TRANSFER_TAG`), the weights name does NOT, so the
+  trained model is loaded and the learned-α results are neither overwritten nor
+  reported as these (the gather reads the arm as `cer_enr_alphastar`). Every results
+  CSV now also has `coupling_scale_transfer` and `learned_coupling_scale`
+  (`coupling_scale` = the α used). Tests: `tests/test_coupling_scale_transfer.jl`
+  (not yet run; parses with tree-sitter).
+- **Local run: `bash misc/test_alpha_transfer_local.sh [--key <key>] [--seeds "1 2 3 4 5"]`**
+  (from expts/; defaults p_0.0005_sig_0.0_s_1, the 5 `_cer_enr` models). Refuses before
+  running anything if a model, CER file or test file is missing (a missing model would
+  make the test TRAIN one); links `testing_data/test_<key>.txt` from
+  `72q_BB_cycles_1_trainable_alpha/testing_data` when the run's own folder lacks it;
+  checks every learned-α failure's error weight against the test file (the right file
+  passes 4735/4735, p_0.0005_sig_0.0005 fails 4687/4735); writes the test TOML (base +
+  `retrain = false`, `run_tag`, `coupling_scale_transfer = "alpha_star"`) under
+  `models/submissions/local_alphastar_<ts>/`; tests each seed on Metal (`--cpu` for
+  USE_GPU=0), skipping seeds whose `_alphastar` results exist; prints learned vs
+  transferred side by side. Verified with a stub julia (5/5 runs, the TOML's keys, the
+  link, the skip, and the refusals). Mirror expectation at p_0.0005_sig_0.0_s_1: α 0.377
+  / 0.426 / 0.374 / 0.378 / 0.371, ~152–158 failures.
+- **Measured 2026-10-22, the real decoder (Julia, Metal, ~455 s per 1e6 test)** on
+  p_0.0005_sig_0.0_s_1, seeds 1–5 — α* **168 / 158 / 163 / 153 / 155** (coset 98 / 84 / 99
+  / 98 / 97, convergence 70 / 74 / 64 / 55 / 58) against the learned α's 964 / 1886 / 1361 /
+  965 / 689; the mirror was within 1–10%. Same set, same seeds: nocer 193 / 219 / 212 / 219
+  / 477 (coset 55–63), cer (priors only) 217 / 206 / 216 / 630 / 441. So the NBP alone:
+  α* below nocer in 5/5 seeds (797 vs 1320 summed, −40%), all of it convergence (321 vs
+  1024); coset is HIGHER (476 vs 296). With a BP+OSD-CS10 fallback (ldpc, max_iter 100,
+  CER rates; the mean rate for nocer) on each arm's convergence failures: nocer 650,
+  α* 655, cer 664, learned-α cer_enr 735 (5 seeds; per seed α* 126–136, nocer 122–139) —
+  level. Plain BP+OSD-CS10 with the CER rates (500 it): 156 on this set.
+- **Narval, all 24 sets (prepared 2026-10-22, not yet run):**
+  `sweeps/hyperparams_cer_enriched_alphastar.toml` (= `hyperparams_cer_enriched.toml`
+  + `coupling_scale_transfer = "alpha_star"`; body checked identical) and
+  `sweeps/enriched_alphastar_submission.toml` (the enriched submission with `train =
+  false`, that hyperparams file, `wall_time = "1:00:00"`; `run_label` stays "enr" so the
+  `_cer_enr` models are the ones loaded). From expts/: `bash misc/precompile_depot.sh`
+  (source changed), copy the hyperparams file into the run's models/, `julia
+  --project="./../" batch_run.jl --settings sweeps/enriched_alphastar_submission.toml`,
+  then the printed `sbatch …/test_<ts>.sh`. batch_run.jl keeps the base's other keys in
+  the derived test TOML, the template stages all of `correlated_weights/` (so the
+  training key's CER file is on the node), and results come back tagged
+  `_cer_enr_alphastar`; gather with `cer_arms = [..., "cer_enr_alphastar"]`.
+- `compare_decoders.py`'s ratio row now widens its (shared) y axis to the data.
+
 ### Next: the enriched check node on the same run (prepared and run 2026-10-21)
 
 - **Status**: the enriched submission ran on 2026-10-21; its 120 `_cer_enr` results
   (written 16:57–17:17) and 5 `_cer_enr` models are in `data/72q_BB_cycles_1_sweep/`
-  beside the untouched 2026-10-20 `_cer` / `_no_cer_nocer` files. Not yet analysed;
-  the Bethe submission has not run. (Before it, `git pull` on Narval failed with
+  beside the untouched 2026-10-20 `_cer` / `_no_cer_nocer` files. Analysed 2026-10-22
+  (next section); the Bethe submission has not run. (Before it, `git pull` on Narval failed with
   "unresolved deltas left after unpacking": `git fsck --full` showed missing trees and
   blobs in Narval's clone with the quota fine; the repair given was `git fetch
   --refetch origin`, or copying the packs of a fresh bare clone into `.git/objects/pack`.)
