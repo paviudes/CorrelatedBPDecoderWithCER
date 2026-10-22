@@ -1,0 +1,117 @@
+# =============================================================================
+# enriched_ramp_commit.toml -- the enriched check node under the ramp loss, read
+# out at the LAST layer vs at the FIRST layer that clears the syndrome
+# (2026-10-22). Narval GPU nodes, 72q_BB_cycles_1_trainable_alpha.
+#
+#     cd expts
+#     bash sweep_hyperparams.sh --settings sweeps/enriched_ramp_commit.toml --no-edit
+#
+# then the two sbatch lines it prints (training, then testing chained on it with
+# afterok). When the test job is done, from expts/:
+#
+#     python3 misc/compare_sweep_arms.py --workdir 72q_BB_cycles_1_trainable_alpha \
+#         --arms _cer_enr_rampw0_last _cer_enr_rampw0_first
+#
+# ARMS (x 5 seeds; every model scored on the 4 test sets, 1e6 samples each):
+#   _cer_enr_rampw0_last    CER priors + the pairwise coupling table inside each
+#                           check (check_node = "enriched"), alpha from 0.503,
+#                           learned; ramp loss, warmup 0, k = 3; the decoder
+#                           commits at layer 90.
+#   _cer_enr_rampw0_first   the same model; the decoder commits at the first
+#                           layer whose decision clears the syndrome.
+# 10 training points, 40 tests.
+#
+# THE TWO ARMS TRAIN THE SAME MODEL. commit_layer_rule is read only at test time
+# (src/predict.jl; src/train.jl never reads it), and GPU training is deterministic
+# (2026-10-19: an arm repeated in another sweep reproduced every seed's counts bit
+# for bit). So at each seed the two weights files should come out IDENTICAL, and
+# the difference between the arms is the readout alone. That costs a second set of
+# 5 trainings and buys a check: compare_sweep_arms.py confirms the weights match
+# before it compares the failure counts.
+#
+# TRAINING SETTINGS come from models/hyperparams_baseline.toml (set 2026-10-22):
+# 5 epochs x 500 updates x batch 20, lr 1e-3, initial_conditions_scale 0.1, the
+# Poisson(3) 10k training set, manual_backprop = true -- the 72q_BB_cycles_1_sweep
+# run's settings except its 10 epochs. The generator does NOT take
+# loss_layer_selection or commit_layer_rule from that file (it strips both, and its
+# own default is softmin + first), so each arm below names its whole layer design:
+# selection, commit rule, warmup and sharpness.
+#
+# warmup_layers = 0 under the ramp makes the generator print a note (the measured
+# knee is 5: at 0 the BP transient of layers 1-5 takes a large share of the loss).
+# 0 is deliberate: it is what the 72q_BB_cycles_1_sweep models were trained with.
+#
+# NAMES. The 2026-10-19 sweep's _cer_enr_ramp_last files (warmup 5, init 0.3, the
+# same 5 epochs and training key) are in this directory, so an arm called
+# ramp_last would RETRAIN AND REPLACE them. The tags rampw0_last / rampw0_first
+# occur nowhere in it; the generator also warns about any model of this sweep that
+# already exists.
+# =============================================================================
+
+workdir          = "./../data"
+codename         = "72q_BB_cycles_1_trainable_alpha"
+
+# Dataset keys: train_<key>.txt, test_<key>.txt, correlated_weights_<key>.txt.
+# KEEP EACH ARRAY ON ONE LINE: the reader is grep | head -1, so a wrapped array
+# silently loses everything after its first line.
+datasets         = ["p_0.0015_sig_0.0015_s_1"]
+ref_datasets     = []
+# The 2026-10-19 sweep's four test sets, so these arms sit beside its ramp_last
+# (warmup 5) and softmin_first models in the same table.
+test_keys        = ["p_0.0015_sig_0.0015_s_1", "p_0.0007_sig_0.001_s_1", "p_0.0005_sig_0.001_s_1", "p_0.0005_sig_0.0005_s_1"]
+
+base_hyperparams = "hyperparams_baseline.toml"
+seeds            = [1, 2, 3, 4, 5]
+
+# --- arms ------------------------------------------------------------------
+# Enriched only: no no-CER baseline, no CER-tanh arm.
+include_nocer    = false
+single_qubit_rescale = 0.1
+
+# alpha starts at alpha* = log(9) / log((1 - m) / m) for the TRAINING key (m its
+# median raw single-qubit rate): 0.503 on p_0.0015_sig_0.0015, as in the
+# 2026-10-19 sweep. Learned from there; the learned value is used unchanged on
+# every test set (coupling_scale_transfer is not set).
+check_node_arms  = ["enriched:0.503:learn"]
+
+# The two readouts. Everything else (lr, init, epochs, training set) is the base
+# TOML's. No top-level loss_layer_selection / commit_layer_rule is set: both arms
+# name their own.
+optimizer_arms   = ["rampw0_last:loss_layer_selection=ramp,commit_layer_rule=last,warmup_layers=0,loss_layer_ramp_sharpness=3.0", "rampw0_first:loss_layer_selection=ramp,commit_layer_rule=first,warmup_layers=0,loss_layer_ramp_sharpness=3.0"]
+
+# --- cluster: Narval -------------------------------------------------------
+cluster_name     = "narval"
+account_gpu      = "def-jemerson_gpu"
+email            = "pavithran.sridhar@gmail.com"
+julia_module     = "julia/1.12.5"
+cuda_module      = "cuda"
+heap_size_hint   = "4G"
+
+# TRAINING: 10 points on 5 cards, 2 enriched trainings sharing each card, one wave
+# per task. (The 2026-10-19 wave of 2 enriched + 2 tanh points on one card took
+# ~25 min after a ~6 min CUDA rebuild.)
+train_array_tasks = 5
+train_jobs       = 2
+train_cpus       = 12
+train_wall_time  = "1:30:00"
+
+# TESTING: one process per card; 40 tests on 8 cards, 5 per task.
+test_array_tasks = 8
+gpu_type         = "a100"
+gpu_request_style = "auto"
+n_gpus_per_node  = 1
+test_jobs        = 1
+mem_per_gpu      = "32G"
+vram_per_gpu     = ""
+test_cpus        = 12
+test_wall_time   = "1:00:00"
+
+# --- walltime preflight -----------------------------------------------------
+# seconds_per_train_point is the wall time of ONE WAVE of train_jobs points
+# (1500: the 2026-10-19 mixed enriched wave, ~25 min); seconds_per_test 150: the
+# 2026-10-19 enriched tests took ~2.5 min each with Julia startup. Preflight:
+# training 900 + 1500 s = 40 min of 1:30 (44%), testing 900 + 5 x 150 s = 28 min
+# of 1:00 (46%).
+seconds_per_test = 150
+seconds_per_train_point = 1500
+job_startup_seconds = 900

@@ -4,6 +4,8 @@
 # Writes a settings TOML, opens it in $EDITOR, then generates:
 #     <codename>/cluster/hp_sweep_train_<ts>.txt   one julia command per point
 #     <codename>/cluster/hp_sweep_test_<ts>.txt    the same points, with --test
+#     <codename>/cluster/hp_sweep_models_<ts>.txt  the weights file each point writes
+#                                                  (the test job checks they are there)
 #     <codename>/cluster/hp_sweep_train_<ts>.sh    GPU job, GNU parallel
 #     <codename>/cluster/hp_sweep_test_<ts>.sh     GPU job
 #     <codename>/models/hyperparams_hp_*.toml      one per point
@@ -678,6 +680,23 @@ TEST_CMDS="$CLUSTER_DIR/hp_sweep_test_${TS}.txt"
 SLURM_TRAIN="$CLUSTER_DIR/hp_sweep_train_${TS}.sh"
 SLURM_TEST="$CLUSTER_DIR/hp_sweep_test_${TS}.sh"
 : > "$TRAIN_CMDS"; : > "$TEST_CMDS"
+# The weights file each training point writes, one per line in emission order --
+# src/train.jl's name,
+#     neuralbp_weights_nlayers_<L>_epochs_<n>_trained_using_train_<key>[_no_cer]<run_tag>_seed_<s>.json
+# The test job checks that these NAMES are staged in, and the preflight below
+# warns about the ones that already exist (they will be retrained and replaced).
+EXPECTED_MODELS="$CLUSTER_DIR/hp_sweep_models_${TS}.txt"
+: > "$EXPECTED_MODELS"
+# n_epochs is not a swept key, so every point trains for the base TOML's count
+# (5 when the key is absent: the Julia default).
+N_EPOCHS=$(base_hyperparameter_value n_epochs)
+if [ -z "$N_EPOCHS" ]; then
+    N_EPOCHS=5
+fi
+if ! echo "$N_EPOCHS" | grep -qE '^[1-9][0-9]*$'; then
+    echo "n_epochs = '$N_EPOCHS' in $MODELS_DIR/$BASE_HP must be a positive integer." >&2
+    exit 1
+fi
 
 tag_of() { echo "$1" | tr '.' 'p' | tr -d '-'; }
 
@@ -894,6 +913,13 @@ emit_point() {   # <key> <seed> <use_cer> <check_node_spec> <optimizer_spec>
         exit 1
     fi
     echo "$hp" >> "$EMITTED_TOML_NAMES"
+    # The weights file this point's training writes. The code puts _no_cer between
+    # the training source and the run tag on a no-CER arm.
+    local cer_infix=""
+    if [ "$use_cer" = "false" ]; then
+        cer_infix="_no_cer"
+    fi
+    echo "neuralbp_weights_nlayers_${NLAYERS}_epochs_${N_EPOCHS}_trained_using_train_${key}${cer_infix}${run_tag}_seed_${seed}.json" >> "$EXPECTED_MODELS"
 
     # Start from the base TOML minus every key this generator sets itself, so a
     # stale value in the base can never override a swept one. The keys of the
@@ -992,7 +1018,7 @@ N_RAW_POINTS=$(wc -l < "$TRAIN_CMDS")
 # write the SAME weights and results files, concurrently, from different array
 # tasks. Deduplicate, preserving first-appearance order so the interleaved array
 # split stays balanced across datasets.
-for cmd_file in "$TRAIN_CMDS" "$TEST_CMDS"; do
+for cmd_file in "$TRAIN_CMDS" "$TEST_CMDS" "$EXPECTED_MODELS"; do
     awk '!seen[$0]++' "$cmd_file" > "$cmd_file.tmp"
     mv "$cmd_file.tmp" "$cmd_file"
 done
@@ -1002,6 +1028,34 @@ if [ "$N_DUPLICATES" -gt 0 ]; then
 fi
 
 N_POINTS=$(wc -l < "$TRAIN_CMDS")
+# One weights file per training point. emit_point refuses two points with one
+# TOML name, and the weights name is made of the same parts, so a mismatch here
+# is a bug in this script, not in the settings.
+N_EXPECTED_MODELS=$(wc -l < "$EXPECTED_MODELS")
+if [ "$N_EXPECTED_MODELS" -ne "$N_POINTS" ]; then
+    echo "internal error: $N_EXPECTED_MODELS expected weights file(s) for $N_POINTS training point(s)." >&2
+    exit 1
+fi
+# A point whose weights file is already in models/ is trained again (every point
+# TOML says retrain = true) and the old file, and its results, are replaced at
+# stage-out. Re-running a sweep does that on purpose; a new sweep whose tags
+# repeat an old one's does it by accident, so say which files.
+N_EXISTING_MODELS=0
+while IFS= read -r expected_model; do
+    if [ -f "$MODELS_DIR/$expected_model" ]; then
+        N_EXISTING_MODELS=$(( N_EXISTING_MODELS + 1 ))
+        if [ "$N_EXISTING_MODELS" -eq 1 ]; then
+            echo "[hp_sweep] WARNING: model(s) of this sweep already exist in $MODELS_DIR;" >&2
+            echo "           the training job will retrain them and replace them, with their results:" >&2
+        fi
+        if [ "$N_EXISTING_MODELS" -le 5 ]; then
+            echo "             $expected_model" >&2
+        fi
+    fi
+done < "$EXPECTED_MODELS"
+if [ "$N_EXISTING_MODELS" -gt 0 ]; then
+    echo "           ($N_EXISTING_MODELS of $N_POINTS.) To keep them, give the optimizer arms new tags." >&2
+fi
 # With `test_keys` the two files have DIFFERENT lengths: one training run is
 # scored on several test sets. The test job's array must be sized against its
 # own file, and the staged-model count it checks is still the TRAINING count.
@@ -1412,16 +1466,30 @@ for f in "\$LOCAL"/models/hyperparams_hp_*.toml; do
     sed -E 's|^([[:space:]]*retrain[[:space:]]*=[[:space:]]*)true|\1false|' "\$f" > "\$f.tmp"
     mv "\$f.tmp" "\$f"
 done
-N_MODELS=\$(ls "\$LOCAL"/models/*.json 2>/dev/null | wc -l)
-echo "[test task \$TASK/$TEST_ARRAY] \$N_MODELS trained model(s) staged in; expecting $N_POINTS"
 # Second line of defence behind \`--dependency=afterok --kill-on-invalid-dep=yes\`.
 # The dependency catches a training job that FAILED; this catches the cases it
 # cannot see -- training never submitted, a stage-out that did not land, someone
-# resubmitting the test job on its own, or a cleanup.py between the two. Without
-# it neural_bp_experiments.jl just skips the points whose weights are missing and
-# the sweep returns a quietly incomplete table.
-if [ "\$N_MODELS" -lt $N_POINTS ]; then
-    echo "ERROR: only \$N_MODELS of $N_POINTS trained model(s) present; refusing to test a partial set." >&2
+# resubmitting the test job on its own, or a cleanup.py between the two. A test
+# whose weights file is missing does not fail on its own: under retrain = false
+# neural_bp_experiments.jl TRAINS a model of its own and reports that.
+# Checked by NAME, one line of $EXPECTED_MODELS per training point.
+# Counting *.json is not enough: a run directory earlier sweeps used holds their
+# models too (72q_BB_cycles_1_trainable_alpha held 20 on 2026-10-22), so the count
+# passed with every model of THIS sweep missing.
+N_EXPECTED=0
+N_MISSING=0
+while IFS= read -r expected_model; do
+    N_EXPECTED=\$(( N_EXPECTED + 1 ))
+    if [ ! -f "\$LOCAL/models/\$expected_model" ]; then
+        N_MISSING=\$(( N_MISSING + 1 ))
+        if [ "\$N_MISSING" -le 5 ]; then
+            echo "  missing: \$expected_model" >&2
+        fi
+    fi
+done < "$EXPECTED_MODELS"
+echo "[test task \$TASK/$TEST_ARRAY] \$(( N_EXPECTED - N_MISSING )) of \$N_EXPECTED trained model(s) of this sweep staged in"
+if [ "\$N_EXPECTED" -ne $N_POINTS ] || [ "\$N_MISSING" -gt 0 ]; then
+    echo "ERROR: \$N_MISSING of \$N_EXPECTED trained model(s) missing (expecting $N_POINTS); refusing to test a partial set." >&2
     echo "  Check that the training job finished and staged out, then resubmit." >&2
     exit 1
 fi
@@ -1499,7 +1567,7 @@ echo "  ref       -> $REF_DATASETS   (CER tanh and no-CER only)"
 echo "  seeds     -> $SEEDS"
 echo "  check node-> $CHECK_NODE_ARMS   (no-CER baseline: $INCLUDE_NOCER)"
 echo "  optimizer -> $OPTIMIZER_ARMS"
-echo "  layers    -> loss_layer_selection=$LOSS_LAYER_SELECTION  commit_layer_rule=$COMMIT_LAYER_RULE"
+echo "  layers    -> loss_layer_selection=$LOSS_LAYER_SELECTION  commit_layer_rule=$COMMIT_LAYER_RULE  (the default; an optimizer arm may override either)"
 echo "  cluster   -> $CLUSTER_NAME"
 echo "  network   -> $NLAYERS layers (fixed), manual_backprop = true (hand-written gradient)"
 echo "  train     -> $ACCOUNT_GPU: array 0-$((TRAIN_ARRAY-1)) ($TRAIN_ARRAY tasks x ${N_GPUS}x $GPU_TYPE, $TRAIN_CPUS cpu,"

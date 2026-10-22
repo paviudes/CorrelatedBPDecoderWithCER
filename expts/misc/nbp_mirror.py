@@ -23,6 +23,27 @@ syndrome is decoded once.
            training key's (the couplings the model was trained with)
 --weights  all, or error weights to decode, e.g. 3 or 4,5,6 (others are skipped
            and count as successes; no model here fails below weight 3)
+--run-tag  the models' run tag when it is not the arm's 72q_BB_cycles_1_sweep one,
+           e.g. _no_cer_nocer_ramp_last or _cer_enr_softmin_first (72q_BB_cycles_1_trainable_alpha)
+--rules    last and/or first: commit_layer_rule "last" (layer 90) or "first" (the first
+           layer whose decision clears the syndrome), scored from the SAME forward pass;
+           with both, also how many samples first rescues and how many it hurts
+--depths   also score each rule as if the decoder had stopped at these layers
+--extra-layers K  run K layers past the last with the last layer's weights (a probe of
+           longer inference; it is not a deeper TRAINED model)
+--unit-weights    every weight set to 1: plain BP with the same clamps and priors
+--csv      append one row per (seed, alpha, rule, depth)
+
+    # ramp + first vs ramp + last on the 2026-10-19 sweep's models, one pass each
+    python3 misc/nbp_mirror.py --workdir 72q_BB_cycles_1_trainable_alpha \
+        --key p_0.0005_sig_0.001_s_1 --train-key p_0.0015_sig_0.0015_s_1 --arm nocer \
+        --run-tag _no_cer_nocer_ramp_last --seeds 1 2 3 4 5 --rules last first --depths 30 60
+
+The first-to-clear readout reproduces the Julia test too (2026-10-22: the no-CER
+softmin_first models, 5 seeds x 4 sets of 72q_BB_cycles_1_trainable_alpha, 22920 vs
+22931 failures, 9029 vs 9021 coset). The knife-edge caveat below also hits the tanh
+arm with CER priors: cer seeds 2, 4, 5 on p_0.0015_sig_0.0_s_1 give 3262 / 2664 / 3959
+here against the GPU's 2685 / 2181 / 3383, all of it weight-3 convergence failures.
 
 FIDELITY (checked 2026-10-22 against the GPU test files): the tanh arms reproduce
 the GPU counts (cer seed 1 on p_0.0005_sig_0.0_s_1: 217 = 217, 63 coset + 154
@@ -164,15 +185,33 @@ def enriched_messages(c2v: np.ndarray, v2c: np.ndarray, syndromes: np.ndarray, a
     return c2v
 
 
-def last_layer_decisions(model: Dict[str, object], graph: TannerGraph, llrs: np.ndarray, syndromes: np.ndarray,
-                         alpha: float) -> np.ndarray:
-    """Hard decisions (posterior < 0) of the last layer, (n_bits x N)."""
-    c2v = np.zeros((graph.n_neurons, syndromes.shape[1]), dtype=np.float32)
+def layer_readouts(model: Dict[str, object], graph: TannerGraph, llrs: np.ndarray, syndromes: np.ndarray,
+                   alpha: float, depths: Tuple[int, ...] = (), extra_layers: int = 0
+                   ) -> Tuple[np.ndarray, np.ndarray, Dict[int, np.ndarray]]:
+    """Hard decisions (posterior < 0) read out of every layer of ONE forward pass.
+
+    Returns (first_layer, first_decision, decisions_at):
+      first_layer     (N,), the first layer (1-based) whose decision r satisfies H r = s,
+                      0 when none does: the commit of commit_layer_rule = "first"
+      first_decision  (n_bits x N), that layer's r
+      decisions_at    {layer: (n_bits x N)} at every layer in `depths` and the last one
+    extra_layers > 0 runs that many layers past the model's last with the LAST layer's
+    weights: a probe of whether longer inference would still clear samples."""
+    n_model_layers = model["b"].shape[0]
+    n_layers = n_model_layers + extra_layers
+    wanted = set(depths) | {n_layers}
+    n_syndromes = syndromes.shape[1]
+    c2v = np.zeros((graph.n_neurons, n_syndromes), dtype=np.float32)
     routed_syndromes = syndromes[graph.check_of].astype(np.int64)
-    posterior = None
-    for layer in range(model["b"].shape[0]):
-        channel = (model["b"][layer] * llrs).astype(np.float32)
-        v2c = model["W"][layer] @ c2v + channel[graph.bit_of][:, None]
+    check_matrix = graph.H.astype(np.float32)
+    target = syndromes.astype(np.float32)
+    first_layer = np.zeros(n_syndromes, dtype=np.int64)
+    first_decision = np.zeros((graph.H.shape[1], n_syndromes), dtype=bool)
+    decisions_at: Dict[int, np.ndarray] = {}
+    for layer in range(n_layers):
+        weights_layer = min(layer, n_model_layers - 1)
+        channel = (model["b"][weights_layer] * llrs).astype(np.float32)
+        v2c = model["W"][weights_layer] @ c2v + channel[graph.bit_of][:, None]
         magnitudes = np.log(np.clip(np.tanh(np.abs(v2c) * np.float32(0.5)), EPS32, np.float32(1) - EPS32))
         signs = (np.mod(graph.same_check @ (v2c < 0).astype(np.float32), 2).astype(np.int64) + routed_syndromes) % 2
         exponentials = np.clip(np.exp(graph.same_check @ magnitudes), EPS32, np.float32(1) - EPS32)
@@ -180,7 +219,21 @@ def last_layer_decisions(model: Dict[str, object], graph: TannerGraph, llrs: np.
         if model["check_node"] == "enriched":
             c2v = enriched_messages(c2v, v2c, syndromes, alpha, graph.tables)
         posterior = model["readout"] @ c2v + channel[:, None]
-    decisions = posterior < 0
+        decisions = posterior < 0
+        cleared = (np.mod(check_matrix @ decisions.astype(np.float32), 2) == target).all(0)
+        newly_cleared = cleared & (first_layer == 0)
+        first_layer[newly_cleared] = layer + 1
+        first_decision[:, newly_cleared] = decisions[:, newly_cleared]
+        if layer + 1 in wanted:
+            decisions_at[layer + 1] = decisions
+    return first_layer, first_decision, decisions_at
+
+
+def last_layer_decisions(model: Dict[str, object], graph: TannerGraph, llrs: np.ndarray, syndromes: np.ndarray,
+                         alpha: float) -> np.ndarray:
+    """Hard decisions (posterior < 0) of the last layer, (n_bits x N)."""
+    _, _, decisions_at = layer_readouts(model, graph, llrs, syndromes, alpha)
+    decisions = decisions_at[model["b"].shape[0]]
     return decisions
 
 
@@ -206,6 +259,72 @@ def score(model, graph, logicals, patterns, counts, llrs, alpha, chunk=2048) -> 
     return result
 
 
+def score_readouts(model, graph, logicals, patterns, counts, llrs, alpha, depths=(), extra_layers=0,
+                   chunk=2048) -> Dict[Tuple[str, int], Dict[str, float]]:
+    """Failures of every readout of one forward pass, keyed (rule, depth):
+    ("last", L) commits the decision of layer L; ("first", L) the first layer <= L whose
+    decision clears the syndrome. Plus, under ("last", L), the samples the two rules
+    disagree on: "rescued" (fail under last, correct under first) and "hurt" (the reverse)."""
+    n_layers = model["b"].shape[0] + extra_layers
+    depths = tuple(sorted(set(depths) | {n_layers}))
+    syndromes = ((graph.H @ patterns.astype(np.int64)) % 2).astype(np.uint8)
+    packed = np.packbits(syndromes, axis=0).T.copy()
+    _, first, inverse = np.unique(packed.view(np.dtype((np.void, packed.shape[1]))).ravel(),
+                                  return_index=True, return_inverse=True)
+    inverse = inverse.ravel()
+    distinct = syndromes[:, first]
+    n_bits, n_distinct = patterns.shape[0], distinct.shape[1]
+    first_layer = np.zeros(n_distinct, dtype=np.int64)
+    first_decision = np.zeros((n_bits, n_distinct), dtype=bool)
+    decisions_at = {depth: np.zeros((n_bits, n_distinct), dtype=bool) for depth in depths}
+    for start in range(0, n_distinct, chunk):
+        stop = min(start + chunk, n_distinct)
+        chunk_first, chunk_decision, chunk_at = layer_readouts(model, graph, llrs, distinct[:, start:stop], alpha,
+                                                               depths, extra_layers)
+        first_layer[start:stop] = chunk_first
+        first_decision[:, start:stop] = chunk_decision
+        for depth in depths:
+            decisions_at[depth][:, start:stop] = chunk_at[depth]
+    check_matrix = graph.H.astype(np.float32)
+    logical_matrix = logicals.astype(np.float32)
+    error_weight = patterns.sum(0)
+
+    def outcome(decisions: np.ndarray, committed: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        residual = (patterns ^ decisions).astype(np.float32)
+        coset = committed & (np.mod(logical_matrix @ residual, 2).sum(0) > 0)
+        failed = ~committed | coset
+        return failed, coset
+
+    def summary(failed: np.ndarray, coset: np.ndarray, committed_layer: np.ndarray) -> Dict[str, float]:
+        successes = ~failed
+        mean_layer = float((counts[successes] * committed_layer[successes]).sum() / max(counts[successes].sum(), 1))
+        return dict(total=int(counts[failed].sum()), coset=int(counts[coset].sum()),
+                    convergence=int(counts[failed & ~coset].sum()),
+                    weight3_convergence=int(counts[failed & ~coset & (error_weight == 3)].sum()),
+                    distinct_failing=int(failed.sum()), mean_committed_layer=mean_layer)
+
+    results: Dict[Tuple[str, int], Dict[str, float]] = {}
+    failed_at: Dict[Tuple[str, int], np.ndarray] = {}
+    for depth in depths:
+        decisions = decisions_at[depth][:, inverse]
+        committed = np.mod(check_matrix @ (patterns ^ decisions).astype(np.float32), 2).sum(0) == 0
+        failed, coset = outcome(decisions, committed)
+        results[("last", depth)] = summary(failed, coset, np.full(patterns.shape[1], depth))
+        failed_at[("last", depth)] = failed
+    first_per_pattern = first_layer[inverse]
+    first_decisions = first_decision[:, inverse]
+    for depth in depths:
+        committed = (first_per_pattern > 0) & (first_per_pattern <= depth)
+        failed, coset = outcome(first_decisions, committed)
+        results[("first", depth)] = summary(failed, coset, first_per_pattern)
+        failed_at[("first", depth)] = failed
+    for depth in depths:
+        last_failed, first_failed = failed_at[("last", depth)], failed_at[("first", depth)]
+        results[("last", depth)]["rescued_by_first"] = int(counts[last_failed & ~first_failed].sum())
+        results[("last", depth)]["hurt_by_first"] = int(counts[~last_failed & first_failed].sum())
+    return results
+
+
 def main(argv: List[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--workdir", required=True, help="run directory: a path, or a codename under data/")
@@ -219,6 +338,17 @@ def main(argv: List[str]) -> int:
     parser.add_argument("--weights", default="all", help="all, or comma-separated error weights")
     parser.add_argument("--samples", type=int, default=0, help="only the first N samples (0 = all)")
     parser.add_argument("--single-qubit-rescale", type=float, default=0.1)
+    parser.add_argument("--run-tag", default="", help="the models' run tag, e.g. _no_cer_nocer_ramp_last "
+                        "(default: the arm's tag in the 72q_BB_cycles_1_sweep run)")
+    parser.add_argument("--rules", nargs="+", default=["last"], choices=["last", "first"],
+                        help="commit rules to score; both come out of the same forward pass")
+    parser.add_argument("--depths", nargs="*", type=int, default=[],
+                        help="also score each rule as if the decoder stopped at these layers")
+    parser.add_argument("--extra-layers", type=int, default=0,
+                        help="run this many layers past the model's last, with the last layer's weights")
+    parser.add_argument("--unit-weights", action="store_true",
+                        help="replace every trained weight by 1: plain BP with the same clamps and priors")
+    parser.add_argument("--csv", default="", help="append one row per (seed, alpha, rule, depth) to this CSV")
     arguments = parser.parse_args(argv)
 
     run_directory = arguments.workdir if os.path.isdir(arguments.workdir) else os.path.join(REPO_ROOT, "data", arguments.workdir)
@@ -253,26 +383,69 @@ def main(argv: List[str]) -> int:
         graph = TannerGraph(parity_check_matrix, pairs, couplings)
     print(f"{arguments.key}: {samples.shape[1]} samples, {patterns.shape[1]} distinct patterns decoded "
           f"(weights {arguments.weights}); alpha*(test) {alpha_star(rates):.3f}, alpha*(train) {alpha_star(train_rates):.3f}")
+    run_tag = arguments.run_tag or RUN_TAGS[arguments.arm]
+    pooled: Dict[Tuple[str, str, int], Dict[str, float]] = {}
     for seed in arguments.seeds:
         model_pattern = os.path.join(run_directory, "models", f"neuralbp_weights_*_trained_using_train_"
-                                     f"{arguments.train_key}{RUN_TAGS[arguments.arm]}_seed_{seed}.json")
+                                     f"{arguments.train_key}{run_tag}_seed_{seed}.json")
         model_files = sorted(glob.glob(model_pattern))
         if len(model_files) != 1:
             raise SystemExit(f"{len(model_files)} models match {model_pattern}")
         model = load_model(model_files[0], graph)
         if model["check_node"] == "enriched" and model["table"] != "pairwise":
             raise SystemExit(f"{model_files[0]}: only the pairwise table is mirrored")
+        if (model["check_node"] == "enriched") != (arguments.arm == "cer_enr"):
+            raise SystemExit(f"{model_files[0]}: check node {model['check_node']} does not match --arm {arguments.arm}")
+        if arguments.unit_weights:
+            model["W"][:, graph.weight_rows, graph.weight_cols] = np.float32(1)
+            model["b"][:] = np.float32(1)
+            model["readout"][graph.bit_of, np.arange(graph.n_neurons)] = np.float32(1)
+        n_layers = model["b"].shape[0] + arguments.extra_layers
         for alpha_spec in arguments.alpha:
             alpha = model["alpha"]
             if alpha_spec == "rescaled":
                 alpha = model["alpha"] * alpha_star(rates) / alpha_star(train_rates)
             elif alpha_spec != "learned":
                 alpha = float(alpha_spec)
-            result = score(model, graph, logicals, patterns, counts, llrs, alpha)
-            print(f"  {arguments.arm} seed {seed} alpha {alpha:.4f} ({alpha_spec}, {arguments.couplings} J): "
-                  f"{result['total']} failures = {result['coset']} coset + {result['convergence']} convergence "
-                  f"({result['weight3_convergence']} at weight 3); {result['distinct_failing']} distinct patterns",
-                  flush=True)
+            results = score_readouts(model, graph, logicals, patterns, counts, llrs, alpha,
+                                     tuple(arguments.depths), arguments.extra_layers)
+            label = f"{arguments.arm} seed {seed}{' UNIT WEIGHTS' if arguments.unit_weights else ''}"
+            for rule in arguments.rules:
+                result = results[(rule, n_layers)]
+                print(f"  {label} alpha {alpha:.4f} ({alpha_spec}, {arguments.couplings} J), commit {rule} "
+                      f"@{n_layers}: {result['total']} failures = {result['coset']} coset + {result['convergence']} "
+                      f"convergence ({result['weight3_convergence']} at weight 3); {result['distinct_failing']} "
+                      f"distinct patterns; mean committed layer {result['mean_committed_layer']:.2f}", flush=True)
+            if set(arguments.rules) == {"first", "last"}:
+                last_result = results[("last", n_layers)]
+                print(f"    first vs last: {last_result['rescued_by_first']} rescued, "
+                      f"{last_result['hurt_by_first']} hurt by committing at the first clearing layer")
+            for depth in sorted(set(arguments.depths) - {n_layers}):
+                print("    stop at layer " + f"{depth:3d}: " + ", ".join(
+                    f"{rule} {results[(rule, depth)]['total']} ({results[(rule, depth)]['coset']} | "
+                    f"{results[(rule, depth)]['convergence']})" for rule in arguments.rules))
+            for (rule, depth), result in results.items():
+                entry = pooled.setdefault((alpha_spec, rule, depth), dict(total=0, coset=0, convergence=0))
+                for field in ("total", "coset", "convergence"):
+                    entry[field] += result[field]
+                if arguments.csv:
+                    write_header = not os.path.exists(arguments.csv)
+                    with open(arguments.csv, "a") as handle:
+                        if write_header:
+                            handle.write("key,arm,run_tag,seed,unit_weights,extra_layers,alpha_spec,alpha,rule,depth,"
+                                         "total,coset,convergence,weight3_convergence,distinct_failing,"
+                                         "mean_committed_layer,rescued_by_first,hurt_by_first\n")
+                        handle.write(f"{arguments.key},{arguments.arm},{run_tag},{seed},{int(arguments.unit_weights)},"
+                                     f"{arguments.extra_layers},{alpha_spec},{alpha:.6f},{rule},{depth},"
+                                     f"{result['total']},{result['coset']},{result['convergence']},"
+                                     f"{result['weight3_convergence']},{result['distinct_failing']},"
+                                     f"{result['mean_committed_layer']:.4f},{result.get('rescued_by_first', '')},"
+                                     f"{result.get('hurt_by_first', '')}\n")
+    if len(arguments.seeds) > 1:
+        for (alpha_spec, rule, depth), entry in sorted(pooled.items()):
+            if rule in arguments.rules and (depth in arguments.depths or depth == n_layers):
+                print(f"  pooled over seeds {arguments.seeds}, alpha {alpha_spec}, commit {rule} @{depth}: "
+                      f"{entry['total']} = {entry['coset']} coset + {entry['convergence']} convergence")
     return 0
 
 

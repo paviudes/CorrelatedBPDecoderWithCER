@@ -284,9 +284,16 @@ end
   rather than parking it as `DependencyNeverSatisfied`. A NaN-**rolled-back** epoch
   is not a failure: the point exits 0 and writes weights, so rollbacks do not block
   testing. Behind the dependency the test job also **refuses a partial model set**
-  (counts staged-in `*.json` against the expected point count and exits 1), which
-  covers what the dependency cannot see: training never submitted, a stage-out that
-  did not land, a lone test resubmission, or a `cleanup.py` between the two.
+  (exits 1), which covers what the dependency cannot see: training never submitted,
+  a stage-out that did not land, a lone test resubmission, or a `cleanup.py` between
+  the two. **Since 2026-10-22 it checks by NAME**: the generator writes the weights
+  file of every point to `cluster/hp_sweep_models_<ts>.txt` and the test job lists any
+  that is not staged in. It used to count `*.json`, which a run directory reused by
+  several sweeps defeats (72q_BB_cycles_1_trainable_alpha held 20 old models, so the
+  count passed with all 10 of a new sweep's missing), and a missing weights file does
+  not fail on its own: the test then TRAINS a model under `retrain = false`. The
+  generator also warns, listing them, when models of the sweep already exist (they
+  will be retrained and replaced, with their results).
 - **`bash -n` on a generated job script proves nothing about `set -u`.** On
   2026-10-05 all 8 test tasks died in under a second — `line 75: TASK: unbound
   variable` — because the depot-lock block echoes `[test task $TASK]` and sat *above*
@@ -1742,6 +1749,68 @@ warmup 0, 10 epochs, the Poisson(3) 10k training set; 0 rollbacks in all 10 trai
   CER rates; the mean rate for nocer) on each arm's convergence failures: nocer 650,
   α* 655, cer 664, learned-α cer_enr 735 (5 seeds; per seed α* 126–136, nocer 122–139) —
   level. Plain BP+OSD-CS10 with the CER rates (500 it): 156 on this set.
+- **BP+OSD-CS10 with the NBP's own priors beats every NBP model** (measured 2026-10-22,
+  ldpc, product-sum, parallel; the 5 local sets; priors = the CER rates RESCALED to median
+  0.1, i.e. `single_qubit_rescale`'s input to the NBP; 90 iterations, the NBP's budget):
+  116 / 186 / 305 / 1383 / 1992 on p.0005 σ0 / σp / σ2p, p.0015 σ0 / σp, against the best
+  of all NBP models per set (any arm, any seed, α* included) 153 / 229 / 348 / 1704 / 2295
+  — 12–24% fewer. At 500 iterations 109 / 182 / 290 / 1402 / 1947. The RAW rates were
+  worse (466 / 535 / 534 / 2151 / 2909 at 90 it, the 2026-10-21 table), so the rescale
+  helps OSD as it helps BP. Uniform 0.1 at 90 it: 113 / 172 / 315 / 1449 / 2096 — the
+  per-qubit CER pattern is worth ~0–5% here. The shipped tables' weakness is uniform
+  priors + 500 iterations + OSD-E2, together: uniform 0.1 at p.0005 σ0 gives 3155 (E2,
+  500 it, = the shipped table), 1014 (CS10, 500 it), 113 (CS10, 90 it); with the
+  rescaled CER rates the iteration count barely matters (116 vs 109). OSD-CS2 / E2 /
+  CS0 with the rescaled rates at 90 it: 117 / 127 / 126. Not run on the other 19 sets
+  (`reference_decoders.py` has no rescaled prior option yet).
+- **The same-cost comparison: plain BP at the NBP's budget** (ldpc product-sum, parallel,
+  max 90 iterations with early stop; measured 2026-10-22, the 5 local sets, NBP at seed 1):
+
+  | set | BP, uniform 0.1 | BP, CER rescaled | NBP nocer | NBP cer | NBP cer_enr (α*) | BP+OSD-CS10 |
+  |---|---|---|---|---|---|---|
+  | p.0005 σ0 | 8778 | 194 | 193 | 217 | 964 (168) | 116 |
+  | p.0005 σp | 10152 | 277 | 257 | 235 | 232 | 186 |
+  | p.0005 σ2p | 13166 | 693 | 433 | 359 | 363 | 305 |
+  | p.0015 σ0 | 23483 | 2019 | 2066 | 2242 | 1715 | 1383 |
+  | p.0015 σp | 26990 | 3646 | 2782 | 2939 | 2317 | 1992 |
+
+  BP with exactly uniform priors barely converges (87–97% of its failures are
+  non-convergence); the trained weights fix that. BP's mean iterations per shot are
+  0.3–1.1 (most syndromes are trivial), while the commit = last NBP always runs 90
+  layers, and OSD runs on 0.01–0.23% of shots (125 / 155 / 484 / 1210 / 2337 per 1e6):
+  so on AVERAGE work BP+OSD is cheaper than the NBP as trained; OSD's cost is the
+  worst-case latency (an O(n³), sequential elimination) and its scaling with n.
+- **NBP + the strong OSD fallback vs BP+OSD** (p.0005 σ0, seeds 1–5; fallback = ldpc
+  BP+OSD-CS10 at 90 it, rescaled CER priors for the CER arms, uniform 0.1 for nocer, on
+  each model's convergence failures): nocer 99 / 101 / 97 / 102 / 108, cer 106 / 115 /
+  110 / 111 / 118, cer_enr α* 114 / 104 / 118 / 120 / 125, learned-α cer_enr 129 / 123 /
+  110 / 134 / 126, against plain BP+OSD-CS10's 116. So the no-CER NBP in front of OSD
+  is −13% (5/5 seeds) and the CER arms add nothing on top of it. (The earlier fallback,
+  raw rates at 100 it, gave 122–139 for every arm.) One set only.
+- **The Bethe table against that baseline (measured 2026-10-22, 5 local sets; tables from
+  each key's own 1e6-sample TRAINING file, tested on its test file).**
+  - *Inside untrained BP* (unit-weight enriched node, rescaled priors, 90 it,
+    first-to-clear; numpy mirror): p.0005 σ0 tanh 195, pairwise α* 356, Bethe α* 14,731
+    (none coset, all non-converged), Bethe α = 1 nothing converges. With BP+OSD-CS10
+    as a fallback on the non-converged: 115 / 109 / 117 / 149 — no gain over plain
+    BP+OSD (116). A within-check Bethe factor makes pair flips about as likely as single
+    flips (which they are, locally), and loopy BP does not settle.
+  - *As the judge of OSD's answer* (`misc/bethe_osd.py`: ldpc BP, OSD-CS10 written out
+    in numpy, reproducing ldpc to ±2): choosing among the OSD candidates by
+    log P_Bethe(x) = Σ_c T_c(x_c) + Σ_u log p_u(x_u) instead of the prior weight:
+    110 / 173 / 282 / 1177 / 1811 vs 116 / 186 / 305 / 1383 / 1992 (−5 / −7 / −8 / −15 /
+    −9%) on p.0005 σ0 / σp / σ2p, p.0015 σ0 / σp. Choosing by the raw pairwise-J model
+    is worse than the prior weight (175 / 250 / 383 / 1812 / 3328). Letting the Bethe
+    model also overrule BP where BP converged (`--always`, BP's answer as one more
+    candidate) is far worse (949 at p.0005 σ0): it over-rates correlated alternatives on
+    easy patterns.
+  - *Headroom*: 59–70% of BP+OSD's failures are BP converging to a syndrome-valid wrong
+    answer (69 / 122 / 209 / 809 / 1309), which OSD never sees. On ALL of BP+OSD's
+    failures the true error is more probable than the decoder's answer under the Bethe
+    model in 108/117, 166/182, 268/308 (independent priors: 20 / 21 / 44; pairwise J:
+    105 / 162 / 260). The empirical maximum-likelihood class per syndrome (training data)
+    fixes every OSD failure whose syndrome occurs in training (10 / 26 / 76 of them) —
+    the rest (107 / 156 / 232) have syndromes never seen in 1e6 training samples.
 - **Narval, all 24 sets (prepared 2026-10-22, not yet run):**
   `sweeps/hyperparams_cer_enriched_alphastar.toml` (= `hyperparams_cer_enriched.toml`
   + `coupling_scale_transfer = "alpha_star"`; body checked identical) and
@@ -1755,6 +1824,99 @@ warmup 0, 10 epochs, the Poisson(3) 10k training set; 0 rollbacks in all 10 trai
   training key's CER file is on the node), and results come back tagged
   `_cer_enr_alphastar`; gather with `cer_arms = [..., "cer_enr_alphastar"]`.
 - `compare_decoders.py`'s ratio row now widens its (shared) y axis to the data.
+
+### Measured 2026-10-22: commit first vs last, depth, epochs, and what priors do for BP
+
+All from `misc/nbp_mirror.py` (numpy mirror; new `--rules last first`, `--depths`,
+`--extra-layers`, `--unit-weights`, `--run-tag`, `--csv`), both readouts out of ONE
+forward pass; rows in `results/mirror_commit_rules.csv` of both run directories.
+Fidelity: tanh models within 0.1–0.4% of Julia under either rule (first:
+22920 vs 22931 over the 20 no-CER softmin_first model-sets) except knife-edge weight-3
+blocks; enriched models coset exact, convergence ±10%.
+
+- **The production run's training**: all three arms of `72q_BB_cycles_1_sweep` trained
+  with `loss_layer_selection = "ramp"`, **`warmup_layers = 0`** (the ramp was designed
+  for 5), k = 3, 10 epochs × 500 updates × 20, lr 1e-3, init 0.1, the Poisson(3) 10k set,
+  and test with `commit_layer_rule = "last"`. The commit rule is test-time only (train.jl
+  never reads it), so "ramp + first" is the same models with another readout.
+- **Ramp + first vs ramp + last** (`72q_BB_cycles_1_trainable_alpha`, the 2026-10-19
+  ramp_last models: ramp, warmup 5; 5 seeds × 4 sets, 90 layers):
+  no-CER 25014 → 22599 (**−9.7%**, every set −9 to −12%, 5/5 seeds, t −29; 2583 samples
+  rescued, 168 hurt; coset +12%, convergence −20%); CER-enriched 18856 → 18615 (−1.3%;
+  Julia's own per-sample files cap the possible gain at 1.75%: only 344 of its 19642
+  failures ever cleared). **Ramp + first ≈ softmin + first** (no-CER −1.4%, t −1.3;
+  enriched −0.8%, t −0.2): the 2026-10-19 "ramp_last worse by 7–9%" was the READOUT,
+  not the loss.
+- The same on the sweep models (5 local sets, 5 seeds): no-CER −12.4% (−21 to −24% at
+  p = 5e-4, −10% at 1.5e-3, 5/5 everywhere), CER priors −2% to −7% (−15% on p.0015 σ0,
+  block-driven), enriched α* −0.3%. The no-CER decoder clears and drifts; the CER ones
+  rarely do. Mean committed layer under first: 1.3–1.6 (so an early-exit decoder would
+  do ~1.5 layers per shot on average).
+- **Same cost, same readout (seed 1, first-to-clear for both; ldpc BP stops at its first
+  converged iteration)**: BP with rescaled CER priors 194 / 277 / 693 / 2019 / 3646 on
+  p.0005 σ0 / σp / σ2p, p.0015 σ0 / σp; NBP no-CER 186 / 235 / 390 / 1964 / 2605; NBP CER
+  priors 214 / 224 / 342 / 2159 / 2879; NBP enriched α* 158 / 211 / 382 / 1750 / 2393
+  (−13% to −45% vs BP); BP+OSD-CS10 116 / 186 / 305 / 1383 / 1992.
+- **What the CER priors do for plain BP is mostly symmetry breaking** (ldpc, 90 it,
+  same 5 sets): uniform 0.1 fails 8778 / 10152 / 13166 / 23483 / 26990 (87–97%
+  non-convergence); uniform × (1 + 10% random noise), 3 draws: 296–749 / 351–979 /
+  655–1329 / 2725–3816 / 3744–4891; the CER rates randomly PERMUTED over the qubits:
+  492–1379 / 281–763 / 503–926 / 4266–5728 / 3083–4110; the CER rates in place 194 / 277 /
+  693 / 2019 / 3646. So any non-uniform prior buys 10–30×; the true pattern ~1.5–3× more
+  at σ = 0 and σ = p, and no reliable gain at σ = 2p (one permutation beat it). The
+  no-CER NBP gets the same lift from its weights, without the CER file.
+- **Depth.** Failures still fall over the last trained layers (first rule, 75 → 90:
+  no-CER −9%, enriched −5%). Running past 90 with layer 90's weights (`--extra-layers`,
+  a probe, not a trained deeper model): to 120 layers no-CER −15%, enriched −13%; to 180
+  −17% / −16%; all of it convergence (−51% / −63%) while coset rises (+35% / +9%: 45% of
+  the samples newly cleared after layer 90 land in the wrong coset for no-CER, 21% for
+  enriched, against 23% for those cleared in layers 76–90). With an OSD behind it
+  (which fails on ~40–50% of convergence failures) that nets to about −2% / −4%.
+- **Epochs** (training logs, batches whose LAST-layer loss shows a failure, 5 seeds ×
+  500 per epoch): sweep run no-CER 36.2% → 18.6% over 10 epochs, still −5% per epoch at
+  the end; CER priors 18.1% → 15.6% (flat from epoch 5); enriched 17.7% → 16.7%. The
+  2026-10-19 5-epoch models: enriched flat at ~15.4%, no-CER 22.2% → 18.8%. Pattern
+  coverage: of the failing test samples on the training distribution
+  (p_0.0015_sig_0.0015_s_1, ramp_last models), 1% of the distinct failing patterns are in
+  the model's own 10k training set and 16–19% anywhere in the 1e6 training file.
+- **The real-decoder check: `sweeps/enriched_ramp_commit.toml`** (prepared 2026-10-22, not
+  yet run). Enriched only (`enriched:0.503:learn`, no no-CER arm), trained on
+  p_0.0015_sig_0.0015_s_1, the 2026-10-19 sweep's 4 test sets, 5 seeds; two optimizer
+  arms that differ ONLY in `commit_layer_rule`: `rampw0_last` and `rampw0_first` (ramp,
+  warmup 0, k = 3). Everything else is the user's `models/hyperparams_baseline.toml` of
+  2026-10-22 in that directory (5 epochs, init 0.1, lr 1e-3, Poisson(3) 10k — the
+  production run's settings but its 10 epochs). 10 trainings (5 tasks, 2 per card,
+  1:30 wall, est. 44%), 40 tests (8 tasks, 1:00, est. 45%). Run from expts/:
+  `bash sweep_hyperparams.sh --settings sweeps/enriched_ramp_commit.toml --no-edit`,
+  then the two printed sbatch lines; afterwards `python3 misc/compare_sweep_arms.py
+  --workdir 72q_BB_cycles_1_trainable_alpha --arms _cer_enr_rampw0_last
+  _cer_enr_rampw0_first`.
+  - The two arms train the same model at each seed (training never reads the commit
+    rule; GPU training is deterministic), so the weights should be IDENTICAL —
+    compare_sweep_arms.py checks that before comparing counts. The duplicate
+    training is the price of using the generator unchanged.
+  - **The generator ignores `loss_layer_selection` and `commit_layer_rule` in the base
+    TOML** (it strips both; the settings file's top level, default softmin + first,
+    or the arm decides). So those keys in hyperparams_baseline.toml do nothing in a
+    sweep; every arm here names its layer design.
+  - The tags avoid `ramp_last`: the 2026-10-19 `_cer_enr_ramp_last` models (warmup 5,
+    init 0.3) have the same epochs and training key, and would be retrained and
+    replaced.
+  - Verified 2026-10-22 with stub julia / parallel / module and fake SLURM vars on a
+    copy of the directory holding the 20 old models: generation gives 10 + 40 points,
+    the ramp-warmup note, the two arms' TOMLs differ only in run_tag and
+    commit_layer_rule; 5/5 train tasks and 8/8 test tasks exit 0, 10 models, 40
+    results, every test loads its model (retrain = false); compare_sweep_arms.py
+    reports identical weights. With one model removed every test task exits 1 naming
+    it, with 29 *.json present; regenerating lists the 10 existing models.
+- `misc/compare_sweep_arms.py --workdir <codename> --arms <run tag> <run tag> ...`
+  (2026-10-22): per test set and over all of them, each arm's failures summed over
+  seeds as total (coset | convergence), mean committed layer, and against the first
+  arm the change, seeds lower and the seed-paired t of the log ratio; plus a seed-by-
+  seed weights comparison. `sweep_hyperparams.sh --collect` cannot do this any more:
+  its collector parses the pre-2026-10-09 `_hp<arm>` names. Checked on the 2026-10-19
+  files: `_cer_enr_ramp_last` 19642 (11993 | 7649) vs `_cer_enr_softmin_first` 18276
+  (12241 | 6035), `_nocer_*` 24988 vs 22931 (t −9.4), the numbers above.
 
 ### Next: the enriched check node on the same run (prepared and run 2026-10-21)
 
