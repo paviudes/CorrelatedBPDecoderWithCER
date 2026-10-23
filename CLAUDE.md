@@ -1516,6 +1516,28 @@ The general-purpose driver for the `72q_BB_cycles_1_sweep` data (8 p × sigma �
   `${exclude_args[@]+"…"}`: the plain form is an unbound-variable error under `set -u`
   in macOS's bash 3.2. Checked with pv, GNU tar, a non-GNU tar, and a tar made to drop
   the folders (caught).
+- **Bringing the logs home, to see why a run crashed** (`--logs`, 2026-10-23):
+  `bash misc/compress.sh --logs <codename>` writes `data/<codename>_logs.tar.gz` in the
+  same skeleton (every top-level folder present) with only what the run wrote about
+  itself: `cluster/` in full — job scripts, command lists, each array task's .out/.err,
+  and `cluster/logs` (joblogs and every point's own stdout/stderr, where the crash's
+  message is) with or without `--all`; `logs/` in full (training debug CSVs, ~60–90 MB
+  uncompressed per run dir, mostly `*_individual_losses.csv`); and from `models/` only
+  the generated TOMLs (`hyperparams_hp_*`, `hyperparams_xf_*`, `submissions/` — the
+  split cleanup.py makes), each of which states its point's whole settings. Every other
+  folder goes in EMPTY (data sets, results/, code/, correlated_weights/, plots/), and
+  weights JSONs, base TOMLs, top-level files (.DS_Store, tree_log.sh) and top-level
+  links stay out — so unpacking it at home never replaces the laptop's own base TOMLs.
+  `--logs` with `--results` is refused (`--results --all` is everything but the data
+  sets, cluster/logs included). After packing, the archive's entries are compared with
+  the expected set (trailing slashes ignored, since tars differ there): exits 1 on
+  anything missing or extra. Checked 2026-10-23 on a fake run dir and on name-for-name
+  copies of trainable_alpha and the sweep dir (20 point TOMLs / submissions/ kept, 0
+  JSONs, 0 base TOMLs): the default, `--all`, `--results` and `--results --all`
+  listings are identical to the previous script's; the pv and non-GNU branches give
+  the same archive; a tar that ignores `--exclude` and one that drops the emptied
+  folders are both caught; a tar that lists folders without a trailing slash passes;
+  unpacking over a laptop copy keeps its results, base TOML and data sets.
 - `julia --project="./" postprocess.jl --config=postprocess_configs/postprocess_panel_sweep.toml --task=gather`
   (from expts/, on the laptop: postprocess.jl loads PlotsForBPDecoder/Plots) writes
   into `<codename>/results/`: `decoder_statistics_NeuralBP.csv` (one row per results
