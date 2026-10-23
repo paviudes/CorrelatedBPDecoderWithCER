@@ -1128,6 +1128,48 @@ if [ "$WALLTIME_OVERRUN" -eq 1 ]; then
     exit 1
 fi
 
+# PREFLIGHT: is the depot the jobs will use precompiled for THIS source? If the
+# package changed since its cache was written, the jobs compile it on the compute
+# nodes: the lock owner twice (before and after the CUDA_Runtime_jll rebuild), and
+# every point the 1800 s wait releases sits at `using CorrelatedBPDecoderWithCER`
+# waiting for the same cache. On 2026-10-22 (hp_2026-10-22_16-25-01) the owner had
+# not finished an hour in, all 8 points were still at that line, and nothing was
+# trained. Judged by modification times (a pull stamps the files it changes), so it
+# warns rather than refuses. The depot is the one the job preamble picks: the first
+# entry of JULIA_DEPOT_PATH, else $SCRATCH/.julia; with neither (a laptop) there is
+# nothing to check.
+JOB_DEPOT=""
+if [ -n "${JULIA_DEPOT_PATH:-}" ]; then
+    JOB_DEPOT="${JULIA_DEPOT_PATH%%:*}"
+elif [ -n "${SCRATCH:-}" ]; then
+    JOB_DEPOT="$SCRATCH/.julia"
+fi
+JOB_JULIA_MINOR=$(echo "$JULIA_MODULE" | sed -nE 's|^julia/([0-9]+\.[0-9]+).*$|\1|p')
+if [ -n "$JOB_DEPOT" ] && [ -n "$JOB_JULIA_MINOR" ] && [ -d "$JOB_DEPOT/compiled/v$JOB_JULIA_MINOR" ]; then
+    PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+    # The manifest that Julia picks: its own minor version's, else the plain one.
+    JOB_MANIFEST="$PROJECT_ROOT/Manifest-v$JOB_JULIA_MINOR.toml"
+    if [ ! -f "$JOB_MANIFEST" ]; then
+        JOB_MANIFEST="$PROJECT_ROOT/Manifest.toml"
+    fi
+    NEWEST_SOURCE=$(ls -t "$PROJECT_ROOT"/src/*.jl "$PROJECT_ROOT/Project.toml" "$JOB_MANIFEST" 2>/dev/null | head -1)
+    NEWEST_CACHE=$(ls -t "$JOB_DEPOT/compiled/v$JOB_JULIA_MINOR/CorrelatedBPDecoderWithCER"/*.ji 2>/dev/null | head -1)
+    if [ -z "$NEWEST_CACHE" ] || { [ -n "$NEWEST_SOURCE" ] && [ "$NEWEST_SOURCE" -nt "$NEWEST_CACHE" ]; }; then
+        echo >&2
+        echo "[hp_sweep] WARNING: the depot is not precompiled for this source." >&2
+        if [ -z "$NEWEST_CACHE" ]; then
+            echo "           No cache of CorrelatedBPDecoderWithCER in $JOB_DEPOT/compiled/v$JOB_JULIA_MINOR." >&2
+        else
+            echo "           ${NEWEST_SOURCE#"$PROJECT_ROOT"/} is newer than the package's newest cache," >&2
+            echo "           $NEWEST_CACHE." >&2
+        fi
+        echo "           The jobs would compile it on the compute nodes, which on 2026-10-22 took" >&2
+        echo "           longer than the whole job. On this login node, first:" >&2
+        echo "               bash misc/precompile_depot.sh" >&2
+        echo >&2
+    fi
+fi
+
 
 # SELF-CHECK OF THIS FILE. The two SLURM scripts below are built from UNQUOTED
 # heredocs, so bash expands their contents at generation time -- inside comments
@@ -1205,22 +1247,27 @@ REBUILD_LOCK="$CLUSTER_DIR/hp_${TS}_cuda_rebuild.lock"
 REBUILD_DONE="$CLUSTER_DIR/hp_${TS}_cuda_rebuild.done"
 REBUILD_WAIT_SECONDS=1800
 if mkdir "\$REBUILD_LOCK" 2>/dev/null; then
-    echo "[\$PHASE task \$TASK] rebuilding CUDA_Runtime_jll (this task owns the depot lock)"
+    # Every step is stamped. On 2026-10-22 the owner's .out ended at its first line
+    # and the job was cancelled an hour later with nothing saying which step held it.
+    echo "[\$PHASE task \$TASK] rebuilding CUDA_Runtime_jll (this task owns the depot lock): \$(date)"
+    echo "[\$PHASE task \$TASK]   \$(date +%T) Pkg.instantiate()"
     if ! julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using Pkg; Pkg.instantiate()'; then
         exit 1
     fi
+    echo "[\$PHASE task \$TASK]   \$(date +%T) compilecache(CUDA_Runtime_jll)"
     if ! julia --project=\$SLURM_SUBMIT_DIR/.. -e '
         pkg = Base.PkgId(Base.UUID("76a88914-d11a-5bdc-97e0-2f5a05c973a2"), "CUDA_Runtime_jll")
         Base.compilecache(pkg)'; then
         exit 1
     fi
+    echo "[\$PHASE task \$TASK]   \$(date +%T) Pkg.precompile()"
     if ! julia --project=\$SLURM_SUBMIT_DIR/.. -e 'using Pkg; Pkg.precompile()'; then
         exit 1
     fi
     touch "\$REBUILD_DONE"
-    echo "[\$PHASE task \$TASK] depot rebuild done; siblings released"
+    echo "[\$PHASE task \$TASK] depot rebuild done; siblings released: \$(date)"
 else
-    echo "[\$PHASE task \$TASK] another task owns the depot lock; waiting for the rebuild"
+    echo "[\$PHASE task \$TASK] another task owns the depot lock; waiting for the rebuild: \$(date)"
     WAITED=0
     while [ ! -f "\$REBUILD_DONE" ] && [ "\$WAITED" -lt "\$REBUILD_WAIT_SECONDS" ]; do
         sleep 15
@@ -1258,7 +1305,7 @@ if ! cuda_is_functional; then
         exit 1
     fi
 fi
-echo "[\$PHASE task \$TASK] CUDA functional."
+echo "[\$PHASE task \$TASK] CUDA functional: \$(date +%T)"
 EOF
 
 # ------------------------------------------------------------ SLURM: train ---

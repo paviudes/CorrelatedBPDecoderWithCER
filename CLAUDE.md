@@ -205,6 +205,30 @@ end
   2026-10-15 it also refuses (exit 1, printing the commands) a manifest resolved by
   another Julia minor version, and prints the CUDA toolkit the login node selected,
   refusing `none`.
+  - **What a cold depot looks like (2026-10-22, `hp_2026-10-22_16-25-01`, the
+    enriched_ramp_commit sweep): nothing was trained.** The lock owner's .out ends at
+    "rebuilding CUDA_Runtime_jll" (no "done" an hour later); the other 4 tasks print
+    "no rebuild sentinel after 1800s; proceeding to the gate anyway", pass the CUDA
+    gate (it loads CUDA, not the package) and start their points, and every point's
+    stderr in `cluster/logs/` is "signal 15: Terminated in expression starting at
+    neural_bp_experiments.jl:4" — `using CorrelatedBPDecoderWithCER` — with an idle
+    event-loop backtrace (epoll_pwait, uv_run) and an empty stdout: 20–29 min waiting
+    on its precompilation. src/ had changed (2f31ddd, the α transfer) since the depot
+    was last compiled; in the job the owner compiles the package twice (instantiate's
+    auto-precompile, then again after the CUDA_Runtime_jll rebuild) while 8 points and
+    4 gates wait on the same cache files. The array was then cancelled at 19:05 EDT,
+    all 5 tasks within 30 s ("CANCELLED … DUE to SIGNAL Terminated"): a job cancel,
+    not the wall (which says DUE TO TIME LIMIT and would have hit task 3 nine minutes
+    later than the rest); the TERM handler staged out 0 points and afterok dropped
+    the test job. A warm depot makes this step ~6 min (2026-10-19).
+  - Since then `sweep_hyperparams.sh` **warns at generation time** when the depot the
+    jobs will use (first entry of JULIA_DEPOT_PATH, else $SCRATCH/.julia; nothing to
+    check on a laptop) has no cache of CorrelatedBPDecoderWithCER for the job's Julia
+    (`julia_module` → v1.12), or its newest `.ji` is older than the newest of
+    src/*.jl, Project.toml and the manifest that Julia picks — modification times, so
+    a warning, not a refusal; and the owner's rebuild steps and the CUDA gate are
+    time-stamped in the .out. Checked with a fake depot (stale, fresh, missing, no
+    variables, $SCRATCH only) and stub-executed jobs (5/5 train, 8/8 test exit 0).
 - **One manifest per Julia minor version (2026-10-15).** The laptop runs 1.13.1 and
   Narval `julia/1.12.5` (Narval has no 1.13 module, checked 2026-10-15), and a
   manifest only works with the minor version that resolved it. Julia X.Y reads `Manifest-vX.Y.toml` before `Manifest.toml` (Julia
@@ -1901,8 +1925,9 @@ blocks; enriched models coset exact, convergence ±10%.
   coverage: of the failing test samples on the training distribution
   (p_0.0015_sig_0.0015_s_1, ramp_last models), 1% of the distinct failing patterns are in
   the model's own 10k training set and 16–19% anywhere in the 1e6 training file.
-- **The real-decoder check: `sweeps/enriched_ramp_commit.toml`** (prepared 2026-10-22, not
-  yet run). Enriched only (`enriched:0.503:learn`, no no-CER arm), trained on
+- **The real-decoder check: `sweeps/enriched_ramp_commit.toml`** (prepared 2026-10-22;
+  the first submission, `hp_2026-10-22_16-25-01`, trained nothing — a cold depot, see
+  the cluster notes — so not yet run). Enriched only (`enriched:0.503:learn`, no no-CER arm), trained on
   p_0.0015_sig_0.0015_s_1, the 2026-10-19 sweep's 4 test sets, 5 seeds; two optimizer
   arms that differ ONLY in `commit_layer_rule`: `rampw0_last` and `rampw0_first` (ramp,
   warmup 0, k = 3). Everything else is the user's `models/hyperparams_baseline.toml` of

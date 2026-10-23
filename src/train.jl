@@ -404,7 +404,11 @@ function train_neuralbp_enzyme!(
     # -------------------------
     # Progress bars
     # -------------------------
-    epoch_progress = is_quiet ? nothing : Progress(n_epochs, desc="Training Epochs: ")
+    if is_quiet
+        epoch_progress = nothing
+    else
+        epoch_progress = Progress(n_epochs, desc="Training Epochs: ")
+    end
 
     n_applied_updates::Int = 0
     n_rolled_back_epochs::Int = 0
@@ -416,7 +420,11 @@ function train_neuralbp_enzyme!(
     later_gradient_seconds::Float64 = 0.0
     n_gradients::Int = 0
     for epoch in 1:n_epochs
-        batch_progress = is_quiet ? nothing : Progress(n_gradient_updates_per_epoch, desc="Epoch $epoch Batches: ")
+        if is_quiet
+            batch_progress = nothing
+        else
+            batch_progress = Progress(n_gradient_updates_per_epoch, desc="Epoch $epoch Batches: ")
+        end
 
         hp = compute_hyperparameters(epoch, annealing_schedule)
 
@@ -456,9 +464,7 @@ function train_neuralbp_enzyme!(
             grad_w_c2v_v2c::Vector{Float32} = zeros(Float32, length(bpnn.weights_c2v_v2c))
             grad_w_llrs::Vector{Float32}    = zeros(Float32, length(bpnn.weights_llrs))
             grad_w_readout::Vector{Float32} = zeros(Float32, length(bpnn.weights_c2v_readout))
-            # Always Duplicated, even when α is frozen or unused: the optimiser
-            # leaf decides whether the gradient is applied, and a fixed
-            # signature keeps ONE compiled Enzyme thunk for every configuration.
+            
             grad_coupling_scale::Vector{Float32} = zeros(Float32, length(bpnn.coupling_logit))
             loss_value::Float32 = NaN32
 
