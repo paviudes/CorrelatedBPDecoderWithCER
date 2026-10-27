@@ -341,7 +341,7 @@ echo "  testing    -> Metal (USE_GPU=1), sequential with live output, GPU_MEMORY
 # ----------------------------------------------------------- cut datasets ---
 # The files are 72 rows x n_samples SPACE-SEPARATED columns, so a sample is a
 # COLUMN and `cut -f1-N -d' '` takes the first N samples. Same trick as the
-# --local block in sweep_hyperparams.sh.
+# --local option of sweep_hyperparams.sh (hp_sweep/local_smoke.sh).
 cut_dataset() {   # <subdir> <prefix> <src key>
     local subdir="$1" prefix="$2" src="$3"
     local in="$DATA/$subdir/${prefix}${src}.txt"
@@ -401,10 +401,11 @@ for k in $SRC_TEST_KEYS; do
     TEST_KEYS_TOML="$TEST_KEYS_TOML\"${k}${SUFFIX}\""
 done
 
-# ------------------------------------------------------------ the settings ---
-# Driven through sweep_hyperparams.sh --settings so that arm definitions, tagging
-# and TOML generation stay in ONE place. The SLURM .sh files it also writes are
-# ignored here; the .txt command lists are what this script runs.
+# --------------------------------------------------------- the sweep file ---
+# Driven through sweep_hyperparams.sh so that arm definitions, tagging and TOML
+# generation stay in ONE place. The SLURM .sh files it also writes are ignored
+# here; the .txt command lists are what this script runs. The machine is the
+# cluster profile clusters/laptop.toml (heap_size_hint 2G, 16 GB of RAM).
 #
 # train_array_tasks = 1 and test_array_tasks = 1 because there is no array; the
 # walltimes exist only to satisfy the generator's preflight and mean nothing
@@ -412,6 +413,7 @@ done
 SETTINGS="$EXPTS_DIR/scripts/local_settings_${TS}.toml"
 mkdir -p "$EXPTS_DIR/scripts"
 cat > "$SETTINGS" <<EOF
+cluster          = "laptop"
 workdir          = "$WORKDIR"
 codename         = "$CODENAME"
 datasets         = ["${SRC_TRAIN_KEY}${SUFFIX}"]
@@ -431,36 +433,10 @@ check_node_arms  = ["$CHECK_NODE"]
 # tag-neutral override (only loss_layer_selection and commit_layer_rule reach the
 # filename), so the four arm tags are unchanged.
 optimizer_arms   = [$OPTIMIZER_ARMS_TOML]
-cluster_name     = "narval"
-account_gpu      = "def-jemerson_gpu"
-email            = "dsannamo@uwaterloo.ca"
-julia_module     = "julia/1.12.5"
-cuda_module      = "cuda"
-heap_size_hint   = "2G"
 train_array_tasks = 1
-train_jobs       = $JOBS
-train_cpus       = $JOBS
 train_wall_time  = "24:00:00"
 test_array_tasks = 1
-gpu_type         = "a100"
-gpu_request_style = "auto"
-n_gpus_per_node  = 1
-test_jobs        = 1
-# Host RAM of the "allocation": this machine's 16 GB. The generator checks
-# train_jobs x heap_size_hint (2G) against it. Not the GPU_MEMORY budget, which
-# comes from vram_per_gpu below.
-mem_per_gpu      = "16G"
-# Stated explicitly rather than inferred from gpu_type: "a100" would infer 40 GB
-# and the generator would print a GPU_MEMORY this machine does not have. Only the
-# printed summary and the ignored SLURM script use it -- the real run exports
-# GPU_MEMORY=$GPU_MEM below -- but a number that disagrees with reality in a log
-# is how an hour gets lost later.
-vram_per_gpu     = "${GPU_MEM%G}"
-test_cpus        = $JOBS
 test_wall_time   = "24:00:00"
-seconds_per_test = 129
-seconds_per_train_point = 1800
-job_startup_seconds = 900
 EOF
 echo
 echo "[run_local] settings -> $SETTINGS"
@@ -471,8 +447,21 @@ if [ "$DRY_RUN" -eq 1 ]; then
     echo "            generator validates the dataset keys exist); no julia runs."
 fi
 
-( cd "$EXPTS_DIR" && bash sweep_hyperparams.sh --settings "$SETTINGS" --no-edit ) \
-    | sed -n '/training point/,/commands/p' | sed 's/^/  /'
+# The generator's own refusals go to the terminal (stderr). Its exit status is
+# checked before anything else: a refused sweep writes no command lists, and the
+# newest lists in cluster/ would then be an EARLIER run's.
+GENERATOR_LOG="$(mktemp)"
+if ! ( cd "$EXPTS_DIR" && bash sweep_hyperparams.sh "$SETTINGS" ) > "$GENERATOR_LOG"; then
+    echo "[run_local] sweep_hyperparams.sh refused the sweep (see above); nothing was run." >&2
+    rm -f "$GENERATOR_LOG"
+    exit 1
+fi
+# Its summary, without the cluster, train and test lines: those describe the
+# SLURM allocations, which are not used here (the summary at the top is this run's).
+sed -n '/training point/,/commands/p' "$GENERATOR_LOG" \
+    | awk '/^  [a-z]/ { skip = ($0 ~ /^  (cluster|train|test) +->/) } !skip' \
+    | sed 's/^/  /'
+rm -f "$GENERATOR_LOG"
 
 TRAIN_TXT=$(ls -t "$DATA/cluster"/hp_sweep_train_*.txt | head -1)
 TEST_TXT=$(ls -t "$DATA/cluster"/hp_sweep_test_*.txt | head -1)

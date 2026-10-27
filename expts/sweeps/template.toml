@@ -1,0 +1,112 @@
+# =============================================================================
+# template.toml -- every key a sweep file takes, for sweep_hyperparams.sh.
+#
+#     cp sweeps/template.toml sweeps/<my_sweep>.toml     fill in the <...> values
+#     bash sweep_hyperparams.sh sweeps/<my_sweep>.toml   (from expts/)
+#
+# The sweep file says WHAT to run and how big the two jobs are. WHERE they run --
+# account, modules, the card/cores/RAM of an array task, the measured costs -- is
+# the cluster profile named by `cluster` (clusters/<name>.toml), the same for every
+# sweep. A cluster key here is refused, as is an unknown key (a typo would
+# otherwise fall back to a default), a key given twice, and an array wrapped over
+# two lines: the reader takes a key's FIRST line only, so KEEP EACH ARRAY ON ONE
+# LINE.
+#
+# What the generator writes for each point, and which file decides what, is in
+# the header of sweep_hyperparams.sh. Worked examples: sig0_matched_ramp_commit.toml
+# (matched train/test keys), enriched_vs_nocer.toml (one training key, four test
+# keys).
+# =============================================================================
+
+# The cluster profile: clusters/<cluster>.toml.
+cluster          = "narval"
+
+# The run directory is <workdir>/<codename>; workdir is relative to expts/, where
+# the generator and sbatch are run. It holds code/, correlated_weights/,
+# training_data/, testing_data/ and models/<base_hyperparams>.
+workdir          = "./../data"
+codename         = "<run directory>"
+
+# --- data sets ------------------------------------------------------------------
+# Training keys: each needs training_data/train_<key>.txt,
+# testing_data/test_<key>.txt and correlated_weights/correlated_weights_<key>.txt.
+# A key is p_<p>_sig_<sigma>_s_<sample>, e.g. p_0.0015_sig_0.0_s_1.
+datasets         = ["<key>", "<key>"]
+# Optional, rarely used: keys that get only the CER tanh arm (and the no-CER
+# baseline when include_nocer = true), on the base optimizer arm.
+ref_datasets     = []
+
+# WHICH TEST SETS EACH MODEL IS SCORED ON (test_keys_of in hp_sweep/sweep.sh):
+#   []                each model on the test set of ITS OWN training key, nothing
+#                     else: train_<key>.txt -> test_<key>.txt. The matched setup.
+#   ["<k1>", "<k2>"]  every model on every listed key, whatever it was trained on
+#                     (train at one rate, test across the range). Each listed key
+#                     needs test_<k>.txt and correlated_weights_<k>.txt; the decoder
+#                     is always given the CER file of the TEST key.
+# The generator prints the resulting train -> test pairs, and refuses the sweep if
+# a written test command breaks this rule.
+test_keys        = []
+
+# --- what every point inherits ------------------------------------------------------
+# models/<base_hyperparams> in the run directory: everything not swept below
+# (n_epochs, batch_size, n_gradient_updates_per_epoch, ...). It must say
+# manual_backprop = true (training runs on the GPU with the hand-written gradient).
+# The network is 90 layers, always.
+base_hyperparams = "hyperparams_baseline.toml"
+# Network seeds; every arm is trained at each one. Seed variance is the binding
+# error bar, so five.
+seeds            = [1, 2, 3, 4, 5]
+
+# --- arms -------------------------------------------------------------------------
+# CER arms read the key's CER file: per-qubit priors, and (enriched) pair
+# couplings. include_nocer = true adds the no-CER baseline: uniform priors, tanh
+# check node, one per optimizer arm.
+include_nocer    = true
+# Rescales the per-qubit CER rates so their median is this value (written into
+# every point's TOML).
+single_qubit_rescale = 0.1
+
+# The check node of the CER arms, each one an arm:
+#   "tanh"                             the standard rule (priors only)
+#   "enriched:<alpha>:<fixed|learn>"   the CER pair couplings inside each check
+#                                      factor, scaled by alpha, held or learned
+#   "bethe:<alpha>:<fixed|learn>"      the same node with the Bethe table
+#                                      (correlated_weights/bethe_table_<key>.txt for
+#                                      every training and test key; built by
+#                                      misc/build_bethe_tables.py)
+# <alpha> is a number or alpha_star: alpha* of each point's own training key,
+# ln((1-t)/t) / ln((1-m)/m) with t = single_qubit_rescale and m the key's median
+# raw rate (printed per key). A non-tanh arm adds _enr / _bethe to the run tag.
+check_node_arms  = ["tanh", "enriched:alpha_star:learn"]
+
+# Optimizer arms, each "<tag>[:<key>=<value>,<key>=<value>...]". An arm starts from
+# the base TOML and overrides the keys it names; the tag goes into every filename
+# (run tag _<cer|nocer>[_enr|_bethe]_<tag>), so two arms never share a weights or
+# results file. A single arm called just "base" adds no tag. Keys an arm may set:
+#   learning_rate, adam_eps, weight_decay, initial_conditions_scale, warmup_layers,
+#   loss_layer_selection     softmin | last | mean | ramp   (how layers are scored)
+#   commit_layer_rule        first | last   (which layer the decoder reads out)
+#   loss_layer_ramp_sharpness  k of the ramp weighting (3.0)
+#   base_loss                sin_residue | smooth_loss
+#   training_samples         size of the training set drawn from the file (0 = all)
+#   failure_weight_boundary  Poisson centre of that set's error weights (0 = none;
+#                            needs training_samples > 0)
+optimizer_arms   = ["<tag>:loss_layer_selection=ramp,commit_layer_rule=first", "<tag>:loss_layer_selection=ramp,commit_layer_rule=last"]
+
+# Optional: the layer pair of an arm that names neither key (default softmin +
+# first). Leave out when every arm names its own.
+#loss_layer_selection = "softmin"
+#commit_layer_rule    = "first"
+
+# --- job sizes ------------------------------------------------------------------------
+# Each array task is one allocation of the profile's shape (on Narval one A100, 12
+# cores, 32 GB) running an interleaved slice of the points (task t takes lines t,
+# t+K, t+2K, ...). Training runs train_jobs points at a time per card (the profile:
+# 4), so points per task / train_jobs is the number of waves; testing runs one test
+# at a time. The generator estimates both jobs from the profile's measured costs
+# and refuses, writing nothing, when one cannot finish -- with the array width
+# that would fit.
+train_array_tasks = <tasks>
+train_wall_time  = "1:00:00"
+test_array_tasks = <tasks>
+test_wall_time   = "1:00:00"

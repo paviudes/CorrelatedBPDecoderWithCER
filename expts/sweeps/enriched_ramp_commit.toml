@@ -4,7 +4,7 @@
 # (2026-10-22). Narval GPU nodes, 72q_BB_cycles_1_trainable_alpha.
 #
 #     cd expts
-#     bash sweep_hyperparams.sh --settings sweeps/enriched_ramp_commit.toml --no-edit
+#     bash sweep_hyperparams.sh sweeps/enriched_ramp_commit.toml
 #
 # then the two sbatch lines it prints (training, then testing chained on it with
 # afterok). When the test job is done, from expts/:
@@ -48,6 +48,7 @@
 # already exists.
 # =============================================================================
 
+cluster          = "narval"          # clusters/narval.toml: account, modules, one A100 per task
 workdir          = "./../data"
 codename         = "72q_BB_cycles_1_trainable_alpha"
 
@@ -79,39 +80,14 @@ check_node_arms  = ["enriched:0.503:learn"]
 # name their own.
 optimizer_arms   = ["rampw0_last:loss_layer_selection=ramp,commit_layer_rule=last,warmup_layers=0,loss_layer_ramp_sharpness=3.0", "rampw0_first:loss_layer_selection=ramp,commit_layer_rule=first,warmup_layers=0,loss_layer_ramp_sharpness=3.0"]
 
-# --- cluster: Narval -------------------------------------------------------
-cluster_name     = "narval"
-account_gpu      = "def-jemerson_gpu"
-email            = "pavithran.sridhar@gmail.com"
-julia_module     = "julia/1.12.5"
-cuda_module      = "cuda"
-heap_size_hint   = "4G"
-
-# TRAINING: 10 points on 5 cards, 2 enriched trainings sharing each card, one wave
-# per task. (The 2026-10-19 wave of 2 enriched + 2 tanh points on one card took
-# ~25 min after a ~6 min CUDA rebuild.)
+# --- jobs (clusters/narval.toml: one A100, 12 cores, 32 GB per task) ----------
+# TRAINING: 10 points on 5 cards, 2 enriched trainings per card, one wave per task
+# (the profile's train_jobs = 4 is the most a card takes; this sweep ran on
+# 2026-10-23 with train_jobs = 2, which for 2 points per task is the same).
+# Estimate: 900 s + 5 epochs x 300 s = 40 min of 1:30.
 train_array_tasks = 5
-train_jobs       = 2
-train_cpus       = 12
 train_wall_time  = "1:30:00"
-
-# TESTING: one process per card; 40 tests on 8 cards, 5 per task.
+# TESTING: one test at a time per card; 40 tests on 8 cards, 5 per task.
+# Estimate: 900 s + 5 x 150 s = 28 min of 1:00.
 test_array_tasks = 8
-gpu_type         = "a100"
-gpu_request_style = "auto"
-n_gpus_per_node  = 1
-test_jobs        = 1
-mem_per_gpu      = "32G"
-vram_per_gpu     = ""
-test_cpus        = 12
 test_wall_time   = "1:00:00"
-
-# --- walltime preflight -----------------------------------------------------
-# seconds_per_train_point is the wall time of ONE WAVE of train_jobs points
-# (1500: the 2026-10-19 mixed enriched wave, ~25 min); seconds_per_test 150: the
-# 2026-10-19 enriched tests took ~2.5 min each with Julia startup. Preflight:
-# training 900 + 1500 s = 40 min of 1:30 (44%), testing 900 + 5 x 150 s = 28 min
-# of 1:00 (46%).
-seconds_per_test = 150
-seconds_per_train_point = 1500
-job_startup_seconds = 900

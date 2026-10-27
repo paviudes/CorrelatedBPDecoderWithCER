@@ -3,7 +3,7 @@
 # under softmin + first and ramp + last, on Narval GPU nodes (2026-10-19).
 #
 #     cd expts
-#     bash sweep_hyperparams.sh --settings sweeps/enriched_vs_nocer.toml --no-edit
+#     bash sweep_hyperparams.sh sweeps/enriched_vs_nocer.toml
 #
 # ARMS (x 5 seeds, every model scored on the 4 test sets, 1e6 samples each):
 #   _cer_enr_softmin_first   CER priors + the pairwise coupling table inside each
@@ -36,15 +36,14 @@
 # hyperparams_baseline.toml, as in the 2026-10-15 sweep, so _nocer_softmin_first
 # is that sweep's _nocer_histpair point under its proper name.
 #
-# WALLTIME. The enriched node is unmeasured on Narval. A tanh wave of 4 points on
-# one A100 took ~12 min (720 s); the enriched node roughly doubles the kernel
-# launches per layer (64 configurations per check, forward and backward), so the
-# ESTIMATE (seconds_per_train_point) is 1500 and the wall is 3:00:00 -- one wave
-# per task, estimated 40 min, with the rest as margin for an unmeasured kernel.
-# Read the "Training: ... in <s> s" lines in cluster/logs/hp_<ts>_train_task<t>/
-# afterwards and put the measured number here.
+# WALLTIME. When this ran (2026-10-19) the enriched node was unmeasured on Narval,
+# so the wall was 3:00:00 for one wave per task against a guessed 1500 s a wave;
+# the wave took ~25 min. That measurement is now the profile's
+# seconds_per_epoch_enriched_wave (clusters/narval.toml), and the generator
+# computes the estimate from it.
 # =============================================================================
 
+cluster          = "narval"          # clusters/narval.toml: account, modules, one A100 per task
 workdir          = "./../data"
 # Reuses the trainable_alpha run directory: with more than one optimizer arm
 # every point is tagged `_opt<arm>`, including the baseline, so nothing here
@@ -52,7 +51,7 @@ workdir          = "./../data"
 codename         = "72q_BB_cycles_1_trainable_alpha"
 
 # Dataset keys: train_<key>.txt, test_<key>.txt, correlated_weights_<key>.txt
-# KEEP EACH ARRAY ON ONE LINE: the reader below is grep | head -1, so a wrapped
+# KEEP EACH ARRAY ON ONE LINE: the reader is grep | head -1, so a wrapped
 # array silently loses everything after the first line.
 #
 # p = 0.0015 sig = 0.0015: 61% identity errors (vs 80% at p = 0.0005), which is
@@ -242,100 +241,16 @@ check_node_arms  = ["enriched:0.503:learn"]
 # layer gets that small reduction; it does not change its size.
 optimizer_arms   = ["softmin_first:loss_layer_selection=softmin,commit_layer_rule=first,warmup_layers=0,initial_conditions_scale=0.3", "ramp_last:loss_layer_selection=ramp,commit_layer_rule=last,warmup_layers=5,loss_layer_ramp_sharpness=3.0,initial_conditions_scale=0.3"]
 
-# --- cluster ----------------------------------------------------------------
-# ACTIVE: NARVAL. Two profiles are kept here; switching is the five values marked
-# [PROFILE]. Nothing else in this file is cluster-specific.
-#
-#   NARVAL (Calcul Quebec)           NIBI (SHARCNET)
-#   GPU  4x A100 40GB, 48 cores      GPU  8x H100 SXM 80GB NVLink
-#   MIG  a100_Ng.Mgb                 MIG  h100_1g.10gb / 2g.20gb / 3g.40gb
-#   requests --gpus-per-node=        MIG requests --gpus=   (auto handles both)
-#   compute nodes: NO internet       compute nodes: internet
-#
-#   [PROFILE]             narval           nibi
-#   gpu_type              a100             h100_3g.40gb
-#   train_cpus            12               14
-#   test_cpus             12               14
-#   train_array_tasks     5                5
-#   test_array_tasks      8                8
-cluster_name     = "narval"
-account_gpu      = "def-jemerson_gpu"
-email            = "pavithran.sridhar@gmail.com"
-julia_module     = "julia/1.12.5"
-cuda_module      = "cuda"
-heap_size_hint   = "4G"
-
-# Job arrays. Each array task is an INDEPENDENT allocation running an
-# interleaved slice of the point list (task t takes lines t, t+K, t+2K, ...), so
-# K tasks cut the wall time by ~K without any task needing a bigger node. Slurm
-# schedules small allocations sooner, so more/smaller tasks generally start
-# earlier than one large one. Both jobs ask for the same allocation: ONE card per
-# array task (gpu_type, n_gpus_per_node, mem_per_gpu below) on account_gpu.
-#
-# TRAINING: `train_jobs` trainings share the task's card (USE_GPU=1, the
-# hand-written backward pass; the base TOML must say manual_backprop = true).
-# Sharing a card is safe here, unlike in testing: a training process holds a
-# CUDA context and batches of 20 -- well under 1 GB of VRAM -- where a test
-# process sizes its batch to fill the card. Host RAM is the limit: each training
-# reads the 1e6-sample file (~2 GB with readdlm's intermediates) on top of Julia
-# and CUDA, so the generator refuses train_jobs x heap_size_hint above
-# n_gpus_per_node x mem_per_gpu. 4 trainings sharing one card finished in
-# ~12 min on 2026-10-15 (seconds_per_train_point below).
-#   20 points / 5 tasks = 4 per task = one wave of train_jobs = 4.
-# The wall is 3 h for the whole task (its one wave of 4 points): the enriched
-# node's training time on an A100 is unmeasured and the estimate below is a
-# guess, so the wall carries the margin. The TERM handler (--signal=B:TERM@600)
-# still stages out every finished point if the wall is hit.
+# --- jobs ------------------------------------------------------------------
+# Each array task is an independent allocation of one A100 (clusters/narval.toml)
+# running an interleaved slice of the point list (task t takes lines t, t+K, ...).
+# TRAINING: 20 points / 5 tasks = 4 per task = one wave of the profile's
+# train_jobs = 4 sharing the card. Estimate: 900 s + 5 epochs x 300 s = 40 min; the
+# 3 h wall is what this sweep ran with on 2026-10-19 (the TERM handler,
+# --signal=B:TERM@600, still stages out every finished point if the wall is hit).
 train_array_tasks = 5
-train_jobs       = 4                 # trainings at a time on the task's card
-train_cpus       = 12                # 48 cores / 4 GPUs on a Narval GPU node; >= train_jobs
 train_wall_time  = "3:00:00"
-
-# TESTING. ONE PROCESS PER CARD: a 1-GPU request schedules far sooner than a
-# whole 4-GPU node, and the no-sharing rule (see below) is satisfied trivially
-# rather than by arithmetic. Scale throughput with test_array_tasks, NOT with
-# processes per card.
-#   80 points / 8 tasks = 10 per task x 129 s (measured, below) = ~22 min.
-#
-# NEVER put two TEST processes on one unpartitioned card: the real footprint is
-# ~1.5x the nominal GPU_MEMORY, so two on a 40 GB a100 overcommit and die
-# stochastically at OOM -- that killed 21/54 tests on 2026-08-28. MIG only worked
-# because MIG is a HARD partition. Sharing is safe only when the hardware
-# partitions it.
+# TESTING: one test at a time per card; 80 tests / 8 tasks = 10 per task.
+# Estimate: 900 s + 10 x 150 s = 40 min.
 test_array_tasks = 8
-# Full a100 (40GB), one process per card -- the configuration that completed
-# 27/27 and 54/54 clean. a100_3g.20gb schedules sooner when the queue is long but
-# halves GPU_MEMORY, so re-derive the batch budget before switching to it.
-gpu_type         = "a100"
-# "auto" emits --gpus-per-node= for a full card and --gpus= for a MIG slice
-# (which is what Nibi requires). Correct for Narval either way.
-gpu_request_style = "auto"
-n_gpus_per_node  = 1                 # one card per array task, both jobs
-test_jobs        = 1                 # one TEST process on it; do not raise
-mem_per_gpu      = "32G"             # SLURM HOST ram per GPU (not VRAM), both jobs
-vram_per_gpu     = ""                # VRAM in GB for the batch sizer; "" => infer from gpu_type
-test_cpus        = 12   # 48 cores / 4 GPUs on a Narval GPU node
 test_wall_time   = "4:00:00"
-
-# --- walltime preflight ------------------------------------------------------
-# MEASURED on this code and this code size (2026-10-01 run, a100, 1e6 samples):
-#   per test      129 s  (task 0 did 35 tests in 75m12s; that INCLUDES the fresh
-#                         julia+CUDA load GNU parallel pays for every point)
-#   startup       up to 370 s of precompile, plus stage-in and three julia
-#                 invocations -> 900 s is a safe allowance
-# MEASURED on Narval (2026-10-15 sweep, tanh check node, 90 layers, a100):
-#   per train pt  720 s   the wall time of ONE WAVE of train_jobs = 4 points
-#                 sharing the card: every task of 4 points took ~12 min after
-#                 the CUDA_Runtime_jll rebuild (~5 min, inside the startup
-#                 allowance). The enriched check node does ~10x the check-node
-#                 arithmetic (64 configurations per check instead of a product
-#                 of 6 tanh's), so an enriched or bethe sweep may need more;
-#                 each point prints a "Training: ... in <s> s" line, kept in
-#                 its stdout under cluster/logs/hp_<ts>_train_task<t>/.
-# The generator multiplies these out against the array width and refuses to
-# write a job that cannot finish. Raise them if the code or the sample count
-# grows; they are estimates, not promises. 1500 here is a GUESS for the enriched
-# node (about twice tanh); the 3 h train wall above is the margin on it.
-seconds_per_test = 129
-seconds_per_train_point = 1500
-job_startup_seconds = 900

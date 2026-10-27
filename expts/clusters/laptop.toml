@@ -1,0 +1,34 @@
+# =============================================================================
+# clusters/laptop.toml -- the Apple Silicon laptop, for misc/run_local.sh.
+#
+# run_local.sh writes a sweep file with  cluster = "laptop"  and runs the command
+# lists the generator writes (hp_sweep_{train,test}_<ts>.txt) itself: training
+# with GNU parallel on the CPU, testing in a loop on Metal. The SLURM scripts the
+# generator also writes are never submitted, so the account, email, modules and
+# GPU request below only fill them in. What does matter here:
+#   heap_size_hint  goes into every julia command (2G: four processes share 16 GB)
+#   mem_per_gpu     the machine's RAM, checked against train_jobs x heap_size_hint
+# The walltime preflight runs against the sweep file's (wide) walltimes.
+# =============================================================================
+
+account_gpu       = "def-jemerson_gpu"
+email             = "dsannamo@uwaterloo.ca"
+julia_module      = "julia/1.12.5"
+cuda_module       = "cuda"
+heap_size_hint    = "2G"
+
+gpu_type          = "a100"
+gpu_request_style = "auto"
+n_gpus_per_node   = 1
+mem_per_gpu       = "16G"        # this machine's unified memory
+vram_per_gpu      = "6"          # run_local.sh's default GPU_MEMORY (--gpu-memory)
+
+train_jobs        = 4            # 4 performance cores (run_local.sh --jobs sets its own count)
+train_cpus        = 4
+test_jobs         = 1
+test_cpus         = 4
+
+seconds_per_epoch_tanh_wave     = 144
+seconds_per_epoch_enriched_wave = 300
+seconds_per_test                = 150
+job_startup_seconds             = 900

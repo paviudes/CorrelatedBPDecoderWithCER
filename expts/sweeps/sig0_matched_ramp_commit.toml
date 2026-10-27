@@ -11,7 +11,7 @@
 # On Narval, from expts/ (warm the depot first if src/ changed since the last
 # precompile):
 #     bash misc/precompile_depot.sh
-#     bash sweep_hyperparams.sh --settings sweeps/sig0_matched_ramp_commit.toml --no-edit
+#     bash sweep_hyperparams.sh sweeps/sig0_matched_ramp_commit.toml
 # then the two sbatch lines it prints (training, then testing chained on it).
 #
 # POINTS: 3 rates x {tanh, enriched} x {ramp + first, ramp + last} x 5 seeds = 60
@@ -47,12 +47,17 @@
 # KEEP EACH ARRAY ON ONE LINE: the generator reads a key with grep | head -1.
 # =============================================================================
 
+cluster          = "narval"          # clusters/narval.toml: account, modules, one A100 per task
 workdir          = "./../data"
 codename         = "72q_BB_cycles_1_sweep"
 
 # --- datasets: train on each key, test on the same key ------------------------
 datasets         = ["p_0.0007_sig_0.0_s_1", "p_0.0011_sig_0.0_s_1", "p_0.0015_sig_0.0_s_1"]
 ref_datasets     = []
+# [] = each model is scored on the test set of ITS OWN training key and nothing
+# else: the model trained on train_p_0.0007_sig_0.0_s_1 is tested on
+# test_p_0.0007_sig_0.0_s_1 only (test_keys_of in hp_sweep/sweep.sh). A list here
+# would score every model on every listed key instead.
 test_keys        = []
 
 base_hyperparams = "hyperparams_baseline.toml"
@@ -66,36 +71,13 @@ check_node_arms  = ["tanh", "enriched:alpha_star:learn"]
 # commit_layer_rule is set here.
 optimizer_arms   = ["rampfirst:loss_layer_selection=ramp,commit_layer_rule=first", "ramplast:loss_layer_selection=ramp,commit_layer_rule=last"]
 
-# --- cluster: Narval, one A100 per array task ------------------------------------
-cluster_name     = "narval"
-account_gpu      = "def-jemerson_gpu"
-email            = "pavithran.sridhar@gmail.com"
-julia_module     = "julia/1.12.5"
-cuda_module      = "cuda"
-heap_size_hint   = "4G"
-
-# TRAINING: 60 points / 15 tasks = 4 per task, one wave of train_jobs = 4 sharing
-# the card. The interleaved split gives every task 2 tanh + 2 enriched points.
+# --- jobs ------------------------------------------------------------------------
+# TRAINING: 60 points / 15 tasks = 4 per task = one wave of the profile's
+# train_jobs = 4 sharing the card; the interleaved split gives every task 2 tanh +
+# 2 enriched points. Estimate: 900 s startup + 10 epochs x 300 s = 65 min.
 train_array_tasks = 15
-train_jobs       = 4
-train_cpus       = 12
 train_wall_time  = "3:00:00"
-
-# TESTING: one process per card; 60 tests / 8 tasks = 8 per task.
+# TESTING: one test at a time per card; 60 tests / 8 tasks = 8 per task.
+# Estimate: 900 s + 8 x 150 s = 35 min.
 test_array_tasks = 8
-gpu_type         = "a100"
-gpu_request_style = "auto"
-n_gpus_per_node  = 1
-test_jobs        = 1
-mem_per_gpu      = "32G"
-vram_per_gpu     = ""
-test_cpus        = 12
 test_wall_time   = "1:00:00"
-
-# --- walltime preflight ---------------------------------------------------------
-# A wave holding enriched points took ~25 min for 5 epochs (2026-10-19); these
-# train 10, so 3000 s a wave. A test is ~150 s with Julia startup (2026-10-19),
-# ~25 s more for an enriched model's kernel compilation.
-seconds_per_test = 180
-seconds_per_train_point = 3000
-job_startup_seconds = 900

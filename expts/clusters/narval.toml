@@ -1,0 +1,75 @@
+# =============================================================================
+# clusters/narval.toml -- Narval (Calcul Quebec), for sweep_hyperparams.sh.
+#
+# A sweep file uses it with   cluster = "narval".   Everything here is the same
+# for every sweep on this cluster: the account, the software, what ONE array task
+# asks for, and the measured costs the walltime preflight multiplies out. What
+# varies per sweep -- the points, and how many array tasks and how much walltime
+# the two jobs get -- is in the sweep file (sweeps/template.toml).
+#
+# Read line by line like the sweep file: one "key = value" per line, every key
+# below required, nothing else allowed.
+#
+# Narval GPU node: 4x A100 40 GB, 48 cores. One array task = ONE card + 12 cores
+# + 32 GB of host RAM (a quarter of a node). Compute nodes have no internet: warm
+# the Julia depot on a login node first (bash misc/precompile_depot.sh).
+#
+# Another cluster is another file here, with the same keys. (Nibi, used before
+# 2026-10: gpu_type = "h100_3g.40gb", train_cpus = test_cpus = 14, the H100 MIG
+# slice requested with --gpus=, which gpu_request_style = "auto" picks; its costs
+# were never measured.)
+# =============================================================================
+
+account_gpu       = "def-jemerson_gpu"
+email             = "pavithran.sridhar@gmail.com"   # SLURM mail (--mail-type=ALL)
+julia_module      = "julia/1.12.5"   # Narval has no 1.13; Manifest-v1.12.toml is resolved for it
+cuda_module       = "cuda"
+
+# Every julia process gets --heap-size-hint: the GC sizes its heap against the
+# node's physical memory, not the task's share, so N processes on one task would
+# each balloon to their high-water mark.
+heap_size_hint    = "4G"
+
+# --- one array task (both jobs ask for the same allocation) -------------------
+# Full A100 (40 GB), one per task -- the configuration that completed 27/27 and
+# 54/54 clean. a100_3g.20gb (a MIG slice) schedules sooner when the queue is long
+# but halves the VRAM, so re-derive the test batch before switching to it.
+gpu_type          = "a100"
+# "auto" emits --gpus-per-node= for a full card and --gpus= for a MIG slice (which
+# Nibi requires); correct for Narval either way.
+gpu_request_style = "auto"
+n_gpus_per_node   = 1
+mem_per_gpu       = "32G"        # SLURM HOST RAM per card (--mem-per-gpu), not VRAM
+vram_per_gpu      = ""           # VRAM in GB for the test batch sizer; "" = from gpu_type (a100: 40)
+
+# TRAINING: train_jobs trainings share the task's card (GNU parallel, USE_GPU=1,
+# the hand-written backward pass). Safe for training -- a CUDA context and batches
+# of 20, ~700 MiB of VRAM each -- and host-bound: one training keeps a core at
+# 100% and uses ~20% of an A100 (nvtop, 2026-10-19). Host RAM is the limit: the
+# generator refuses train_jobs x heap_size_hint > n_gpus_per_node x mem_per_gpu,
+# and train_cpus < train_jobs. A task's points run in waves of train_jobs, so to
+# put fewer trainings on a card, raise the sweep's train_array_tasks instead.
+train_jobs        = 4
+train_cpus        = 12           # 48 cores / 4 GPUs; >= train_jobs
+
+# TESTING: ONE process per card, always. A test sizes its batch to fill the card
+# (GPU_MEMORY = 85% of vram_per_gpu); two on a 40 GB A100 overcommit and die at
+# OOM (21/54 tests on 2026-08-28). Scale testing with test_array_tasks.
+test_jobs         = 1
+test_cpus         = 12
+
+# --- measured costs, for the walltime preflight --------------------------------
+# One epoch of one WAVE of train_jobs trainings sharing an A100, at 90 layers and
+# 500 gradient updates of 20 per epoch. The generator multiplies by the base TOML's
+# n_epochs (and updates / 500), and uses the enriched figure for every wave when
+# the sweep has an enriched or bethe arm.
+#   tanh      144 s: a wave of 4 took ~12 min for 5 epochs (2026-10-15)
+#   enriched  300 s: a wave of 2 enriched + 2 tanh took ~25 min for 5 epochs (2026-10-19)
+seconds_per_epoch_tanh_wave     = 144
+seconds_per_epoch_enriched_wave = 300
+# One 1e6-sample test, Julia start and package load included: ~2.3 min
+# (2026-10-19), ~25 s more for an enriched model's kernel compilation.
+seconds_per_test                = 150
+# Per job: the depot preparation (the CUDA_Runtime_jll rebuild took ~6 min with
+# a warm depot) and the stage-in.
+job_startup_seconds             = 900

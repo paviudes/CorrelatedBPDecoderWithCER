@@ -166,13 +166,14 @@ end
     set.
   - **The network is fixed at 90 layers** in the generator (`NLAYERS=90`); a settings
     file naming another `n_hidden_layers` is refused. `run_local.sh` lost `--layers`.
-  - `seconds_per_train_point = 720` is the MEASURED wall time of one wave of
-    `train_jobs = 4` points sharing an A100 (2026-10-15, tanh: ~12 min per task of 4);
-    the test job used 21–27 min of its 4 h. Each point prints `Training: N gradients
-    (...) in X s ...` to its stdout under `cluster/logs/hp_<ts>_train_task<t>/`. The
-    enriched node does ~10× the check-node arithmetic: a wave of 2 enriched + 2 tanh
-    points took ~25 min (measured 2026-10-19), so use 1500 for any wave holding
-    enriched points.
+  - One wave of `train_jobs = 4` points sharing an A100 took ~12 min for 5 tanh
+    epochs (2026-10-15, 720 s) and ~25 min with 2 enriched + 2 tanh points (2026-10-19,
+    1500 s); the test job used 21–27 min of its 4 h. Each point prints `Training: N
+    gradients (...) in X s ...` to its stdout under `cluster/logs/hp_<ts>_train_task<t>/`.
+    Since 2026-10-27 these are per-epoch constants of the cluster profile
+    (`seconds_per_epoch_tanh_wave = 144`, `seconds_per_epoch_enriched_wave = 300` in
+    `expts/clusters/narval.toml`), and the generator multiplies by the base TOML's
+    `n_epochs` (and updates / 500) itself; there is no per-sweep `seconds_per_train_point`.
   - **Walltimes actually used (2026-10-19 sweep):** training job ~31 min of its 3 h (6 min
     CUDA rebuild + one 25 min wave), test job ~20–27 min of its 4 h (10 tests per task,
     ~2.3 min each with Julia startup). Usage is charged for time used, and ≤ 3 h is the
@@ -287,10 +288,11 @@ end
   needed because the LOGIN-node precompile has no driver. `CUDA.functional()` runs
   once, and a second time only after a failure (60 s later).
 - `sweep_hyperparams.sh` **refuses to write a job that cannot finish**: a preflight
-  multiplies `seconds_per_test` / `seconds_per_train_point` / `job_startup_seconds`
-  (measured, in the settings file) against the array width and exits 1 with the
-  minimum `*_array_tasks` that would fit. Raise those constants if the code or the
-  sample count grows.
+  multiplies the cluster profile's measured costs (`seconds_per_test`,
+  `seconds_per_epoch_{tanh,enriched}_wave`, `job_startup_seconds`) against the array
+  width and exits 1, writing nothing, with the minimum `*_array_tasks` that would fit
+  (exact since 2026-10-27; the test suggestion used to be one short at the boundary).
+  Raise those constants if the code or the sample count grows.
 - **`--dependency=afterok` needs the training job to actually report failure.** The
   train script used to end on an `echo`, so a task exited 0 even when every point
   had crashed — chaining on `afterok` was decorative. It now exits 1 when any point
@@ -491,8 +493,9 @@ Checked on `p_0.0015_sig_0.0015_s_1`: H_Z, the CER file, and the 1e6-sample trai
   check, 446 of 2304 configurations unseen (2e-6 of a check's independent mass).
   `run_local.sh --check-node bethe:1:learn` builds the tables for the training and
   test keys from the FULL files and copies them under the cut keys.
-- **Sweep settings files live in `expts/sweeps/`** (tracked; `expts/scripts/` is the
-  generator's per-run copy and is ignored). `sweeps/enriched_vs_nocer.toml`
+- **Sweep settings files live in `expts/sweeps/`** (tracked; since 2026-10-27 the
+  generator keeps its per-run copy in `<codename>/cluster/hp_sweep_settings_<ts>.toml`,
+  no longer in the ignored `expts/scripts/`). `sweeps/enriched_vs_nocer.toml`
   (2026-10-19): `["enriched:0.503:learn"]` + no-CER × `softmin_first` (softmin +
   first, warmup 0; the 2026-10-15 sweep's histpair) / `ramp_last` (ramp + last,
   warmup 5, k = 3) × 5 seeds, 20 points, 80 tests. Every arm names its whole layer
@@ -502,10 +505,9 @@ Checked on `p_0.0015_sig_0.0015_s_1`: H_Z, the CER file, and the 1e6-sample trai
   `train_wall_time = "3:00:00"` against a guessed `seconds_per_train_point = 1500`
   (one wave of 4 per task, est 40 min, 22%): the enriched node's cost on an A100
   is unmeasured (~2× the kernel launches of tanh), so the wall carries the margin.
-  Run with `bash sweep_hyperparams.sh --settings sweeps/enriched_vs_nocer.toml
-  --no-edit` (verified with stubs: 5 train + 8 test tasks exit 0, 20 models, 80
-  results); the report's weights-spread check names the first arm's file with its
-  `_enr`/`_bethe` token.
+  Run with `bash sweep_hyperparams.sh sweeps/enriched_vs_nocer.toml` (verified with
+  stubs: 5 train + 8 test tasks exit 0, 20 models, 80 results); the report's
+  weights-spread check names the first arm's file with its `_enr`/`_bethe` token.
 - **Tests** (not yet run — Julia is unavailable here; syntax checked with tree-sitter):
   `test_soft_constraints.jl` — the per-check kernel equals the batch kernel, a zero
   table is the tanh rule, the adjoint equals Enzyme on the probe loss (messages and
@@ -942,7 +944,8 @@ and was commented out in favour of the sine; it is now a switch.
   through the full training loss under `smooth_loss` for softmin / last / ramp.
 - `--settings` edge case fixed: re-running within the same second on the file the
   generator itself wrote made `cp` refuse (same path) and `set -e` exit; it is now
-  used in place.
+  used in place. (Moot since 2026-10-27: `--settings` is gone and the sweep file is
+  read in place.)
 
 #### Measured 2026-10-09: `--design baseloss`, 50 layers, commit = LAST, 8 arms × 2 seeds
 
@@ -1949,7 +1952,7 @@ blocks; enriched models coset exact, convergence ±10%.
   2026-10-22 in that directory (5 epochs, init 0.1, lr 1e-3, Poisson(3) 10k — the
   production run's settings but its 10 epochs). 10 trainings (5 tasks, 2 per card,
   1:30 wall, est. 44%), 40 tests (8 tasks, 1:00, est. 45%). Run from expts/:
-  `bash sweep_hyperparams.sh --settings sweeps/enriched_ramp_commit.toml --no-edit`,
+  `bash sweep_hyperparams.sh sweeps/enriched_ramp_commit.toml`,
   then the two printed sbatch lines; afterwards `python3 misc/compare_sweep_arms.py
   --workdir 72q_BB_cycles_1_trainable_alpha --arms _cer_enr_rampw0_last
   _cer_enr_rampw0_first`.
@@ -2039,8 +2042,9 @@ blocks; enriched models coset exact, convergence ±10%.
   (2026-10-22): per test set and over all of them, each arm's failures summed over
   seeds as total (coset | convergence), mean committed layer, and against the first
   arm the change, seeds lower and the seed-paired t of the log ratio; plus a seed-by-
-  seed weights comparison. `sweep_hyperparams.sh --collect` cannot do this any more:
-  its collector parses the pre-2026-10-09 `_hp<arm>` names. Checked on the 2026-10-19
+  seed weights comparison. `sweep_hyperparams.sh --collect` could not do this (its
+  collector parsed the pre-2026-10-09 `_hp<arm>` names) and was removed on 2026-10-27.
+  Checked on the 2026-10-19
   files: `_cer_enr_ramp_last` 19642 (11993 | 7649) vs `_cer_enr_softmin_first` 18276
   (12241 | 6035), `_nocer_*` 24988 vs 22931 (t −9.4), the numbers above.
 
@@ -2119,12 +2123,12 @@ blocks; enriched models coset exact, convergence ±10%.
   k = 3 and everything else from the run's hyperparams_baseline.toml: 10 epochs, init
   0.1, Poisson(3) 10k); seeds 1–5. 60 trainings (15 tasks × one wave of 4 = 2 tanh + 2
   enriched each, est 65 min of a 3 h wall at 3000 s a wave) and 60 tests (8 tasks, est
-  39 min of 1 h at 180 s a test). The commit arms train the same model twice per seed
+  35 min of 1 h at the profile's 150 s a test). The commit arms train the same model twice per seed
   (training never reads the commit rule), which compare_sweep_arms.py checks. Run tags
   `_cer_rampfirst`, `_cer_ramplast`, `_cer_enr_rampfirst`, `_cer_enr_ramplast` after
   train_p_<p>_sig_0.0_s_1, so nothing in the directory is replaced. From expts/ on
-  Narval: `bash misc/precompile_depot.sh`, `bash sweep_hyperparams.sh --settings
-  sweeps/sig0_matched_ramp_commit.toml --no-edit`, the two printed sbatch lines; then
+  Narval: `bash misc/precompile_depot.sh`, `bash sweep_hyperparams.sh
+  sweeps/sig0_matched_ramp_commit.toml`, the two printed sbatch lines; then
   per rate `python3 misc/compare_sweep_arms.py --workdir 72q_BB_cycles_1_sweep
   --train-key p_<p>_sig_0.0_s_1 --arms _cer_ramplast _cer_rampfirst _cer_enr_ramplast
   _cer_enr_rampfirst`, and again with `--arms _cer_enr_ramplast _cer_enr_rampfirst`
@@ -2161,6 +2165,71 @@ blocks; enriched models coset exact, convergence ±10%.
   refused, a numeric α still written as is. Regression: sweeps/enriched_vs_nocer.toml
   (test_keys set, no-CER arm) on a fake trainable_alpha: 20 models, 80 results, all
   tasks exit 0.
+
+## `sweep_hyperparams.sh`: a sweep file and a cluster profile (restructured 2026-10-27)
+
+- **Usage: `bash sweep_hyperparams.sh sweeps/<sweep>.toml [--local[=N]]`**, from expts/.
+  The file is read as written: the editor step, the built-in defaults, `--no-edit`,
+  `--settings` and the broken `--collect` are gone (each old flag exits 2 saying so).
+- **Two files, each key in exactly one.** The sweep file (`sweeps/template.toml`
+  documents every key) says what to run -- workdir, codename, datasets, ref_datasets,
+  test_keys, base_hyperparams, seeds, include_nocer, single_qubit_rescale,
+  check_node_arms, optimizer_arms, the optional loss_layer_selection /
+  commit_layer_rule -- and the job sizes: train_array_tasks, train_wall_time,
+  test_array_tasks, test_wall_time. Its `cluster = "<name>"` names the profile
+  `clusters/<name>.toml`: account_gpu, email, julia_module, cuda_module,
+  heap_size_hint, gpu_type, gpu_request_style, n_gpus_per_node, mem_per_gpu,
+  vram_per_gpu, train_jobs, train_cpus, test_jobs, test_cpus and the measured costs
+  (`clusters/narval.toml`; `clusters/laptop.toml` for run_local.sh). The reader
+  refuses, listing every line at once: an unknown key (a typo used to fall back to a
+  default silently -- `test_key = [...]` would have tested matched), a key of the
+  other file (with the value the profile gives it), a removed key (`cluster_name`,
+  `seconds_per_train_point`, `n_hidden_layers`, the CPU-job keys, each with a note),
+  a key given twice, a missing key, and an array wrapped over two lines.
+- **The training estimate is computed**: a wave = n_epochs × (updates / 500) ×
+  `seconds_per_epoch_tanh_wave` (144) or, with any enriched/bethe arm,
+  `seconds_per_epoch_enriched_wave` (300), as batch_run.jl does; `seconds_per_test`
+  150, `job_startup_seconds` 900. The three existing sweeps' hand-set numbers are
+  reproduced (1500, 1500, 3000 s).
+- **Code layout**: `sweep_hyperparams.sh` is the driver (arguments, the phases in
+  order, the report); `hp_sweep/read_settings.sh` the reader; `hp_sweep/sweep.sh`
+  the points (arm parsing, the point TOMLs, the train/test commands, the pairing);
+  `hp_sweep/cluster.sh` the profile, stage lists, walltime and depot preflights and
+  the two job scripts (their heredocs moved verbatim; the self-check now scans
+  cluster.sh); `hp_sweep/local_smoke.sh` the `--local` smoke test.
+- **Where the train/test pairing is decided**: `test_keys_of` in hp_sweep/sweep.sh --
+  with `test_keys = []` a model trained on `<key>` gets ONE test command,
+  `--train train_<key>.txt --test test_<key>.txt --cer_data correlated_weights_<key>.txt`;
+  with a list, one per listed key (CER file of the test key). `check_test_pairing`
+  then reads the written lists back and refuses the sweep if any test breaks that
+  (test key ≠ training key under `[]`, a CER file of another key, a key not in the
+  list, a test of a model the sweep does not train, a training point with no test),
+  and the generator prints the train → test pairs with their counts.
+- **Nothing is written until every check has passed**: the point TOMLs are built in a
+  staging directory and moved into models/ at the end, and an EXIT trap removes the
+  timestamped files of a refused generation. Before, the walltime refusal said
+  "Nothing was written" after the point TOMLs had already replaced an earlier sweep's
+  and the command lists were on disk. The generator also writes copies of both input
+  files, `cluster/hp_sweep_settings_<ts>.toml` and `cluster/hp_sweep_cluster_<ts>.toml`.
+- Smaller changes: duplicate data sets, seeds, test keys or arms are refused (the
+  old dedupe step could never fire, since two equal points already shared a TOML
+  name); the "last + first" layer warning prints once, not once per point; an
+  optimizer key missing from both the arm and the base TOML is refused (it used to
+  be written as `key = `); walltimes must be H:MM:SS; the report lists one optimizer
+  arm per line. run_local.sh: see "Running locally".
+- **Verified 2026-10-27** (bash 5.1, stub julia / parallel / module / date, fake run
+  directories with the real CER files): on all three sweep files the new generator's
+  point TOMLs (60, 20 and 10), command lists, model lists, stage lists and job scripts
+  are byte-identical to the previous generator's on the old-format files, except
+  `enriched_ramp_commit.toml`'s `parallel --jobs 2` → `4` (the profile's train_jobs;
+  2 points per task either way). Every generated job run with stubs: 15/15 + 8/8,
+  5/5 + 8/8, 5/5 + 8/8 tasks exit 0, 60 + 30 models, 60 + 120 results, and in the
+  σ = 0 sweep every result's test key equals its training key, α* per key. The
+  walltime suggestions are exact (the suggested width passes, one less fails); a
+  refused generation leaves the run directory byte-identical; `--local` writes the
+  same smoke TOML and command as before; `run_local.sh --dry-run` gives its 8 + 32
+  points with --heap-size-hint=2G and stops when the generator refuses. Not run under
+  macOS's bash 3.2 (none here); no bash-4 constructs are used.
 
 ## Run tags (changed 2026-10-09)
 
@@ -2228,9 +2297,12 @@ blocks; enriched models coset exact, convergence ±10%.
   arm. `*<key>_hp*.json` found 4 of 8 models after a clean 8-point run and refused
   to test; a wildcard between key and tag finds all 8. The same infix is why an
   arm-attribution regex of the form `_s_1_(.+?)_seed_` must allow for it.
-- `sweep_hyperparams.sh --settings <file> --no-edit` drives the generator from an
-  existing settings TOML, which is how `run_local.sh` narrows the sweep without
-  editing the cluster defaults. All arm/tag/TOML logic stays in one place.
+- `run_local.sh` writes a sweep file (`scripts/local_settings_<ts>.toml`, with
+  `cluster = "laptop"`: `clusters/laptop.toml`, heap 2G, 16 GB) and runs
+  `bash sweep_hyperparams.sh <that file>`, so all arm/tag/TOML logic stays in one
+  place. It stops if the generator refuses (it used to go on and pick up the newest
+  command lists in cluster/, an earlier run's), and shows the generator's summary
+  without its SLURM allocation lines.
 - The no-CER arm is emitted **independently of `check_node_arms`** (it has no
   couplings to enrich), so one enriched arm + `include_nocer` + 2 optimizer arms
   gives 4 arms, not 2.
