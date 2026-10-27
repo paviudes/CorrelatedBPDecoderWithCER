@@ -2340,3 +2340,18 @@ blocks; enriched models coset exact, convergence ±10%.
   anything outside `data/`, and any run whose models/ would be left with no `.toml`.
   Replaces `clean_up_data.sh`. Checked 2026-10-20 on a copy of the sweep zip's
   results/: 208 tables spared, the CSVs removed.
+- `python3 misc/clone_selected.py --p-values 0.0007,0.0011,0.0015 --sig-values 0
+  --sample-values 1 [--dry-run]` (2026-10-27, from expts/; Python ≥ 3.6, stdlib only)
+  makes `data/72q_BB_cycles_1_sweep_filtered`: every top-level folder of
+  `72q_BB_cycles_1_sweep` (empty), `code/` whole, the `train_` / `test_` /
+  `correlated_weights_<key>.txt` of every (p, sigma, sample) combination the source has
+  (numbers compared as numbers: 0 = 0.0, 7e-4 = 0.0007; bethe tables, smoke cuts and
+  results/ tables are not copied), `models/hyperparams_baseline.toml` and
+  `hyperparams_cer_enriched.toml` only (the latter from `expts/sweeps/` if the source
+  lacks it, noted), and `info.txt` (the selection, file counts, a key × train/test/CER
+  table, the combinations the source lacks, warnings, date). Refuses a value that
+  selects no file (0.007 for 0.0007, listing the values the source has) and an
+  existing destination; builds in a hidden `.…partial-*` folder renamed at the end, so
+  Ctrl-C or SIGTERM leaves nothing. Checked on a fake source with Narval's 104 + 104 +
+  104 names (refs/tree_sweep.sh): copies byte-identical, decoys left out, the
+  sig0 sweep file generates against the result.
