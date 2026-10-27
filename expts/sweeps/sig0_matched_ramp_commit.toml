@@ -49,7 +49,7 @@
 
 cluster          = "narval"          # clusters/narval.toml: account, modules, one A100 per task
 workdir          = "./../data"
-codename         = "72q_BB_cycles_1_sweep"
+codename         = "72q_BB_cycles_1_sweep_filtered"
 
 # --- datasets: train on each key, test on the same key ------------------------
 datasets         = ["p_0.0007_sig_0.0_s_1", "p_0.0011_sig_0.0_s_1", "p_0.0015_sig_0.0_s_1"]
