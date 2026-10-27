@@ -22,7 +22,10 @@
 #
 # Once, on trig-login01, from expts/ (the repository under $SCRATCH):
 #     module load StdEnv/2023 julia/1.12.5 cuda/12.6
+#     export JULIA_DEPOT_PATH="$SCRATCH/.julia:"   # after the module; a value starting
+#                                                  # with ":" is ~/.julia, read-only in jobs
 #     bash misc/precompile_depot.sh      # again after any change to src/
+# then sweep_hyperparams.sh in the same shell (it writes this depot into the jobs).
 # =============================================================================
 
 # "" = no --account line: Trillium runs the job under the group's RAC allocation,

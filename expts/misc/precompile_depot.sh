@@ -76,8 +76,53 @@ if ! command -v julia >/dev/null; then
     exit 1
 fi
 
+# The depot Julia will write into: the first entry -- and an EMPTY first entry (":",
+# ":/some/path") means Julia's default depots, ~/.julia first (Julia manual,
+# "Environment Variables"). On Trillium compute jobs cannot write $HOME, so a depot
+# there is useless to the sweep; elsewhere it is only a warning.
+FIRST_DEPOT="${JULIA_DEPOT_PATH%%:*}"
+if [ -z "$FIRST_DEPOT" ]; then
+    FIRST_DEPOT="$HOME/.julia"
+fi
+# Under $SCRATCH as written, or once both are resolved (a /scratch that is a link).
+depot_is_under_scratch() {
+    local scratch_root="${SCRATCH%/}" resolved_scratch resolved_depot
+    case "$FIRST_DEPOT/" in
+        "$scratch_root"/*) return 0 ;;
+    esac
+    if [ ! -d "$FIRST_DEPOT" ] || [ ! -d "$SCRATCH" ]; then
+        return 1
+    fi
+    resolved_scratch="$(cd "$SCRATCH" && pwd -P)"
+    resolved_depot="$(cd "$FIRST_DEPOT" && pwd -P)"
+    case "$resolved_depot/" in
+        "$resolved_scratch"/*) return 0 ;;
+    esac
+    return 1
+}
+if [ -n "${SCRATCH:-}" ] && ! depot_is_under_scratch; then
+    echo >&2
+    if [ -z "${JULIA_DEPOT_PATH%%:*}" ]; then
+        echo "JULIA_DEPOT_PATH=\"$JULIA_DEPOT_PATH\" starts with an empty entry, which Julia expands to its" >&2
+        echo "  default depots, ~/.julia first: the caches would go to $FIRST_DEPOT, outside \$SCRATCH." >&2
+    else
+        echo "The first entry of JULIA_DEPOT_PATH=\"$JULIA_DEPOT_PATH\" is $FIRST_DEPOT, outside \$SCRATCH;" >&2
+        echo "  the caches would go there." >&2
+    fi
+    echo "  After loading the modules (a julia module may set the variable), in this shell:" >&2
+    echo "      export JULIA_DEPOT_PATH=\"\$SCRATCH/.julia:\"" >&2
+    echo "  then rerun this script, and run sweep_hyperparams.sh in the same shell." >&2
+    case "$(hostname -s 2>/dev/null || hostname)" in
+        trig-login*)
+            echo "  Trillium's compute jobs cannot write \$HOME or \$PROJECT: refusing." >&2
+            exit 1 ;;
+    esac
+    echo "  (A warning here: this cluster's jobs may be able to write there.)" >&2
+    echo >&2
+fi
+
 echo "project : $PROJECT"
-echo "depot   : $JULIA_DEPOT_PATH"
+echo "depot   : $JULIA_DEPOT_PATH   (caches go to $FIRST_DEPOT)"
 echo "julia   : $(julia --version)"
 
 # A MANIFEST ONLY WORKS WITH THE JULIA MINOR VERSION THAT RESOLVED IT. The laptop

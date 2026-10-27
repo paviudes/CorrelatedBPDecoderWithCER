@@ -173,6 +173,21 @@ read_cluster_profile() {
     fi
 }
 
+# The depot Julia writes into for a JULIA_DEPOT_PATH value: its first entry. An EMPTY
+# first entry (":", "::", ":/some/path") is not "no depot": Julia expands it to its
+# default depots, the user depot ~/.julia first (Julia manual, "Environment
+# Variables"). Prints nothing for an empty value.
+first_julia_depot() {   # <JULIA_DEPOT_PATH value>
+    if [ -z "$1" ]; then
+        return 0
+    fi
+    local first_entry="${1%%:*}"
+    if [ -z "$first_entry" ]; then
+        first_entry="$HOME/.julia"
+    fi
+    echo "$first_entry"
+}
+
 # ------------------------------------------------ where jobs may write, and from where to submit ---
 # On a cluster whose compute nodes can write under one file system only (Trillium:
 # $HOME and $PROJECT are read-only from jobs, jobs_write_under = "SCRATCH"), refuses a
@@ -193,6 +208,9 @@ check_job_write_locations() {
     fi
     local writable_root=""
     eval "writable_root=\"\${$JOBS_WRITE_UNDER:-}\""
+    if [ "$writable_root" != "/" ]; then
+        writable_root="${writable_root%/}"
+    fi
     if [ -z "$writable_root" ] || [ ! -d "$writable_root" ]; then
         echo "jobs_write_under = \"$JOBS_WRITE_UNDER\" ($CLUSTER_PROFILE), but \$$JOBS_WRITE_UNDER is not a directory" >&2
         echo "  in this shell. Generate this sweep on $CLUSTER_NAME, where it is." >&2
@@ -203,26 +221,34 @@ check_job_write_locations() {
     resolved_run_directory="$(cd "$WORKDIR/$CODENAME" && pwd -P)"
     if ! path_is_under "$resolved_run_directory" "$resolved_root"; then
         problems="${problems}    run directory  $resolved_run_directory
+      Put the repository there, or link its data/ to a folder under \$$JOBS_WRITE_UNDER.
 "
     fi
-    depot="${JOB_DEPOT_PATH%%:*}"
+    depot="$(first_julia_depot "$JOB_DEPOT_PATH")"
     resolved_depot="$depot"
     if [ -d "$depot" ]; then
         resolved_depot="$(cd "$depot" && pwd -P)"
     fi
     if [ -z "$depot" ]; then
-        problems="${problems}    Julia depot    (none: JULIA_DEPOT_PATH and SCRATCH are both unset)
+        problems="${problems}    Julia depot    none: JULIA_DEPOT_PATH and \$$JOBS_WRITE_UNDER are both unset
 "
     elif ! path_is_under "$resolved_depot" "$resolved_root" && ! path_is_under "$depot" "$writable_root"; then
-        problems="${problems}    Julia depot    $depot   (the first entry of JULIA_DEPOT_PATH)
+        if [ -z "${JOB_DEPOT_PATH%%:*}" ]; then
+            problems="${problems}    Julia depot    $depot: JULIA_DEPOT_PATH=\"$JOB_DEPOT_PATH\" starts with an empty entry, which
+                   Julia expands to its default depots, ~/.julia first
+"
+        else
+            problems="${problems}    Julia depot    $depot: the first entry of JULIA_DEPOT_PATH=\"$JOB_DEPOT_PATH\"
+"
+        fi
+        problems="${problems}      After the module loads (a julia module may set the variable), in this shell:
+          export JULIA_DEPOT_PATH=\"\$$JOBS_WRITE_UNDER/.julia:\"
+      then rerun misc/precompile_depot.sh (it warms the first depot) and this script.
 "
     fi
     if [ -n "$problems" ]; then
         echo "On $CLUSTER_NAME the jobs can write only under \$$JOBS_WRITE_UNDER ($writable_root), but these are elsewhere:" >&2
         printf '%s' "$problems" >&2
-        echo "  Put the run directory there (the repository, or its data/ as a link to" >&2
-        echo "  \$$JOBS_WRITE_UNDER/...), and the depot: unset JULIA_DEPOT_PATH for \$$JOBS_WRITE_UNDER/.julia, or" >&2
-        echo "  point it there. Warm it with misc/precompile_depot.sh in the same shell." >&2
         exit 1
     fi
     if ! path_is_under "$(pwd -P)" "$resolved_root"; then
@@ -385,7 +411,8 @@ walltime_preflight() {
 # misc/precompile_depot.sh -- is warned about too: offline, the jobs cannot even
 # install the packages.
 depot_preflight() {
-    local job_depot="${JOB_DEPOT_PATH%%:*}"
+    local job_depot
+    job_depot="$(first_julia_depot "$JOB_DEPOT_PATH")"
     local job_julia_minor
     job_julia_minor="$(echo "$JULIA_MODULE" | sed -nE 's|^julia/([0-9]+\.[0-9]+).*$|\1|p')"
     if [ -z "$job_depot" ] || [ -z "$job_julia_minor" ]; then

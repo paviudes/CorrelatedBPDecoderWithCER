@@ -2275,7 +2275,8 @@ blocks; enriched models coset exact, convergence ±10%.
   Pkg.resolve()'`. (The pull conflict on Trillium was its local Manifest.toml.)
 - **Steps on Trillium**: repository under $SCRATCH (or data/ linked there); on
   trig-login01 from expts/: `module load StdEnv/2023 julia/1.12.5 cuda/12.6` (check
-  `module spider julia`), `bash misc/precompile_depot.sh` (manifest step first),
+  `module spider julia`), `export JULIA_DEPOT_PATH="$SCRATCH/.julia:"` (see the
+  empty-first-entry bullet below), `bash misc/precompile_depot.sh` (manifest step first),
   `bash sweep_hyperparams.sh sweeps/sig0_matched_ramp_commit.toml`, the two sbatch
   lines, in the same shell.
 - **Verified 2026-10-27** (stubs, fake SCRATCH and hostname): the Narval profile's
@@ -2288,6 +2289,23 @@ blocks; enriched models coset exact, convergence ±10%.
   depot outside $SCRATCH, $SCRATCH unset; noted: CPU login node, repository outside
   $SCRATCH with data/ linked in; precompile_depot.sh refuses tri-login*, then the 1.13
   manifest, then warms `$SCRATCH/.julia:`; run_local.sh --dry-run unchanged.
+- **A JULIA_DEPOT_PATH with an EMPTY FIRST ENTRY is ~/.julia** (first run on
+  Trillium, 2026-10-27): the generator, run from the repository under $SCRATCH,
+  refused "Julia depot (none: JULIA_DEPOT_PATH and SCRATCH are both unset)" with
+  $SCRATCH set. The shell's JULIA_DEPOT_PATH started with ":" (most likely set by the
+  julia module or a ~/.bashrc line; not confirmed), and the check took `${…%%:*}`, the
+  empty string, as "no depot". Julia expands a leading empty entry to its default
+  depots, the user depot ~/.julia first (manual, "Environment Variables"), so that
+  shell would have warmed, and the jobs written to, $HOME, read-only on Trillium's
+  compute nodes. `first_julia_depot` (hp_sweep/cluster.sh) now maps an empty first
+  entry to $HOME/.julia for both the location check and the cache check, the refusal
+  names the depot and the reason, and precompile_depot.sh prints where the caches go
+  and refuses (on trig-login*; warns elsewhere) a first depot outside $SCRATCH, as
+  written or resolved. The fix, after `module load`: `export
+  JULIA_DEPOT_PATH="$SCRATCH/.julia:"`, then precompile_depot.sh and the generator in
+  that shell. Checked with stubs (HOME outside the fake SCRATCH): ":" and
+  ":$SCRATCH/.julia" refused by both scripts, "$SCRATCH/.julia:", "$SCRATCH/.julia::",
+  unset, a trailing-slash $SCRATCH and a linked $SCRATCH pass; 15/15 + 8/8 jobs exit 0.
 
 ## Run tags (changed 2026-10-09)
 

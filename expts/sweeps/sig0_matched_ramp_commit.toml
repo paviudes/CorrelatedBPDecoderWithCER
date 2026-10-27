@@ -12,7 +12,10 @@
 # from expts/ of the repository under $SCRATCH (warm the depot first, and again
 # whenever src/ changed since the last precompile):
 #     module load StdEnv/2023 julia/1.12.5 cuda/12.6
+#     export JULIA_DEPOT_PATH="$SCRATCH/.julia:"    # after the module: see below
 #     bash misc/precompile_depot.sh
+# (A JULIA_DEPOT_PATH starting with ":" means ~/.julia first, which Trillium's jobs
+# cannot write; both scripts refuse it.)
 #     bash sweep_hyperparams.sh sweeps/sig0_matched_ramp_commit.toml
 # then the two sbatch lines it prints (training, then testing chained on it).
 # (Moved from Narval on 2026-10-27, its compute nodes being down until Oct 30;
