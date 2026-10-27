@@ -1,0 +1,101 @@
+# =============================================================================
+# sig0_matched_ramp_commit.toml -- sweep_hyperparams.sh settings: train and test
+# on the SAME fixed-gate error model (sigma = 0) at three rates.
+#
+# A dataset (p, sig, s) draws one depolarizing rate per CNOT gate from N(p, sig),
+# so at sig > 0 a training file and a test file describe different devices even
+# at the same (p, sig). At sig = 0 every gate has rate p, so train_<key> and
+# test_<key> share one error model. Every model here is tested only on its own
+# training key (test_keys = []); the sample index is fixed at s = 1.
+#
+# On Narval, from expts/ (warm the depot first if src/ changed since the last
+# precompile):
+#     bash misc/precompile_depot.sh
+#     bash sweep_hyperparams.sh --settings sweeps/sig0_matched_ramp_commit.toml --no-edit
+# then the two sbatch lines it prints (training, then testing chained on it).
+#
+# POINTS: 3 rates x {tanh, enriched} x {ramp + first, ramp + last} x 5 seeds = 60
+# trainings and 60 tests. Both check nodes are CER arms (use_CER = true: the key's
+# per-qubit rates are the priors); the enriched one also puts the key's pair
+# couplings into the check factor, starting from alpha* of its own training key
+# (0.420 / 0.457 / 0.488 at p = 0.0007 / 0.0011 / 0.0015) and learning it.
+# include_nocer = true adds the uniform-prior tanh baseline (30 more points).
+#
+# The two layer designs share the loss (ramp) and differ only in the readout,
+# which training never reads, so at each seed they train the SAME model twice
+# (GPU training is deterministic); compare_sweep_arms.py checks that the weights
+# are identical before it compares the counts. Everything else comes from the run
+# directory's hyperparams_baseline.toml: 10 epochs x 500 updates x 20, lr 1e-3,
+# init 0.1, ramp warmup 0 (k = 3), the Poisson(3) 10k training set, the
+# hand-written gradient on the GPU.
+#
+# NAMES: run tags _cer_rampfirst, _cer_ramplast, _cer_enr_rampfirst and
+# _cer_enr_ramplast, after train_p_<p>_sig_0.0_s_1, so nothing already in the run
+# directory is replaced:
+#     models/neuralbp_weights_nlayers_90_epochs_10_trained_using_train_p_0.0007_sig_0.0_s_1_cer_enr_rampfirst_seed_1.json
+#     results/simulation_results_test_p_0.0007_sig_0.0_s_1_nlayers_90_epochs_10_trained_using_train_p_0.0007_sig_0.0_s_1_cer_enr_rampfirst_seed_1.csv
+#
+# AFTERWARDS, one rate at a time (the first arm is the reference; the weights check
+# is against it, hence the second line for the enriched pair):
+#     for key in p_0.0007_sig_0.0_s_1 p_0.0011_sig_0.0_s_1 p_0.0015_sig_0.0_s_1; do
+#         python3 misc/compare_sweep_arms.py --workdir 72q_BB_cycles_1_sweep --train-key $key \
+#             --arms _cer_ramplast _cer_rampfirst _cer_enr_ramplast _cer_enr_rampfirst
+#         python3 misc/compare_sweep_arms.py --workdir 72q_BB_cycles_1_sweep --train-key $key \
+#             --arms _cer_enr_ramplast _cer_enr_rampfirst
+#     done
+#
+# KEEP EACH ARRAY ON ONE LINE: the generator reads a key with grep | head -1.
+# =============================================================================
+
+workdir          = "./../data"
+codename         = "72q_BB_cycles_1_sweep"
+
+# --- datasets: train on each key, test on the same key ------------------------
+datasets         = ["p_0.0007_sig_0.0_s_1", "p_0.0011_sig_0.0_s_1", "p_0.0015_sig_0.0_s_1"]
+ref_datasets     = []
+test_keys        = []
+
+base_hyperparams = "hyperparams_baseline.toml"
+seeds            = [1, 2, 3, 4, 5]
+
+# --- arms ----------------------------------------------------------------------
+include_nocer    = false
+single_qubit_rescale = 0.1
+check_node_arms  = ["tanh", "enriched:alpha_star:learn"]
+# Both arms name their layer pair, so no top-level loss_layer_selection /
+# commit_layer_rule is set here.
+optimizer_arms   = ["rampfirst:loss_layer_selection=ramp,commit_layer_rule=first", "ramplast:loss_layer_selection=ramp,commit_layer_rule=last"]
+
+# --- cluster: Narval, one A100 per array task ------------------------------------
+cluster_name     = "narval"
+account_gpu      = "def-jemerson_gpu"
+email            = "pavithran.sridhar@gmail.com"
+julia_module     = "julia/1.12.5"
+cuda_module      = "cuda"
+heap_size_hint   = "4G"
+
+# TRAINING: 60 points / 15 tasks = 4 per task, one wave of train_jobs = 4 sharing
+# the card. The interleaved split gives every task 2 tanh + 2 enriched points.
+train_array_tasks = 15
+train_jobs       = 4
+train_cpus       = 12
+train_wall_time  = "3:00:00"
+
+# TESTING: one process per card; 60 tests / 8 tasks = 8 per task.
+test_array_tasks = 8
+gpu_type         = "a100"
+gpu_request_style = "auto"
+n_gpus_per_node  = 1
+test_jobs        = 1
+mem_per_gpu      = "32G"
+vram_per_gpu     = ""
+test_cpus        = 12
+test_wall_time   = "1:00:00"
+
+# --- walltime preflight ---------------------------------------------------------
+# A wave holding enriched points took ~25 min for 5 epochs (2026-10-19); these
+# train 10, so 3000 s a wave. A test is ~150 s with Julia startup (2026-10-19),
+# ~25 s more for an enriched model's kernel compilation.
+seconds_per_test = 180
+seconds_per_train_point = 3000
+job_startup_seconds = 900

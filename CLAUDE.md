@@ -360,6 +360,16 @@ end
   filename carries a check-node tag, so it would load/overwrite the tanh run's files.
 - Same kernel for classical BP: `standard_bp_experiments.jl` with `check_node = "enriched"`
   and a fixed `coupling_scale_init` is the training-free α = 0 vs α = 1 comparison.
+- **Toy check, `python3 misc/toy_enriched_bp.py` (2026-10-26):** both rules in Python
+  (float64, the Julia formulas, pairs assigned to the first check holding both), unit
+  weights, next to the exact posteriors. c1 = {1,2,4}, c2 = {1,3,5}, c3 = {2,3}; J12 = 1,
+  J13 = 0.5, J24 = 2, J35 = 4; prior 0.1, α = 0.5; syndrome of {3,5} = (0,0,1), which
+  {2,4} explains equally well without couplings (exact 0.45 / 0.45; with them 0.71 / 0.26).
+  The graph is symmetric under v2↔v3, v4↔v5, c1↔c2, so tanh never breaks the tie (no
+  syndrome-valid decision in 30 iterations); enriched decodes {3,5} from iteration 3
+  (P(v3) 0.49 / 0.64 / 0.74, P(v5) 0.09 / 0.44 / 0.55; settles at 0.67 / 0.55 vs exact
+  0.72 / 0.73), the push coming from c2→v5 (−1.96, −2.41 at iterations 2–3; tanh 0.00,
+  −1.13). α = 0 reproduces tanh exactly.
 - Tests: `tests/test_soft_constraints.jl` (tables, α = 0 ≡ tanh, brute-force posterior,
   Enzyme gradients, CPU ≡ GPU, tanh path unchanged, weights-file round trip, refusal
   of the removed layer schedule).
@@ -1927,7 +1937,12 @@ blocks; enriched models coset exact, convergence ±10%.
   the model's own 10k training set and 16–19% anywhere in the 1e6 training file.
 - **The real-decoder check: `sweeps/enriched_ramp_commit.toml`** (prepared 2026-10-22;
   the first submission, `hp_2026-10-22_16-25-01`, trained nothing — a cold depot, see
-  the cluster notes — so not yet run). Enriched only (`enriched:0.503:learn`, no no-CER arm), trained on
+  the cluster notes; rerun and **measured 2026-10-23**: weights identical at all 5
+  seeds; ramp + first 19526 (12714 | 6812) vs ramp + last 19706 (12579 | 7127), −0.9%,
+  5/5 seeds lower, t −1.1; per set −6.1% (p.0005 σ.0005, 3/5), +0.5% (p.0005 σ.001,
+  0/5), −0.2%, −0.2% (5/5) — the mirror's −1.3%: for the enriched node the readout does
+  not matter. Against the 2026-10-19 ramp_last (warmup 5, init 0.3), 19642 (11993 |
+  7649): warmup 0 / init 0.1 changed the total by nothing, coset +5%, convergence −7%). Enriched only (`enriched:0.503:learn`, no no-CER arm), trained on
   p_0.0015_sig_0.0015_s_1, the 2026-10-19 sweep's 4 test sets, 5 seeds; two optimizer
   arms that differ ONLY in `commit_layer_rule`: `rampw0_last` and `rampw0_first` (ramp,
   warmup 0, k = 3). Everything else is the user's `models/hyperparams_baseline.toml` of
@@ -1956,6 +1971,70 @@ blocks; enriched models coset exact, convergence ±10%.
     results, every test loads its model (retrain = false); compare_sweep_arms.py
     reports identical weights. With one model removed every test task exits 1 naming
     it, with 29 *.json present; regenerating lists the 10 existing models.
+- **Is the plateau grokking? (asked 2026-10-23) No.** Grokking is a training-time effect
+  that needs the training set fitted first; at epoch 10 the decoder still fails on ~1%
+  of its own 10k training samples (15–19% of batches hold a failure), each seen ~10
+  times. The flat loss across LAYERS is the iteration sitting in a stuck state (~6
+  violated checks), and the depth probe shows it does not jump later: −15% by 120
+  layers, then −0.6% (no-CER) / −1.4% (enriched) from 150 to 180. The lever that does
+  move BP out of stuck states is symmetry breaking — random 10% prior jitter took plain
+  BP from 8778 to 296–749 failures (above) — and Relay-BP (Müller et al., IBM, arXiv
+  2506.01779, 2025: disordered memory strengths in successive BP "relay legs") reports
+  beating BP+OSD-CS10 on bivariate-bicycle codes under circuit noise while staying a
+  parallel message-passing decoder. Next candidates: prototype Relay-BP / perturbed-prior
+  restarts in numpy on these test sets; as a test-time add-on, restart the neural
+  decoder with jittered priors on the shots it fails; on the training side, train on
+  the decoder's own failures. No test or training files are on the laptop since the
+  2026-10-23 cleanup (the sweep folder's test file is a dangling link).
+  - **The sweep run's own profiles (checked 2026-10-23; `logs/debugging_*` of
+    `72q_BB_cycles_1_sweep`, median over informative batches, i.e. last-layer loss
+    > 0.025).** CER and enriched sit at exactly 0.35 (7 violated rows in the batch: one
+    stuck sample) from layer ~40 to 90; enriched's profile is the same at epochs 1, 5 and
+    10, and 77% of its informative batches move by < 1% between layers 60 and 90. no-CER
+    hovers near 1.0 to layer 80 and drops over the last six layers, and that drop is
+    LEARNED: L80 → L90 is 1.09 → 0.96 at epoch 1, 1.08 → 0.67 at epoch 5, 0.89 → 0.45 at
+    epoch 10. The 50-layer baseloss run had the same drop in its layers 45–50, so it
+    follows the network's end, not an iteration count. Test failures (mirror,
+    first-to-clear, 5 local sets × 5 seeds, `results/mirror_commit_rules.csv`) at depth
+    30 / 60 / 90: no-CER 72156 / 45417 / 29314, CER 85246 / 47147 / 29708, enriched α*
+    78335 / 33109 / 25408. Of the samples that first clear in layers 31–60 the wrong coset
+    takes 4.3% / 3.2% / 6.5%, in 61–90 10.5% / 6.9% / 12.2% (past 90, in the probe on the
+    2026-10-19 models: 45% no-CER, 21% enriched). Shots not converged at layer 90: 44–1910
+    per 10⁶, so a restart scheme reruns under 0.2% of them.
+  - **No staircase per shot ("grokking with levels", asked 2026-10-23).** The levels are
+    literal: a saturated violated row of [H; L] adds exactly 1/20 to a batch's loss, and
+    at layers ≥ 30 77% (enriched) / 60% (CER) / 38% (no-CER) of informative batches'
+    values are within 0.001 of a multiple of 0.05. But a batch never steps from one level
+    to a lower one: it is either still MOVING (non-integer values) or FROZEN on one level
+    for the rest of the layers. Plateau = ≥ 3 layers on one level; of the batches on a
+    plateau at layer 60, the number that later reach a lower level is 0/163 no-CER, 0/228
+    CER, 0/322 enriched at epoch 10 (0 at epoch 1 too, and from layer 75); one batch of
+    389 (CER) ever moved between two plateaus. Frozen at layer 90: 43% / 68% / 82% of
+    informative batches (no-CER / CER / enriched), 74–86% of them by layer 40 (median
+    layer 20–24); the steps of the MEDIAN curve are the population freezing one batch at
+    a time. So extra layers can only reach the 57% / 32% / 18% still moving at 90.
+    Likely mechanism (not yet checked on messages): saturation — `safe_log_tanh_split!`
+    clips tanh(|m|/2) at 1 − eps(Float32), so the check node sees every |m| above ~16.6 as
+    16.6 and sends ±16.6, and a fully saturated stuck state is a hard-decision fixed point
+    (an absorbing set) that per-layer weights near 1 cannot move. Butler & Siegel (IEEE
+    Trans. IT 2014, arXiv 1202.2826) traced several classical LDPC error floors to decoders
+    saturating near-certain LLRs; a non-saturating SPA was lower by several orders of
+    magnitude. Test: a larger cap (Float64 clamp, ~37; or a boxplus form with none) in
+    `nbp_mirror.py`, trained models and unit-weight BP, counting shots that unfreeze.
+    Method: `outputs/proto/layer_staircase.py` (session scratch).
+  - **Why the per-layer tail is not zero, and whether epochs move it (asked 2026-10-23,
+    same logs).** 99.9–100% of the mean layer-90 loss comes from the batches holding a
+    failing sample; the rest sit at ~1e-6. So tail height = (share of batches with a
+    failure) × (violated rows per stuck sample) / 20. By epoch (1 / 5 / 10), share of
+    batches with a failure and mean violated rows per such batch at layer 90: no-CER
+    36.2 / 25.6 / 18.6% and 20.8 / 14.4 / 11.1 (share still −5% per epoch at the end);
+    CER 18.1 / 15.7 / 15.6% and 15.1 / 10.8 / 8.3; enriched 17.7 / 17.5 / 16.7% and
+    9.5 / 9.1 / 8.4. So for CER the mean layer-90 loss keeps falling after epoch 5
+    (0.085 → 0.065) only because stuck samples leave fewer rows violated, not because
+    fewer samples fail; more epochs help no-CER only. The MEAN curve (all batches) is
+    within 10% of its layer-90 value only from layer 73–90; the early flat tail is the
+    median over failing batches. A deeper TRAINED network needs batch_run.jl
+    (`--n_hidden_layers`); `sweep_hyperparams.sh` refuses anything but 90.
 - `misc/compare_sweep_arms.py --workdir <codename> --arms <run tag> <run tag> ...`
   (2026-10-22): per test set and over all of them, each arm's failures summed over
   seeds as total (coset | convergence), mean committed layer, and against the first
@@ -2001,11 +2080,12 @@ blocks; enriched models coset exact, convergence ±10%.
   5 models `…_cer_enr_seed_<n>.json`, 24/24 test tasks, 120 results, the derived
   TOMLs carry the enriched keys, the commands are the 2026-10-20 ones but for the
   hyperparams path.
-- **Why not `sweep_hyperparams.sh`** for this run: its jobs stage the WHOLE codename
+- **Why not `sweep_hyperparams.sh`** for this run: its jobs staged the WHOLE codename
   directory (`tar -chf - -C $WORKDIR $CODENAME`), ~30 GB here (208 files of 144 MB),
   on every array task, and it writes softmin + first unless told otherwise; the
   submission pipeline stages only the files a slice reads and is what produced the
-  results being compared.
+  results being compared. (Since 2026-10-27 sweep_hyperparams.sh stages only what its
+  points read too; see "Matched train and test at sigma = 0".)
 - **α**: 0.538 is α* for the TRAINING set (median raw rate 0.01653). The learned α is
   used unchanged on every test set, whose own α* runs from 0.32 (p = 1e-4) to 0.54,
   so at low p the couplings are relatively too strong (up to 1.7×); a test-time
@@ -2020,6 +2100,67 @@ blocks; enriched models coset exact, convergence ±10%.
   per sigma group, and draws one ratio line per arm. Checked on the 240 real names
   plus 240 synthetic `_cer_enr` / `_cer_bethe` ones (mirror of the selection: 360 /
   480 kept, `cer_seed`, `CER`, `enr` refused) and a synthetic 4-arm figure.
+
+## Matched train and test at sigma = 0 (prepared 2026-10-27, not yet run)
+
+- **Why** (the user's observation, 2026-10-27): a dataset (p, sig, s) draws one
+  depolarizing rate per CNOT gate (and idle) from N(p, sig), so at sig > 0 a training
+  file and a test file are DIFFERENT devices even at equal (p, sig) — every earlier
+  "train at one key, test on another" result mixes a change of error model into the
+  comparison. At sig = 0 every gate has rate p, so train_<key> and test_<key> share
+  one error model. At sig = 0 the 72 per-qubit CER rates are nearly flat (max/min
+  ~1.3), so what the CER file adds there is mostly the pair couplings.
+- **`expts/sweeps/sig0_matched_ramp_commit.toml`** (sweep_hyperparams.sh, codename
+  72q_BB_cycles_1_sweep): datasets p_0.0007 / p_0.0011 / p_0.0015 _sig_0.0_s_1 (the
+  user typed 0.007; the data has no such p, 0.0007 is meant), `test_keys = []` so
+  each model is tested on its own key only; CER arms `tanh` and
+  `enriched:alpha_star:learn`, no no-CER arm (`include_nocer = true` adds it);
+  optimizer arms `rampfirst` / `ramplast` (ramp loss, commit first / last; warmup 0,
+  k = 3 and everything else from the run's hyperparams_baseline.toml: 10 epochs, init
+  0.1, Poisson(3) 10k); seeds 1–5. 60 trainings (15 tasks × one wave of 4 = 2 tanh + 2
+  enriched each, est 65 min of a 3 h wall at 3000 s a wave) and 60 tests (8 tasks, est
+  39 min of 1 h at 180 s a test). The commit arms train the same model twice per seed
+  (training never reads the commit rule), which compare_sweep_arms.py checks. Run tags
+  `_cer_rampfirst`, `_cer_ramplast`, `_cer_enr_rampfirst`, `_cer_enr_ramplast` after
+  train_p_<p>_sig_0.0_s_1, so nothing in the directory is replaced. From expts/ on
+  Narval: `bash misc/precompile_depot.sh`, `bash sweep_hyperparams.sh --settings
+  sweeps/sig0_matched_ramp_commit.toml --no-edit`, the two printed sbatch lines; then
+  per rate `python3 misc/compare_sweep_arms.py --workdir 72q_BB_cycles_1_sweep
+  --train-key p_<p>_sig_0.0_s_1 --arms _cer_ramplast _cer_rampfirst _cer_enr_ramplast
+  _cer_enr_rampfirst`, and again with `--arms _cer_enr_ramplast _cer_enr_rampfirst`
+  (its weights check is against the first arm only). Without --train-key it refuses
+  (an arm then has three trainings). Checked on renamed copies of real results and
+  models: both calls run, identical weights are reported as identical.
+- **`enriched:alpha_star:<fixed|learn>`** (new in sweep_hyperparams.sh): each point's
+  `coupling_scale_init` is α* of ITS training key, ln((1−t)/t)/ln((1−m)/m), t =
+  single_qubit_rescale, m the median raw rate of the key's CER file
+  (`alpha_star_of_key`, mirroring `prior_softening_factor` including its 1 when the
+  rescale does nothing), printed per key at generation and written into the TOML as a
+  number. 0.4200 / 0.4571 / 0.4875 for the three keys (median raw rates 0.00532 /
+  0.00811 / 0.01091; the old training key p_0.0015_sig_0.003 gives 0.538). One α for
+  all three would be ±0.035 off at the ends, and learned α barely moves from its init.
+  A non-numeric α other than alpha_star is now refused.
+- **sweep_hyperparams.sh stages only what its points read** (2026-10-27): the jobs
+  copied the whole codename to $SLURM_TMPDIR (~30 GB for 72q_BB_cycles_1_sweep per
+  array task). The generator now writes `cluster/hp_sweep_stage_{train,test}_<ts>.txt`
+  (paths under $WORKDIR): code/, correlated_weights/ (small, whole), the sweep's
+  TOMLs, and train_<key>.txt for every training key (training job) or test_<key>.txt
+  for every tested key plus the expected weights files (test job); the job filters out
+  entries not on disk and `tar -chf - -C $WORKDIR -T <list>`. results/ and other runs'
+  models are no longer staged; a missing trained model is still named by the model
+  check (exit 1).
+- Verified 2026-10-27 without Julia on a fake copy of the run directory (the three
+  keys' data replaced by stub files, decoys of other keys beside them) with stub
+  julia (checks every input it is handed, refuses a test that would train) / parallel
+  / module and fake SLURM variables: generation gives 60 + 60 points, every test
+  command's --train, --test and --cer_data name one key, the enriched TOMLs carry the
+  three α*, the tanh ones 1.0; 15/15 train tasks exit 0 (each staged 65 paths, 2.2 MB:
+  no decoy, no testing_data, no results), 60 models and 60 debug logs staged out; 8/8
+  test tasks exit 0 (no training_data staged, all 60 TOMLs flipped to retrain =
+  false), 60 results; one model removed → the task exits 1 naming it; alpha "0.5x" is
+  refused, a numeric α still written as is. Regression: sweeps/enriched_vs_nocer.toml
+  (test_keys set, no-CER arm) on a fake trainable_alpha: 20 models, 80 results, all
+  tasks exit 0.
 
 ## Run tags (changed 2026-10-09)
 

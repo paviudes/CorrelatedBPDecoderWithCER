@@ -6,6 +6,9 @@
 #     <codename>/cluster/hp_sweep_test_<ts>.txt    the same points, with --test
 #     <codename>/cluster/hp_sweep_models_<ts>.txt  the weights file each point writes
 #                                                  (the test job checks they are there)
+#     <codename>/cluster/hp_sweep_stage_{train,test}_<ts>.txt
+#                                                  what each job copies to the node:
+#                                                  only the files its points read
 #     <codename>/cluster/hp_sweep_train_<ts>.sh    GPU job, GNU parallel
 #     <codename>/cluster/hp_sweep_test_<ts>.sh     GPU job
 #     <codename>/models/hyperparams_hp_*.toml      one per point
@@ -186,6 +189,13 @@ commit_layer_rule    = "last"
 # the tanh arm's files; alpha is not in the name, so two arms of one node need
 # different optimizer tags. alpha is one value shared by every layer (the layer
 # schedule on alpha was removed 2026-10-11).
+#
+# alpha may also be written `alpha_star` (enriched:alpha_star:learn): each point
+# then starts from alpha* of ITS OWN training key, ln((1-t)/t) / ln((1-m)/m) with
+# t = single_qubit_rescale and m that key's median raw single-qubit rate, read
+# from the key's CER file here and written into the point's TOML as a number
+# (the generator prints the value per key). Use it when the datasets differ in p:
+# alpha* is 0.420 / 0.457 / 0.488 at p = 0.0007 / 0.0011 / 0.0015, sig = 0.
 #
 # WHY alpha = 0.503 HERE. alpha is not a fitted number: single_qubit_rescale
 # maps the MEDIAN single-qubit rate to 0.1 and leaves J untouched, so the pair
@@ -607,12 +617,12 @@ if [ "$COLLECT" -eq 0 ] && [ "$(base_hyperparameter_value manual_backprop)" != "
     echo "  GPU nodes with the hand-written backward pass (Enzyme cannot use the GPU)." >&2
     exit 1
 fi
-# The stage-in tars the codename as it stands, so these have to exist here or
-# the job has nowhere to write and the stage-out finds nothing to bring back.
+# The stage-out copies results, models and logs back into these, so they have to
+# exist here.
 mkdir -p "$CLUSTER_DIR" "$MODELS_DIR" "$WORKDIR/$CODENAME/results" "$WORKDIR/$CODENAME/logs"
 
 # PREFLIGHT: every dataset must have its three input files HERE, before the job
-# tars this directory. Without this check a missing input is discovered only
+# copies them to the node. Without this check a missing input is discovered only
 # after the queue wait, as N identical "exit 1" lines with no message -- which is
 # exactly how one 240-point sweep failed on 2026-09-04.
 MISSING_INPUTS=""
@@ -656,7 +666,7 @@ fi
 if [ -n "$MISSING_INPUTS" ]; then
     echo "missing dataset input(s) under $WORKDIR/$CODENAME:" >&2
     printf "%b\n" "$MISSING_INPUTS" >&2
-    echo "  The sweep stages this directory as it stands, so these must exist" >&2
+    echo "  The jobs copy these files to the node when they start, so they must exist" >&2
     echo "  before submitting. Check the datasets list in the settings file, and" >&2
     echo "  that a clean-up or rsync has not removed the inputs." >&2
     exit 1
@@ -699,6 +709,31 @@ if ! echo "$N_EPOCHS" | grep -qE '^[1-9][0-9]*$'; then
 fi
 
 tag_of() { echo "$1" | tr '.' 'p' | tr -d '-'; }
+
+# alpha* of one dataset key: ln((1 - t)/t) / ln((1 - m)/m), t = single_qubit_rescale
+# and m the median of the key's raw single-qubit rates (the "<qubit> : <rate>"
+# lines of its CER file; the "(<a>, <b>) : <J>" lines are pairs). The factor by
+# which the rescale softens the median prior's log-odds -- src/neuralbase.jl,
+# prior_softening_factor, mirrored here, including its 1 when the rescale leaves
+# the rates alone (t <= 0, no rates, or a rate already at t or above).
+alpha_star_of_key() {   # <key>
+    local cer_file="$WORKDIR/$CODENAME/correlated_weights/correlated_weights_$1.txt"
+    sed -nE 's/^[[:space:]]*[0-9]+[[:space:]]*:[[:space:]]*([0-9.eE+-]+)[[:space:]]*$/\1/p' "$cer_file" \
+        | sort -g \
+        | awk -v t="${RESCALE:-0}" -v cer_file="$cer_file" '
+            { rate[NR] = $1 + 0 }
+            END {
+                if (NR == 0) {
+                    print "alpha_star: no single-qubit rates in " cer_file "; using 1.0" > "/dev/stderr"
+                    printf "1.0"
+                    exit
+                }
+                if (t + 0 <= 0 || rate[NR] >= t + 0) { printf "1.0"; exit }
+                if (NR % 2 == 1) { median = rate[(NR + 1) / 2] }
+                else             { median = (rate[NR / 2] + rate[NR / 2 + 1]) / 2 }
+                printf "%.4f", log((1 - t) / t) / log((1 - median) / median)
+            }'
+}
 
 # ------------------------------------------------------------ emit points ---
 emit_point() {   # <key> <seed> <use_cer> <check_node_spec> <optimizer_spec>
@@ -746,6 +781,13 @@ emit_point() {   # <key> <seed> <use_cer> <check_node_spec> <optimizer_spec>
             coupling_scale_learnable="true"
         elif [ "$learn_spec" != "fixed" ]; then
             echo "emit_point: check node spec '$check_node_spec' must end in :fixed or :learn, got '$learn_spec'." >&2
+            exit 1
+        fi
+        # alpha: a number, or alpha_star -- alpha* of this point's training key.
+        if [ "$coupling_scale_init" = "alpha_star" ]; then
+            coupling_scale_init="$(alpha_star_of_key "$key")"
+        elif ! echo "$coupling_scale_init" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
+            echo "emit_point: check node spec '$check_node_spec': alpha '$coupling_scale_init' must be a number or alpha_star." >&2
             exit 1
         fi
     elif [ "$check_node_name" != "tanh" ]; then
@@ -984,6 +1026,18 @@ emit_point() {   # <key> <seed> <use_cer> <check_node_spec> <optimizer_spec>
     fi
 }
 
+# An alpha_star arm: say which alpha each training key's points start from.
+for check_node_arm in $CHECK_NODE_ARMS; do
+    case "$check_node_arm" in
+        enriched:alpha_star:*|bethe:alpha_star:*)
+            echo "[hp_sweep] $check_node_arm starts each point from alpha* of its training key:"
+            for key in $DATASETS; do
+                echo "             $key -> $(alpha_star_of_key "$key")"
+            done
+            ;;
+    esac
+done
+
 # The check node is a forward-pass axis, so it crosses every CER cell; the
 # no-CER baseline has no couplings to enrich and is emitted once, with the
 # standard rule. `ref_datasets` get the CER tanh arm and the baseline only.
@@ -1011,7 +1065,6 @@ for key in $REF_DATASETS; do
     done
 done
 
-rm -f "$EMITTED_TOML_NAMES"
 N_RAW_POINTS=$(wc -l < "$TRAIN_CMDS")
 # The replication grid can restate main-grid cells (same dataset, seed, tau, L2
 # form and lambda). Two identical commands are not merely wasted cores: both
@@ -1060,6 +1113,36 @@ fi
 # scored on several test sets. The test job's array must be sized against its
 # own file, and the staged-model count it checks is still the TRAINING count.
 N_TEST_POINTS=$(wc -l < "$TEST_CMDS")
+
+# STAGE-IN LISTS: what each job copies to the node, as paths under $WORKDIR (a
+# directory goes whole). Only the files its points read -- the code, the CER files,
+# the sweep's own TOMLs, and the training files (training job) or the test files
+# and trained models (test job). Both jobs used to copy the whole codename, which
+# for 72q_BB_cycles_1_sweep is ~30 GB of data sets (208 files of 144 MB) per task.
+TRAIN_STAGE_LIST="$CLUSTER_DIR/hp_sweep_stage_train_${TS}.txt"
+TEST_STAGE_LIST="$CLUSTER_DIR/hp_sweep_stage_test_${TS}.txt"
+TESTED_KEYS="$TEST_KEYS"
+if [ -z "$TESTED_KEYS" ]; then
+    TESTED_KEYS="$DATASETS $REF_DATASETS"
+fi
+{
+    echo "$CODENAME/code"
+    echo "$CODENAME/correlated_weights"
+    for key in $DATASETS $REF_DATASETS; do
+        echo "$CODENAME/training_data/train_${key}.txt"
+    done
+    sed "s|^|$CODENAME/models/|" "$EMITTED_TOML_NAMES"
+} | awk '!seen[$0]++' > "$TRAIN_STAGE_LIST"
+{
+    echo "$CODENAME/code"
+    echo "$CODENAME/correlated_weights"
+    for key in $TESTED_KEYS; do
+        echo "$CODENAME/testing_data/test_${key}.txt"
+    done
+    sed "s|^|$CODENAME/models/|" "$EMITTED_TOML_NAMES"
+    sed "s|^|$CODENAME/models/|" "$EXPECTED_MODELS"
+} | awk '!seen[$0]++' > "$TEST_STAGE_LIST"
+rm -f "$EMITTED_TOML_NAMES"
 
 # ------------------------------------------------------ walltime preflight ---
 # A job that runs out of walltime loses whatever it had not staged out, and the
@@ -1344,8 +1427,17 @@ cat "$GPU_PREAMBLE_FILE" >> "$SLURM_TRAIN"
 cat >> "$SLURM_TRAIN" <<EOF
 
 LOCAL="\$SLURM_TMPDIR/$CODENAME"
-tar -chf - -C "$WORKDIR" "$CODENAME" | tar -xf - -C "\$SLURM_TMPDIR"
+# Stage in only what this job's points read, as listed in
+# $(basename "$TRAIN_STAGE_LIST"). An entry not on disk is left out rather than failing tar.
+STAGE_LIST="\$SLURM_TMPDIR/stage_in.txt"
+while IFS= read -r staged_path; do
+    if [ -e "$WORKDIR/\$staged_path" ]; then
+        echo "\$staged_path"
+    fi
+done < "$TRAIN_STAGE_LIST" > "\$STAGE_LIST"
+tar -chf - -C "$WORKDIR" -T "\$STAGE_LIST" | tar -xf - -C "\$SLURM_TMPDIR"
 mkdir -p "\$LOCAL"/{models,results,logs} "\$LOCAL/cluster/logs/hp_${TS}_train_task\${TASK}"
+echo "[train task \$TASK] staged in \$(wc -l < "\$STAGE_LIST") path(s), \$(du -sh "\$LOCAL" | cut -f1): \$(date +%T)"
 # Interleaved slice: task t runs lines t+1, t+1+K, ... of the full point list.
 # Interleaved rather than contiguous so a slow region of the grid is spread over
 # all tasks instead of landing entirely on one.
@@ -1488,8 +1580,18 @@ cat "$GPU_PREAMBLE_FILE" >> "$SLURM_TEST"
 cat >> "$SLURM_TEST" <<EOF
 
 LOCAL="\$SLURM_TMPDIR/$CODENAME"
-tar -chf - -C "$WORKDIR" "$CODENAME" | tar -xf - -C "\$SLURM_TMPDIR"
+# Stage in only what this job's points read, as listed in
+# $(basename "$TEST_STAGE_LIST"). An entry not on disk is left out rather than failing
+# tar; a trained model left out that way is named by the model check below.
+STAGE_LIST="\$SLURM_TMPDIR/stage_in.txt"
+while IFS= read -r staged_path; do
+    if [ -e "$WORKDIR/\$staged_path" ]; then
+        echo "\$staged_path"
+    fi
+done < "$TEST_STAGE_LIST" > "\$STAGE_LIST"
+tar -chf - -C "$WORKDIR" -T "\$STAGE_LIST" | tar -xf - -C "\$SLURM_TMPDIR"
 mkdir -p "\$LOCAL"/{models,results,logs} "\$LOCAL/cluster/logs/hp_${TS}_test_task\${TASK}"
+echo "[test task \$TASK] staged in \$(wc -l < "\$STAGE_LIST") path(s), \$(du -sh "\$LOCAL" | cut -f1): \$(date +%T)"
 sed "s|\\\$WORKDIR_RUNTIME|\$SLURM_TMPDIR|g" "$TEST_CMDS" \\
     | awk -v k=$TEST_ARRAY -v t="\$TASK" '(NR - 1) % k == t' > "\$SLURM_TMPDIR/test.txt"
 N_TASK=\$(wc -l < "\$SLURM_TMPDIR/test.txt")
@@ -1499,8 +1601,8 @@ if [ "\$N_TASK" -eq 0 ]; then
 fi
 
 # neural_bp_experiments.jl SKIPS testing when the results file already exists and
-# reports the old numbers as if fresh. The staged-in copy carries the previous
-# run's results, so remove this sweep's targets before testing.
+# reports the old numbers as if fresh. results/ is no longer staged in, so this
+# finds nothing; it stays as a guard should the stage-in list ever include it.
 # Safe to clear ALL of them even under a job array: this deletes only the
 # node-local staged copy, and stage_out untars this task's files INTO the shared
 # directory without removing anything already there. So a sibling's results that
