@@ -14,14 +14,15 @@
 # + 32 GB of host RAM (a quarter of a node). Compute nodes have no internet: warm
 # the Julia depot on a login node first (bash misc/precompile_depot.sh).
 #
-# Another cluster is another file here, with the same keys. (Nibi, used before
-# 2026-10: gpu_type = "h100_3g.40gb", train_cpus = test_cpus = 14, the H100 MIG
-# slice requested with --gpus=, which gpu_request_style = "auto" picks; its costs
-# were never measured.)
+# Another cluster is another file here, with the same keys (clusters/trillium.toml
+# uses the site-specific ones). (Nibi, used before 2026-10: gpu_type =
+# "h100_3g.40gb", train_cpus = test_cpus = 14, the H100 MIG slice requested with
+# --gpus=, which gpu_request_style = "auto" picks; its costs were never measured.)
 # =============================================================================
 
-account_gpu       = "def-jemerson_gpu"
+account_gpu       = "def-jemerson_gpu"               # "" = no --account line: the scheduler's default
 email             = "pavithran.sridhar@gmail.com"   # SLURM mail (--mail-type=ALL)
+stdenv_module     = ""               # loaded before julia when a cluster does not load it at login; Narval does
 julia_module      = "julia/1.12.5"   # Narval has no 1.13; Manifest-v1.12.toml is resolved for it
 cuda_module       = "cuda"
 
@@ -36,9 +37,14 @@ heap_size_hint    = "4G"
 # but halves the VRAM, so re-derive the test batch before switching to it.
 gpu_type          = "a100"
 # "auto" emits --gpus-per-node= for a full card and --gpus= for a MIG slice (which
-# Nibi requires); correct for Narval either way.
+# Nibi requires); correct for Narval either way. "count" emits a bare
+# --gpus-per-node=<n> (Trillium).
 gpu_request_style = "auto"
 n_gpus_per_node   = 1
+# true: the header asks for --ntasks=1, --cpus-per-task (train_cpus / test_cpus) and
+# --mem-per-gpu. false where the scheduler hands them out with the card and ignores
+# such requests (Trillium); the numbers below then only feed the checks.
+request_cpus_and_memory = true
 mem_per_gpu       = "32G"        # SLURM HOST RAM per card (--mem-per-gpu), not VRAM
 vram_per_gpu      = ""           # VRAM in GB for the test batch sizer; "" = from gpu_type (a100: 40)
 
@@ -57,6 +63,15 @@ train_cpus        = 12           # 48 cores / 4 GPUs; >= train_jobs
 # OOM (21/54 tests on 2026-08-28). Scale testing with test_array_tasks.
 test_jobs         = 1
 test_cpus         = 12
+
+# --- site rules ------------------------------------------------------------------
+# jobs_write_under: the NAME of the environment variable whose directory is the only
+# place compute jobs can write (Trillium: "SCRATCH"); the generator then refuses a run
+# directory or Julia depot outside it. "" = jobs can write anywhere (Narval).
+jobs_write_under  = ""
+# submit_host: the login node GPU jobs must be submitted from (a glob; Trillium:
+# "trig-login01"); the generator warns elsewhere. "" = any login node.
+submit_host       = ""
 
 # --- measured costs, for the walltime preflight --------------------------------
 # One epoch of one WAVE of train_jobs trainings sharing an A100, at 90 layers and

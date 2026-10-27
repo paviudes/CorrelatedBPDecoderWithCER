@@ -1,0 +1,67 @@
+# =============================================================================
+# clusters/trillium.toml -- Trillium (SciNet, Toronto), GPU subcluster, for
+# sweep_hyperparams.sh. A sweep file uses it with   cluster = "trillium".
+#
+# From the Trillium and Trillium Quickstart pages (Alliance docs, 2026):
+#   - GPU node: 4x H100 SXM 80 GB, 96 Zen 4 cores, ~755 GiB. GPU jobs ask for
+#     exactly 1 GPU or a multiple of 4 (--gpus-per-node=1|4; no GPU type, no MIG).
+#     One GPU is a quarter node: 24 cores and 188 GiB, handed out with the card;
+#     memory requests are ignored.
+#   - $HOME and $PROJECT are READ-ONLY on compute nodes. Everything the jobs write
+#     -- the run directory (stage-out, .out/.err files, depot lock) and the Julia
+#     depot -- must be under $SCRATCH; the generator refuses otherwise. Keep the
+#     repository there too and submit from it, as the docs ask.
+#   - No local disk: $SLURM_TMPDIR is a RAM disk (the stage-in uses ~0.5 GB of the
+#     188 GiB).
+#   - No internet on compute nodes; StdEnv/2023 is NOT loaded at login.
+#   - GPU jobs are submitted from the GPU login node, trig-login01
+#     (ssh trillium-gpu.alliancecan.ca), which has the GPU nodes' CPU (Zen 4) and
+#     H100s. Warm the depot there too: Julia compiles its caches for the CPU it runs
+#     on, and the CPU login nodes are Zen 5. misc/precompile_depot.sh refuses them.
+#   - Walltime 15 min to 24 h.
+#
+# Once, on trig-login01, from expts/ (the repository under $SCRATCH):
+#     module load StdEnv/2023 julia/1.12.5 cuda/12.6
+#     bash misc/precompile_depot.sh      # again after any change to src/
+# =============================================================================
+
+# "" = no --account line: Trillium runs the job under the group's RAC allocation,
+# else its default (RAS) one. To name one, list yours with
+#     sacctmgr show associations user=$USER format=account%30
+account_gpu       = ""
+email             = "pavithran.sridhar@gmail.com"
+stdenv_module     = "StdEnv/2023"
+julia_module      = "julia/1.12.5"   # check with  module spider julia ; Manifest-v1.12.toml goes with it
+cuda_module       = "cuda/12.6"      # the version Trillium's own GPU example loads
+heap_size_hint    = "4G"
+
+# --- one array task = one H100, a quarter node ------------------------------------
+gpu_type          = "h100"           # for the VRAM (80 GB) and the report; not in the request
+gpu_request_style = "count"          # --gpus-per-node=1
+n_gpus_per_node   = 1                # 1 or 4 only
+request_cpus_and_memory = false      # 24 cores and 188 GiB come with the card
+mem_per_gpu       = "188G"           # host RAM per card, for the train_jobs x heap_size_hint check
+vram_per_gpu      = ""               # from gpu_type: 80
+
+# Four trainings share the card, as on Narval's A100s (host-bound, ~20% of an A100
+# each); unmeasured on an H100. The quarter node has room for more (24 cores,
+# 188 GiB), but fewer points per task (a larger train_array_tasks) is the measured
+# way to go faster.
+train_jobs        = 4
+train_cpus        = 24
+test_jobs         = 1                # one test per card, always (it sizes its batch to the card)
+test_cpus         = 24
+
+# --- site rules ------------------------------------------------------------------
+jobs_write_under  = "SCRATCH"
+submit_host       = "trig-login01"
+
+# --- costs, for the walltime preflight ----------------------------------------------
+# NOT MEASURED on Trillium: Narval's A100 figures (clusters/narval.toml), kept as the
+# conservative estimate (training is host-bound, so the H100 is unlikely to be
+# slower). Replace them with the first run's numbers: each point prints
+# "Training: N gradients (...) in X s" to its stdout under cluster/logs/.
+seconds_per_epoch_tanh_wave     = 144
+seconds_per_epoch_enriched_wave = 300
+seconds_per_test                = 150
+job_startup_seconds             = 900

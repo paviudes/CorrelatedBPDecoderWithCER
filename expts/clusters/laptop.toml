@@ -8,18 +8,22 @@
 # GPU request below only fill them in. What does matter here:
 #   heap_size_hint  goes into every julia command (2G: four processes share 16 GB)
 #   mem_per_gpu     the machine's RAM, checked against train_jobs x heap_size_hint
+#   julia_module    names the laptop's Julia (1.13), whose depot cache is checked
+#                   when JULIA_DEPOT_PATH is set
 # The walltime preflight runs against the sweep file's (wide) walltimes.
 # =============================================================================
 
 account_gpu       = "def-jemerson_gpu"
 email             = "dsannamo@uwaterloo.ca"
-julia_module      = "julia/1.12.5"
+stdenv_module     = ""
+julia_module      = "julia/1.13.1"
 cuda_module       = "cuda"
 heap_size_hint    = "2G"
 
 gpu_type          = "a100"
 gpu_request_style = "auto"
 n_gpus_per_node   = 1
+request_cpus_and_memory = true
 mem_per_gpu       = "16G"        # this machine's unified memory
 vram_per_gpu      = "6"          # run_local.sh's default GPU_MEMORY (--gpu-memory)
 
@@ -27,6 +31,9 @@ train_jobs        = 4            # 4 performance cores (run_local.sh --jobs sets
 train_cpus        = 4
 test_jobs         = 1
 test_cpus         = 4
+
+jobs_write_under  = ""
+submit_host       = ""
 
 seconds_per_epoch_tanh_wave     = 144
 seconds_per_epoch_enriched_wave = 300

@@ -43,16 +43,36 @@ if [ -n "${SLURM_JOB_ID:-}" ]; then
     exit 1
 fi
 
+# Trillium: the CPU login nodes (tri-login*) are Zen 5, the GPU nodes Zen 4, and
+# Julia compiles its caches for the CPU it runs on -- caches built here could be
+# rejected on the GPU nodes and rebuilt inside the jobs, which is the cold-depot
+# failure of 2026-10-22. The GPU login node has the GPU nodes' CPU and an H100.
+case "$(hostname -s 2>/dev/null || hostname)" in
+    tri-login*)
+        echo "ERROR: this is a Trillium CPU login node; warm the depot on the GPU login node:" >&2
+        echo "    ssh trig-login01        (or log in to trillium-gpu.alliancecan.ca)" >&2
+        exit 1 ;;
+esac
+
+# The depot the sweep's jobs will use: JULIA_DEPOT_PATH as this shell has it, else
+# $SCRATCH/.julia followed by Julia's bundled depots (the trailing ":"). That is also
+# what sweep_hyperparams.sh writes into the jobs, so run the two in the same shell.
+# (Until 2026-10-27 this fell back to $HOME/.julia whenever $SCRATCH/.julia did not
+# exist yet -- on a new cluster, a depot the jobs never read, and on Trillium one they
+# cannot write.)
 if [ -z "${JULIA_DEPOT_PATH:-}" ]; then
-    if [ -n "${SCRATCH:-}" ] && [ -d "$SCRATCH/.julia" ]; then
-        export JULIA_DEPOT_PATH="$SCRATCH/.julia"
+    if [ -n "${SCRATCH:-}" ]; then
+        mkdir -p "$SCRATCH/.julia"
+        export JULIA_DEPOT_PATH="$SCRATCH/.julia:"
     else
         export JULIA_DEPOT_PATH="$HOME/.julia"
     fi
 fi
 
 if ! command -v julia >/dev/null; then
-    echo "no julia on PATH — 'module load julia/1.12.5' first" >&2
+    echo "no julia on PATH — load the cluster's modules first, e.g." >&2
+    echo "    module load julia/1.12.5                              (Narval)" >&2
+    echo "    module load StdEnv/2023 julia/1.12.5 cuda/12.6        (Trillium)" >&2
     exit 1
 fi
 

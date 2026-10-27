@@ -14,9 +14,10 @@
 # USE_GPU=1), train_jobs trainings sharing one card; testing runs one process per
 # card. The test job is chained on the training job with afterok.
 
-# Every key a cluster profile holds; all of them are required (vram_per_gpu may be
-# ""). Described in clusters/narval.toml.
-CLUSTER_KEYS="account_gpu email julia_module cuda_module heap_size_hint gpu_type gpu_request_style n_gpus_per_node mem_per_gpu vram_per_gpu train_jobs train_cpus test_jobs test_cpus seconds_per_epoch_tanh_wave seconds_per_epoch_enriched_wave seconds_per_test job_startup_seconds"
+# Every key a cluster profile holds; all of them are required (account_gpu,
+# stdenv_module, vram_per_gpu, jobs_write_under and submit_host may be ""). Described
+# in clusters/narval.toml; clusters/trillium.toml uses the site-specific ones.
+CLUSTER_KEYS="account_gpu email stdenv_module julia_module cuda_module heap_size_hint gpu_type gpu_request_style n_gpus_per_node request_cpus_and_memory mem_per_gpu vram_per_gpu train_jobs train_cpus test_jobs test_cpus jobs_write_under submit_host seconds_per_epoch_tanh_wave seconds_per_epoch_enriched_wave seconds_per_test job_startup_seconds"
 
 cluster_value() { settings_value "$CLUSTER_FILE" "$1"; }
 
@@ -28,33 +29,46 @@ megabytes_of() {   # <size like 4G, 32G, 2048M>
 # ------------------------------------------------------ the cluster profile ---
 # Reads the profile named by the sweep file's `cluster` key into globals and
 # checks that one array task can hold what the jobs put on it. Sets ACCOUNT_GPU,
-# EMAIL, JULIA_MODULE, CUDA_MODULE, HEAP, GPU_TYPE, GPU_REQUEST_STYLE, N_GPUS,
-# MEM_PER_GPU, VRAM_PER_GPU, TRAIN_JOBS, TRAIN_CPUS, TEST_JOBS, TEST_CPUS, the
-# measured costs, and the derived GPU_SBATCH_LINE and GPU_MEMORY_MB.
+# EMAIL, STDENV_MODULE, JULIA_MODULE, CUDA_MODULE, HEAP, GPU_TYPE, GPU_REQUEST_STYLE,
+# N_GPUS, REQUEST_CPUS_AND_MEMORY, MEM_PER_GPU, VRAM_PER_GPU, TRAIN_JOBS, TRAIN_CPUS,
+# TEST_JOBS, TEST_CPUS, JOBS_WRITE_UNDER, SUBMIT_HOST, the measured costs, and the
+# derived GPU_SBATCH_LINE, GPU_MEMORY_MB and JOB_DEPOT_PATH.
 read_cluster_profile() {
     check_settings_keys "$CLUSTER_FILE" "cluster profile" "$CLUSTER_KEYS" "$CLUSTER_KEYS" \
         "$SWEEP_KEYS" "the sweep file ($SWEEP_FILE)" "clusters/narval.toml"
     ACCOUNT_GPU="$(cluster_value account_gpu)"
     EMAIL="$(cluster_value email)"
+    STDENV_MODULE="$(cluster_value stdenv_module)"
     JULIA_MODULE="$(cluster_value julia_module)"
     CUDA_MODULE="$(cluster_value cuda_module)"
     HEAP="$(cluster_value heap_size_hint)"
     GPU_TYPE="$(cluster_value gpu_type)"
     GPU_REQUEST_STYLE="$(cluster_value gpu_request_style)"
     N_GPUS="$(cluster_value n_gpus_per_node)"
+    REQUEST_CPUS_AND_MEMORY="$(cluster_value request_cpus_and_memory)"
     MEM_PER_GPU="$(cluster_value mem_per_gpu)"
     VRAM_PER_GPU="$(cluster_value vram_per_gpu)"
     TRAIN_JOBS="$(cluster_value train_jobs)"
     TRAIN_CPUS="$(cluster_value train_cpus)"
     TEST_JOBS="$(cluster_value test_jobs)"
     TEST_CPUS="$(cluster_value test_cpus)"
+    JOBS_WRITE_UNDER="$(cluster_value jobs_write_under)"
+    SUBMIT_HOST="$(cluster_value submit_host)"
     SECONDS_PER_EPOCH_TANH_WAVE="$(cluster_value seconds_per_epoch_tanh_wave)"
     SECONDS_PER_EPOCH_ENRICHED_WAVE="$(cluster_value seconds_per_epoch_enriched_wave)"
     SECONDS_PER_TEST="$(cluster_value seconds_per_test)"
     JOB_STARTUP_SECONDS="$(cluster_value job_startup_seconds)"
 
+    case "$REQUEST_CPUS_AND_MEMORY" in
+        true|false) ;;
+        *) echo "request_cpus_and_memory = '$REQUEST_CPUS_AND_MEMORY' in $CLUSTER_PROFILE: use true or false." >&2; exit 1 ;;
+    esac
+    if [ -n "$JOBS_WRITE_UNDER" ] && ! echo "$JOBS_WRITE_UNDER" | grep -qE '^[A-Za-z_][A-Za-z0-9_]*$'; then
+        echo "jobs_write_under = '$JOBS_WRITE_UNDER' in $CLUSTER_PROFILE: the NAME of an environment variable, e.g. SCRATCH." >&2
+        exit 1
+    fi
     local text_key
-    for text_key in account_gpu email julia_module cuda_module heap_size_hint gpu_type mem_per_gpu; do
+    for text_key in email julia_module cuda_module heap_size_hint gpu_type mem_per_gpu; do
         if [ -z "$(cluster_value "$text_key")" ]; then
             echo "$text_key is empty in $CLUSTER_PROFILE." >&2
             exit 1
@@ -123,15 +137,17 @@ read_cluster_profile() {
 
     # Nibi requests MIG instances with "--gpus=<name>:1" and full cards with
     # "--gpus-per-node=<name>:<n>". A MIG type is one naming a <k>g.<m>gb slice.
+    # Trillium takes a bare count, "--gpus-per-node=1" (1 or 4; no type, no MIG).
     case "$GPU_REQUEST_STYLE" in
         gpus-per-node) GPU_SBATCH_LINE="#SBATCH --gpus-per-node=${GPU_TYPE}:${N_GPUS}" ;;
         gpus)          GPU_SBATCH_LINE="#SBATCH --gpus=${GPU_TYPE}:${N_GPUS}" ;;
+        count)         GPU_SBATCH_LINE="#SBATCH --gpus-per-node=${N_GPUS}" ;;
         auto)
             case "$GPU_TYPE" in
                 *g.*gb) GPU_SBATCH_LINE="#SBATCH --gpus=${GPU_TYPE}:${N_GPUS}" ;;
                 *)      GPU_SBATCH_LINE="#SBATCH --gpus-per-node=${GPU_TYPE}:${N_GPUS}" ;;
             esac ;;
-        *) echo "unknown gpu_request_style '$GPU_REQUEST_STYLE' in $CLUSTER_PROFILE: use auto, gpus or gpus-per-node." >&2; exit 1 ;;
+        *) echo "unknown gpu_request_style '$GPU_REQUEST_STYLE' in $CLUSTER_PROFILE: use auto, gpus, gpus-per-node or count." >&2; exit 1 ;;
     esac
 
     # 85% of one card, shared by the test processes assigned to it.
@@ -140,6 +156,96 @@ read_cluster_profile() {
         jobs_per_gpu=1
     fi
     GPU_MEMORY_MB=$(( VRAM_PER_GPU * 1024 * 85 / (100 * jobs_per_gpu) ))
+
+    # The Julia depot the jobs use, decided HERE and written into the job scripts:
+    # JULIA_DEPOT_PATH as this shell has it (the shell that ran precompile_depot.sh),
+    # else $SCRATCH/.julia followed by Julia's bundled depots (the trailing ":"), which
+    # is precompile_depot.sh's own default. Written in rather than left to the job's
+    # environment, because a cluster may start jobs with a fresh one (Trillium's
+    # debugjob does) and a job that falls back to another depot recompiles everything
+    # on the compute node -- the 2026-10-22 failure. Empty when this shell has neither
+    # variable (a laptop): the jobs then decide at run time, as before.
+    JOB_DEPOT_PATH=""
+    if [ -n "${JULIA_DEPOT_PATH:-}" ]; then
+        JOB_DEPOT_PATH="$JULIA_DEPOT_PATH"
+    elif [ -n "${SCRATCH:-}" ]; then
+        JOB_DEPOT_PATH="$SCRATCH/.julia:"
+    fi
+}
+
+# ------------------------------------------------ where jobs may write, and from where to submit ---
+# On a cluster whose compute nodes can write under one file system only (Trillium:
+# $HOME and $PROJECT are read-only from jobs, jobs_write_under = "SCRATCH"), refuses a
+# sweep whose run directory or Julia depot lies elsewhere: the jobs write the stage-out,
+# their .out/.err files and the depot lock into the run directory, and Julia writes
+# its caches into the depot. A submit directory elsewhere only gets a warning (the
+# jobs cd there and read the code, but write nothing in it).
+path_is_under() {   # <path> <root>
+    case "$1/" in
+        "$2"/*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+check_job_write_locations() {
+    if [ -z "$JOBS_WRITE_UNDER" ]; then
+        return 0
+    fi
+    local writable_root=""
+    eval "writable_root=\"\${$JOBS_WRITE_UNDER:-}\""
+    if [ -z "$writable_root" ] || [ ! -d "$writable_root" ]; then
+        echo "jobs_write_under = \"$JOBS_WRITE_UNDER\" ($CLUSTER_PROFILE), but \$$JOBS_WRITE_UNDER is not a directory" >&2
+        echo "  in this shell. Generate this sweep on $CLUSTER_NAME, where it is." >&2
+        exit 1
+    fi
+    local resolved_root resolved_run_directory depot resolved_depot problems=""
+    resolved_root="$(cd "$writable_root" && pwd -P)"
+    resolved_run_directory="$(cd "$WORKDIR/$CODENAME" && pwd -P)"
+    if ! path_is_under "$resolved_run_directory" "$resolved_root"; then
+        problems="${problems}    run directory  $resolved_run_directory
+"
+    fi
+    depot="${JOB_DEPOT_PATH%%:*}"
+    resolved_depot="$depot"
+    if [ -d "$depot" ]; then
+        resolved_depot="$(cd "$depot" && pwd -P)"
+    fi
+    if [ -z "$depot" ]; then
+        problems="${problems}    Julia depot    (none: JULIA_DEPOT_PATH and SCRATCH are both unset)
+"
+    elif ! path_is_under "$resolved_depot" "$resolved_root" && ! path_is_under "$depot" "$writable_root"; then
+        problems="${problems}    Julia depot    $depot   (the first entry of JULIA_DEPOT_PATH)
+"
+    fi
+    if [ -n "$problems" ]; then
+        echo "On $CLUSTER_NAME the jobs can write only under \$$JOBS_WRITE_UNDER ($writable_root), but these are elsewhere:" >&2
+        printf '%s' "$problems" >&2
+        echo "  Put the run directory there (the repository, or its data/ as a link to" >&2
+        echo "  \$$JOBS_WRITE_UNDER/...), and the depot: unset JULIA_DEPOT_PATH for \$$JOBS_WRITE_UNDER/.julia, or" >&2
+        echo "  point it there. Warm it with misc/precompile_depot.sh in the same shell." >&2
+        exit 1
+    fi
+    if ! path_is_under "$(pwd -P)" "$resolved_root"; then
+        echo "[hp_sweep] note: you are in $(pwd -P), outside \$$JOBS_WRITE_UNDER; $CLUSTER_NAME's documentation asks" >&2
+        echo "           for jobs to be submitted from \$$JOBS_WRITE_UNDER. The jobs write nothing here, but" >&2
+        echo "           moving the repository there is the safe choice." >&2
+    fi
+}
+
+# Some clusters take GPU jobs only from one login node (Trillium: trig-login01).
+check_submit_host() {
+    if [ -z "$SUBMIT_HOST" ]; then
+        return 0
+    fi
+    local this_host
+    this_host="$(hostname -s 2>/dev/null || hostname)"
+    case "$this_host" in
+        $SUBMIT_HOST) ;;
+        *)
+            echo "[hp_sweep] note: $CLUSTER_NAME takes these GPU jobs from $SUBMIT_HOST; this is $this_host." >&2
+            echo "           Run the sbatch lines (and misc/precompile_depot.sh) there." >&2
+            ;;
+    esac
 }
 
 # ------------------------------------------------------- stage-in lists ---
@@ -273,19 +379,16 @@ walltime_preflight() {
 # for the same cache. On 2026-10-22 (hp_2026-10-22_16-25-01) the owner had not
 # finished an hour in, all 8 points were still at that line, and nothing was
 # trained. Judged by modification times (a pull stamps the files it changes), so it
-# warns rather than refuses. The depot is the one the job preamble picks: the first
-# entry of JULIA_DEPOT_PATH, else $SCRATCH/.julia; with neither (a laptop) there is
-# nothing to check.
+# warns rather than refuses. The depot is the one written into the jobs (the first
+# entry of JOB_DEPOT_PATH, see read_cluster_profile); with none (a laptop) there is
+# nothing to check. A depot with no cache at all -- a new cluster before
+# misc/precompile_depot.sh -- is warned about too: offline, the jobs cannot even
+# install the packages.
 depot_preflight() {
-    local job_depot=""
-    if [ -n "${JULIA_DEPOT_PATH:-}" ]; then
-        job_depot="${JULIA_DEPOT_PATH%%:*}"
-    elif [ -n "${SCRATCH:-}" ]; then
-        job_depot="$SCRATCH/.julia"
-    fi
+    local job_depot="${JOB_DEPOT_PATH%%:*}"
     local job_julia_minor
     job_julia_minor="$(echo "$JULIA_MODULE" | sed -nE 's|^julia/([0-9]+\.[0-9]+).*$|\1|p')"
-    if [ -z "$job_depot" ] || [ -z "$job_julia_minor" ] || [ ! -d "$job_depot/compiled/v$job_julia_minor" ]; then
+    if [ -z "$job_depot" ] || [ -z "$job_julia_minor" ]; then
         return 0
     fi
     local project_root job_manifest newest_source newest_cache
@@ -307,7 +410,8 @@ depot_preflight() {
             echo "           $newest_cache." >&2
         fi
         echo "           The jobs would compile it on the compute nodes, which on 2026-10-22 took" >&2
-        echo "           longer than the whole job. On this login node, first:" >&2
+        echo "           longer than the whole job. On ${SUBMIT_HOST:-this login node}, from expts/, first:" >&2
+        echo "               module load ${STDENV_MODULE:+$STDENV_MODULE }$JULIA_MODULE $CUDA_MODULE" >&2
         echo "               bash misc/precompile_depot.sh" >&2
         echo >&2
     fi
@@ -347,9 +451,26 @@ check_job_heredocs() {
 # Sets GPU_PREAMBLE_FILE (a temporary file; write_job_scripts removes it).
 write_gpu_preamble() {
     GPU_PREAMBLE_FILE="$(mktemp)"
-    cat > "$GPU_PREAMBLE_FILE" <<EOF
-module load $JULIA_MODULE
-module load $CUDA_MODULE
+    # The modules: the standard environment first where a cluster does not load it
+    # at login (Trillium), then Julia and CUDA.
+    {
+        if [ -n "$STDENV_MODULE" ]; then
+            echo "module load $STDENV_MODULE"
+        fi
+        echo "module load $JULIA_MODULE"
+        echo "module load $CUDA_MODULE"
+    } > "$GPU_PREAMBLE_FILE"
+    # The depot: the one decided at generation (read_cluster_profile), written in.
+    if [ -n "$JOB_DEPOT_PATH" ]; then
+        cat >> "$GPU_PREAMBLE_FILE" <<EOF
+# DEPOT: the one misc/precompile_depot.sh warmed, as the shell that generated this
+# job saw it (JULIA_DEPOT_PATH, else \$SCRATCH/.julia then Julia's bundled depots).
+# Written in, not inherited: a job started with a fresh environment would otherwise
+# fall back to another depot and recompile everything on the compute node.
+export JULIA_DEPOT_PATH="$JOB_DEPOT_PATH"
+EOF
+    else
+        cat >> "$GPU_PREAMBLE_FILE" <<EOF
 # DEPOT. Falling back to \$HOME here is how a depot gets silently corrupted: on
 # Nibi /home is a ~50GB quota and a CUDA+Enzyme depot will exhaust it mid-extract,
 # leaving packages with some source files and not others (that is what produced
@@ -361,9 +482,17 @@ if [ -z "\${JULIA_DEPOT_PATH:-}" ]; then
         echo "  is small and a partial extraction there corrupts packages silently." >&2
         exit 1
     fi
-    export JULIA_DEPOT_PATH="\${SCRATCH}/.julia"
+    export JULIA_DEPOT_PATH="\${SCRATCH}/.julia:"
 fi
+EOF
+    fi
+    cat >> "$GPU_PREAMBLE_FILE" <<EOF
 echo "[\$PHASE task \$TASK] depot: \$JULIA_DEPOT_PATH"
+# GNU parallel runs the points; checked before the depot work, which takes minutes.
+if ! command -v parallel >/dev/null 2>&1; then
+    echo "ERROR: GNU parallel is not on PATH on this node." >&2
+    exit 1
+fi
 export JULIA_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 JULIA_PKG_OFFLINE=true
 # Both jobs use the card: training runs the hand-written backward pass on it
 # (manual_backprop = true in every point's TOML), testing the forward pass.
@@ -456,26 +585,39 @@ echo "[\$PHASE task \$TASK] CUDA functional: \$(date +%T)"
 EOF
 }
 
+# The #SBATCH header of a job script: one array task = one card. A cluster that
+# schedules cores and memory with each card (Trillium: a quarter node, 24 cores and
+# 188 GiB, memory requests ignored) gets no --ntasks/--cpus-per-task/--mem-per-gpu
+# lines (request_cpus_and_memory = false); an empty account_gpu leaves the account
+# to the scheduler.
+sbatch_header() {   # <job name> <output stem, before .out/.err> <array tasks> <cpus per task> <walltime>
+    echo "#!/bin/bash"
+    if [ -n "$ACCOUNT_GPU" ]; then
+        echo "#SBATCH --account=$ACCOUNT_GPU"
+    fi
+    echo "#SBATCH --job-name=$1"
+    echo "#SBATCH --output=$2.out"
+    echo "#SBATCH --error=$2.err"
+    echo "#SBATCH --array=0-$(( $3 - 1 ))"
+    echo "$GPU_SBATCH_LINE"
+    echo "#SBATCH --nodes=1"
+    if [ "$REQUEST_CPUS_AND_MEMORY" = "true" ]; then
+        echo "#SBATCH --ntasks=1"
+        echo "#SBATCH --cpus-per-task=$4"
+        echo "#SBATCH --mem-per-gpu=$MEM_PER_GPU"
+    fi
+    echo "#SBATCH --time=$5"
+    echo "#SBATCH --signal=B:TERM@600"
+    echo "#SBATCH --mail-type=ALL"
+    echo "#SBATCH --mail-user=$EMAIL"
+}
+
 # ------------------------------------------------------------ SLURM: train ---
 # The training job: one array task per slice of TRAIN_CMDS (interleaved), each on
 # one card with train_jobs trainings sharing it. Writes SLURM_TRAIN.
 write_train_job() {
-    cat > "$SLURM_TRAIN" <<EOF
-#!/bin/bash
-#SBATCH --account=$ACCOUNT_GPU
-#SBATCH --job-name=hptrain_$TS
-#SBATCH --output=$CLUSTER_DIR/hp_sweep_train_${TS}_task%a.out
-#SBATCH --error=$CLUSTER_DIR/hp_sweep_train_${TS}_task%a.err
-#SBATCH --array=0-$((TRAIN_ARRAY - 1))
-${GPU_SBATCH_LINE}
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=$TRAIN_CPUS
-#SBATCH --mem-per-gpu=$MEM_PER_GPU
-#SBATCH --time=$TRAIN_WALL
-#SBATCH --signal=B:TERM@600
-#SBATCH --mail-type=ALL
-#SBATCH --mail-user=$EMAIL
+    sbatch_header "hptrain_$TS" "$CLUSTER_DIR/hp_sweep_train_${TS}_task%a" "$TRAIN_ARRAY" "$TRAIN_CPUS" "$TRAIN_WALL" > "$SLURM_TRAIN"
+    cat >> "$SLURM_TRAIN" <<EOF
 set -uo pipefail
 # NOTE: no backticks in this heredoc -- it is unquoted (<<EOF), so backticks are
 # command substitution and bash would try to RUN whatever they enclose.
@@ -618,22 +760,8 @@ EOF
 # time on its card, after checking every model of the sweep is staged in. Writes
 # SLURM_TEST.
 write_test_job() {
-    cat > "$SLURM_TEST" <<EOF
-#!/bin/bash
-#SBATCH --account=$ACCOUNT_GPU
-#SBATCH --job-name=hptest_$TS
-#SBATCH --output=$CLUSTER_DIR/hp_sweep_test_${TS}_task%a.out
-#SBATCH --error=$CLUSTER_DIR/hp_sweep_test_${TS}_task%a.err
-#SBATCH --array=0-$((TEST_ARRAY - 1))
-${GPU_SBATCH_LINE}
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=$TEST_CPUS
-#SBATCH --mem-per-gpu=$MEM_PER_GPU
-#SBATCH --time=$TEST_WALL
-#SBATCH --signal=B:TERM@600
-#SBATCH --mail-type=ALL
-#SBATCH --mail-user=$EMAIL
+    sbatch_header "hptest_$TS" "$CLUSTER_DIR/hp_sweep_test_${TS}_task%a" "$TEST_ARRAY" "$TEST_CPUS" "$TEST_WALL" > "$SLURM_TEST"
+    cat >> "$SLURM_TEST" <<EOF
 set -uo pipefail
 # NOTE: no backticks in this heredoc -- it is unquoted (<<EOF), so backticks are
 # command substitution and bash would try to RUN whatever they enclose.

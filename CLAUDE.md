@@ -2231,6 +2231,64 @@ blocks; enriched models coset exact, convergence ±10%.
   points with --heap-size-hint=2G and stops when the generator refuses. Not run under
   macOS's bash 3.2 (none here); no bash-4 constructs are used.
 
+## Trillium (SciNet), GPU subcluster: `clusters/trillium.toml` (added 2026-10-27)
+
+- **Why**: Narval's (and Rorqual's) compute nodes are down for electrical work from
+  2026-10-27 05:00 to 2026-10-30 17:00 ET (status.alliancecan.ca incident 1738; queued
+  jobs stay queued). The σ = 0 sweep (`sweeps/sig0_matched_ramp_commit.toml`, now
+  `cluster = "trillium"`) moved to Trillium; its Narval jobs 7495548 / 7495550 are
+  still queued there and would run the same sweep again after the 30th.
+- **What differs on Trillium** (from the Alliance "Trillium" and "Trillium Quickstart"
+  pages, 2026): GPU nodes have 4 H100 SXM 80 GB and 96 Zen 4 cores; a job asks for
+  exactly 1 GPU (a quarter node: 24 cores, 188 GiB, handed out with the card) or a
+  multiple of 4, as a bare `--gpus-per-node=1` (no type, no MIG); memory requests are
+  ignored; **$HOME and $PROJECT are read-only on compute nodes**, so job output, the
+  run directory and the depot must be on $SCRATCH; $SLURM_TMPDIR is a RAM disk; no
+  internet on compute nodes; StdEnv/2023 is not loaded at login; GPU jobs are
+  submitted from the GPU login node trig-login01 (`ssh trillium-gpu.alliancecan.ca`),
+  whose CPU (Zen 4) and H100s match the GPU nodes (the CPU login nodes are Zen 5);
+  walltime 15 min–24 h; the account is chosen automatically (RAC, else RAS).
+- **New profile keys** (every profile states them; narval.toml's values reproduce its
+  job headers byte for byte): `stdenv_module` (loaded before julia; "StdEnv/2023"),
+  `request_cpus_and_memory` (false: no `--ntasks/--cpus-per-task/--mem-per-gpu`
+  lines; train_cpus / test_cpus = 24 and mem_per_gpu = "188G" then only feed the
+  checks), `jobs_write_under` ("SCRATCH": refuses a run directory or depot elsewhere,
+  notes a submit directory elsewhere), `submit_host` ("trig-login01": warns on any
+  other host); `gpu_request_style = "count"`; `account_gpu = ""` omits `--account`.
+  Costs are Narval's A100 figures until measured there.
+- **The depot is now written into the job scripts**: JULIA_DEPOT_PATH of the
+  generating shell, else `$SCRATCH/.julia:` (trailing ":" = Julia's bundled depots
+  after it), instead of being taken from the job's environment, which a cluster may
+  start fresh. On Narval that bakes the user's own `/scratch/debankan/.julia::` (the
+  value every Narval .out showed); with neither variable (the laptop) the old runtime
+  block stays. `misc/precompile_depot.sh` uses the same default -- it used to fall
+  back to $HOME/.julia whenever $SCRATCH/.julia did not exist yet, i.e. on any new
+  cluster a depot the jobs never read (and on Trillium one they cannot write) -- and
+  refuses Trillium's CPU login nodes (caches compiled for Zen 5 may be rejected on the
+  Zen 4 GPU nodes and rebuilt inside the jobs). The depot check now also warns about a
+  depot with no cache at all, printing the module line and where to run the script.
+  Both jobs check for GNU parallel before the depot work.
+- **Manifest**: the repository tracks only `Manifest.toml` (Julia 1.13.1, the laptop's);
+  the `Manifest-v1.12.toml` that CLAUDE.md asks for was never committed (Narval's
+  copy, if any, is untracked). So on Trillium precompile_depot.sh first refuses and
+  prints `cp Manifest.toml Manifest-v1.12.toml; julia --project=. -e 'using Pkg;
+  Pkg.resolve()'`. (The pull conflict on Trillium was its local Manifest.toml.)
+- **Steps on Trillium**: repository under $SCRATCH (or data/ linked there); on
+  trig-login01 from expts/: `module load StdEnv/2023 julia/1.12.5 cuda/12.6` (check
+  `module spider julia`), `bash misc/precompile_depot.sh` (manifest step first),
+  `bash sweep_hyperparams.sh sweeps/sig0_matched_ramp_commit.toml`, the two sbatch
+  lines, in the same shell.
+- **Verified 2026-10-27** (stubs, fake SCRATCH and hostname): the Narval profile's
+  point TOMLs, command, model and stage lists are byte-identical to the previous
+  generator's, and its job scripts differ only in the baked depot line and the
+  parallel check; the Trillium headers are exactly job name, output, error, array,
+  `--gpus-per-node=1`, `--nodes=1`, time, signal, mail; 15/15 + 8/8 Trillium tasks and
+  15/15 + 8/8 Narval tasks exit 0 (60 models, 60 matched results each) with neither
+  JULIA_DEPOT_PATH nor SCRATCH in the jobs' environment; refused: run directory or
+  depot outside $SCRATCH, $SCRATCH unset; noted: CPU login node, repository outside
+  $SCRATCH with data/ linked in; precompile_depot.sh refuses tri-login*, then the 1.13
+  manifest, then warms `$SCRATCH/.julia:`; run_local.sh --dry-run unchanged.
+
 ## Run tags (changed 2026-10-09)
 
 - **The run tag is `_<arm>_<optimizer tag>` and nothing else** — `_cer_init_0p1`,

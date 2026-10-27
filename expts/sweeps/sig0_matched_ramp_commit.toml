@@ -8,11 +8,15 @@
 # test_<key> share one error model. Every model here is tested only on its own
 # training key (test_keys = []); the sample index is fixed at s = 1.
 #
-# On Narval, from expts/ (warm the depot first if src/ changed since the last
-# precompile):
+# On Trillium's GPU login node (ssh trillium-gpu.alliancecan.ca, i.e. trig-login01),
+# from expts/ of the repository under $SCRATCH (warm the depot first, and again
+# whenever src/ changed since the last precompile):
+#     module load StdEnv/2023 julia/1.12.5 cuda/12.6
 #     bash misc/precompile_depot.sh
 #     bash sweep_hyperparams.sh sweeps/sig0_matched_ramp_commit.toml
 # then the two sbatch lines it prints (training, then testing chained on it).
+# (Moved from Narval on 2026-10-27, its compute nodes being down until Oct 30;
+# cluster = "narval" runs it there again.)
 #
 # POINTS: 3 rates x {tanh, enriched} x {ramp + first, ramp + last} x 5 seeds = 60
 # trainings and 60 tests. Both check nodes are CER arms (use_CER = true: the key's
@@ -38,16 +42,16 @@
 # AFTERWARDS, one rate at a time (the first arm is the reference; the weights check
 # is against it, hence the second line for the enriched pair):
 #     for key in p_0.0007_sig_0.0_s_1 p_0.0011_sig_0.0_s_1 p_0.0015_sig_0.0_s_1; do
-#         python3 misc/compare_sweep_arms.py --workdir 72q_BB_cycles_1_sweep --train-key $key \
+#         python3 misc/compare_sweep_arms.py --workdir 72q_BB_cycles_1_sweep_filtered --train-key $key \
 #             --arms _cer_ramplast _cer_rampfirst _cer_enr_ramplast _cer_enr_rampfirst
-#         python3 misc/compare_sweep_arms.py --workdir 72q_BB_cycles_1_sweep --train-key $key \
+#         python3 misc/compare_sweep_arms.py --workdir 72q_BB_cycles_1_sweep_filtered --train-key $key \
 #             --arms _cer_enr_ramplast _cer_enr_rampfirst
 #     done
 #
 # KEEP EACH ARRAY ON ONE LINE: the generator reads a key with grep | head -1.
 # =============================================================================
 
-cluster          = "narval"          # clusters/narval.toml: account, modules, one A100 per task
+cluster          = "trillium"        # clusters/trillium.toml: one H100 (a quarter node) per task
 workdir          = "./../data"
 codename         = "72q_BB_cycles_1_sweep_filtered"
 

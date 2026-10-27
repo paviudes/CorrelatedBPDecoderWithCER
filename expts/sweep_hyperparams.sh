@@ -96,6 +96,7 @@ source "$SCRIPT_DIR/hp_sweep/local_smoke.sh"
 read_sweep_file              # sweep.sh:   what to run, and the job sizes
 read_cluster_profile         # cluster.sh: where it runs
 check_run_directory          # sweep.sh:   the run directory and its base TOML
+check_job_write_locations    # cluster.sh: run directory and depot where jobs can write
 read_base_hyperparameters    # sweep.sh:   what every point inherits
 check_dataset_files          # sweep.sh:   every input the points read is there
 
@@ -134,6 +135,7 @@ warn_existing_models
 # ---------------------------------------------------------- 3. preflights ---
 walltime_preflight           # cluster.sh: refuses a job that cannot finish
 depot_preflight              # cluster.sh: warns about a stale Julia depot
+check_submit_host            # cluster.sh: warns when this is not the node to submit from
 
 # --------------------------------------------------------------- 4. write ---
 write_stage_lists            # cluster.sh
@@ -162,17 +164,29 @@ echo "$OPTIMIZER_ARMS" | sed '1d; s/^/               /'
 echo "  layers    -> loss_layer_selection=$LOSS_LAYER_SELECTION  commit_layer_rule=$COMMIT_LAYER_RULE  (the default; an optimizer arm may override either)"
 echo "  cluster   -> $CLUSTER_NAME ($CLUSTER_PROFILE)"
 echo "  network   -> $NLAYERS layers (fixed), manual_backprop = true (hand-written gradient)"
-echo "  train     -> $ACCOUNT_GPU: array 0-$((TRAIN_ARRAY-1)) ($TRAIN_ARRAY tasks x ${N_GPUS}x $GPU_TYPE, $TRAIN_CPUS cpu,"
-echo "               --mem-per-gpu=$MEM_PER_GPU host ram), $TRAIN_JOBS trainings at a time per card, USE_GPU=1, $TRAIN_WALL"
-echo "  test      -> $ACCOUNT_GPU: array 0-$((TEST_ARRAY-1)) ($TEST_ARRAY tasks x ${N_GPUS}x $GPU_TYPE (${VRAM_PER_GPU}G vram), $TEST_CPUS cpu),"
-echo "               --mem-per-gpu=$MEM_PER_GPU host ram, GPU_MEMORY=${GPU_MEMORY_MB}M, $TEST_JOBS at a time, USE_GPU=1, $TEST_WALL"
+ACCOUNT_SHOWN="${ACCOUNT_GPU:-the default account}"
+HOST_RAM_SHOWN="--mem-per-gpu=$MEM_PER_GPU host ram"
+if [ "$REQUEST_CPUS_AND_MEMORY" = "false" ]; then
+    HOST_RAM_SHOWN="$MEM_PER_GPU host ram, both with the card"
+fi
+echo "  train     -> $ACCOUNT_SHOWN: array 0-$((TRAIN_ARRAY-1)) ($TRAIN_ARRAY tasks x ${N_GPUS}x $GPU_TYPE, $TRAIN_CPUS cpu,"
+echo "               $HOST_RAM_SHOWN), $TRAIN_JOBS trainings at a time per card, USE_GPU=1, $TRAIN_WALL"
+echo "  test      -> $ACCOUNT_SHOWN: array 0-$((TEST_ARRAY-1)) ($TEST_ARRAY tasks x ${N_GPUS}x $GPU_TYPE (${VRAM_PER_GPU}G vram), $TEST_CPUS cpu),"
+echo "               $HOST_RAM_SHOWN, GPU_MEMORY=${GPU_MEMORY_MB}M, $TEST_JOBS at a time, USE_GPU=1, $TEST_WALL"
+if [ -n "$JOB_DEPOT_PATH" ]; then
+    echo "  depot     -> JULIA_DEPOT_PATH=$JOB_DEPOT_PATH (written into the jobs)"
+fi
 echo "  commands  -> $TRAIN_CMDS"
 echo "               $TEST_CMDS"
 echo
 # The first point's weights file: the CER arm of the first data set, seed,
 # optimizer arm and check-node arm (emit_all_points writes it first).
 FIRST_MODEL="$(head -1 "$EXPECTED_MODELS")"
-echo "submit — TRAIN, then TEST chained on it (both GPU, $ACCOUNT_GPU):"
+SUBMIT_FROM=""
+if [ -n "$SUBMIT_HOST" ]; then
+    SUBMIT_FROM=", from $SUBMIT_HOST and from this directory"
+fi
+echo "submit — TRAIN, then TEST chained on it (both GPU, $ACCOUNT_SHOWN$SUBMIT_FROM):"
 echo
 echo "    TRAIN_ID=\$(sbatch --parsable $SLURM_TRAIN)"
 echo "    sbatch --dependency=afterok:\$TRAIN_ID --kill-on-invalid-dep=yes $SLURM_TEST"

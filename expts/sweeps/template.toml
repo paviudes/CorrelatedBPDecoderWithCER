@@ -18,7 +18,9 @@
 # keys).
 # =============================================================================
 
-# The cluster profile: clusters/<cluster>.toml.
+# The cluster profile: clusters/<cluster>.toml -- narval, trillium (the GPU
+# subcluster: run from the repository under $SCRATCH, on trig-login01), or laptop
+# (misc/run_local.sh writes that one itself).
 cluster          = "narval"
 
 # The run directory is <workdir>/<codename>; workdir is relative to expts/, where
