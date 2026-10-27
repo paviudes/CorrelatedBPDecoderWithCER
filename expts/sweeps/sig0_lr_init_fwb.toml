@@ -1,0 +1,115 @@
+# =============================================================================
+# sig0_lr_init_fwb.toml -- sweep_hyperparams.sh settings: can a different learning
+# rate, initial spread or training-set weighting make training improve the decoder,
+# with and without the pair couplings?
+#
+# Why (2026-10-27, the sigma = 0 matched sweep): the trained models are barely better
+# than the same decoder with every weight 1 -- CER-tanh by 6-8%, CER-enriched by
+# nothing; the 5 seeds end 0.12 RMS apart in weight space with equal failure counts;
+# each message weight moved ~0.06 RMS. This sweep varies the three knobs that set
+# where training starts, what it sees and how far it moves:
+#     initial_conditions_scale   0.1, 0.7          weights drawn from U(1 - s, 1 + s)
+#     failure_weight_boundary    1, 2, 3, 4        error weights of the 10k training set ~ Poisson(lambda)
+#     learning_rate              0.001, 0.01, 0.1
+# = 24 optimizer arms x 2 check nodes x 3 seeds = 144 trainings, each tested once
+# (on its own key).
+#
+# CHECK NODES, both with the key's per-qubit CER rates as priors (median -> 0.1):
+#   tanh                       priors only. At sigma = 0 the 72 rates are nearly flat
+#                              (max/min ~1.3), so this is close to a plain decoder.
+#   enriched:alpha_star:learn  priors + the key's 540 within-check pair couplings in
+#                              the check factor, alpha from alpha* = 0.4875 of this key,
+#                              learned. The only arm the couplings enter.
+#
+# One dataset, p_0.0015_sig_0.0_s_1 (sigma = 0: train and test share one error
+# model): the most failures per test of the three sigma = 0 keys (~1700-1900 per
+# 10^6; seed CV 2.2% tanh, 1.1% enriched for the existing models) and the most
+# failing samples in training. Ramp loss (warmup 0, k = 3) with commit FIRST (tanh's
+# better readout; at this key the enriched node's two readouts differ by 0.4%, n.s.).
+# Everything else from the run's hyperparams_baseline.toml: 10 epochs x 500 updates x
+# batch 20, training_samples = 10000, weight_decay 1e-4, the hand-written gradient on
+# the GPU. At one seed every arm starts from the same uniform draws (scaled by s),
+# and arms with the same lambda train on the same 10k set.
+#
+# The FIRST arm, ic0p1_fwb3_lr0p001, is the baseline's own settings: at each seed it
+# should reproduce this key's existing _cer_rampfirst and _cer_enr_rampfirst models
+# bit for bit (GPU training is deterministic), which AFTERWARDS checks.
+#
+# Notes:
+#   - src/train.jl builds AdamW(lr, (0.9, 0.999), weight_decay) for the message
+#     weights, so their eps is Optimisers.jl's 1e-8 whatever adam_eps says -- as for
+#     every earlier model. (alpha's own Adam gets adam_eps.)
+#   - AdamW's decay is coupled (lr x weight_decay per step): over the 5000 steps it
+#     shrinks the weights by ~0.05% at lr 0.001, ~0.5% at 0.01 and ~5% at 0.1.
+#   - lr 0.1 may roll epochs back (6 non-finite gradients in an epoch); such a point
+#     still exits 0 and writes weights, so it does not block testing. Non-finite
+#     gradients were the ENRICHED node's problem before its 2026-10-19 rewrite (8/20
+#     points at lr 1e-3 on 2026-10-05; 29/30 at lr 0.01 on 2026-09-17), none since at
+#     lr 1e-3. Count them with  bash misc/check_training_health.sh 72q_BB_cycles_1_sweep_filtered
+#   - The enriched node's GPU FORWARD (apply_enriched_checks_gpu, training and testing)
+#     is exact only while every |m_v2c| < ~70, i.e. message weights below ~2 (the
+#     existing lr 1e-3 models reach 1.35). Before trusting an enriched arm at lr 0.01
+#     or 0.1, check the largest weights_c2v_v2c in its models; above ~2, re-score them
+#     on the CPU kernel (or misc/nbp_mirror.py).
+#
+# On Trillium's GPU login node (ssh trillium-gpu.alliancecan.ca, i.e. trig-login01),
+# from expts/ of the repository under $SCRATCH:
+#     module load StdEnv/2023 julia/1.12.5 cuda/12.6
+#     export JULIA_DEPOT_PATH="$SCRATCH/.julia:"
+#     bash misc/precompile_depot.sh     # only if src/ changed since the last one
+#     bash sweep_hyperparams.sh sweeps/sig0_lr_init_fwb.toml
+# then the two sbatch lines it prints (training, then testing chained on it).
+#
+# NAMES: run tags _cer_<arm> (tanh) and _cer_enr_<arm> (enriched), after
+# train_p_0.0015_sig_0.0_s_1, so nothing already in the run directory is replaced:
+#     models/neuralbp_weights_nlayers_90_epochs_10_trained_using_train_p_0.0015_sig_0.0_s_1_cer_enr_ic0p7_fwb4_lr0p01_seed_1.json
+#     results/simulation_results_test_p_0.0015_sig_0.0_s_1_nlayers_90_epochs_10_trained_using_train_p_0.0015_sig_0.0_s_1_cer_ic0p7_fwb4_lr0p01_seed_1.csv
+#
+# AFTERWARDS, each node's arms against its existing baseline models (the reference arm,
+# first; the weights check should say "identical" for the ic0p1_fwb3_lr0p001 arm only):
+#     ARMS=$(grep '^optimizer_arms' sweeps/sig0_lr_init_fwb.toml | grep -o '"[a-z0-9_]*:' | tr -d '":')
+#     python3 misc/compare_sweep_arms.py --workdir 72q_BB_cycles_1_sweep_filtered \
+#         --train-key p_0.0015_sig_0.0_s_1 --arms _cer_rampfirst $(printf '_cer_%s ' $ARMS)
+#     python3 misc/compare_sweep_arms.py --workdir 72q_BB_cycles_1_sweep_filtered \
+#         --train-key p_0.0015_sig_0.0_s_1 --arms _cer_enr_rampfirst $(printf '_cer_enr_%s ' $ARMS)
+# (seeds 1-3: the script compares the seeds every arm has)
+#
+# KEEP EACH ARRAY ON ONE LINE: the generator reads a key with grep | head -1.
+# =============================================================================
+
+cluster          = "trillium"        # clusters/trillium.toml: one H100 (a quarter node) per task
+workdir          = "./../data"
+codename         = "72q_BB_cycles_1_sweep_filtered"
+
+# --- dataset: train on it, test on the same key ------------------------------------
+datasets         = ["p_0.0015_sig_0.0_s_1"]
+ref_datasets     = []
+test_keys        = []                # [] = each model is tested on its own training key only
+
+base_hyperparams = "hyperparams_baseline.toml"
+seeds            = [1, 2, 3]         # [1, 2, 3, 4, 5]: 240 trainings, ~55 instead of ~33 H100-hours
+
+# --- arms ----------------------------------------------------------------------
+include_nocer    = false
+single_qubit_rescale = 0.1
+check_node_arms  = ["tanh", "enriched:alpha_star:learn"]
+# The layer pair of every arm (no arm names its own).
+loss_layer_selection = "ramp"
+commit_layer_rule    = "first"
+# <tag>:<overrides>; tag = ic<s>_fwb<lambda>_lr<lr> with "." -> "p". The first arm
+# is the baseline; then lr 0.001, 0.01, 0.1, each with s = 0.1, 0.7 and lambda = 1..4.
+optimizer_arms   = ["ic0p1_fwb3_lr0p001:initial_conditions_scale=0.1,failure_weight_boundary=3,learning_rate=0.001", "ic0p1_fwb1_lr0p001:initial_conditions_scale=0.1,failure_weight_boundary=1,learning_rate=0.001", "ic0p1_fwb2_lr0p001:initial_conditions_scale=0.1,failure_weight_boundary=2,learning_rate=0.001", "ic0p1_fwb4_lr0p001:initial_conditions_scale=0.1,failure_weight_boundary=4,learning_rate=0.001", "ic0p7_fwb1_lr0p001:initial_conditions_scale=0.7,failure_weight_boundary=1,learning_rate=0.001", "ic0p7_fwb2_lr0p001:initial_conditions_scale=0.7,failure_weight_boundary=2,learning_rate=0.001", "ic0p7_fwb3_lr0p001:initial_conditions_scale=0.7,failure_weight_boundary=3,learning_rate=0.001", "ic0p7_fwb4_lr0p001:initial_conditions_scale=0.7,failure_weight_boundary=4,learning_rate=0.001", "ic0p1_fwb1_lr0p01:initial_conditions_scale=0.1,failure_weight_boundary=1,learning_rate=0.01", "ic0p1_fwb2_lr0p01:initial_conditions_scale=0.1,failure_weight_boundary=2,learning_rate=0.01", "ic0p1_fwb3_lr0p01:initial_conditions_scale=0.1,failure_weight_boundary=3,learning_rate=0.01", "ic0p1_fwb4_lr0p01:initial_conditions_scale=0.1,failure_weight_boundary=4,learning_rate=0.01", "ic0p7_fwb1_lr0p01:initial_conditions_scale=0.7,failure_weight_boundary=1,learning_rate=0.01", "ic0p7_fwb2_lr0p01:initial_conditions_scale=0.7,failure_weight_boundary=2,learning_rate=0.01", "ic0p7_fwb3_lr0p01:initial_conditions_scale=0.7,failure_weight_boundary=3,learning_rate=0.01", "ic0p7_fwb4_lr0p01:initial_conditions_scale=0.7,failure_weight_boundary=4,learning_rate=0.01", "ic0p1_fwb1_lr0p1:initial_conditions_scale=0.1,failure_weight_boundary=1,learning_rate=0.1", "ic0p1_fwb2_lr0p1:initial_conditions_scale=0.1,failure_weight_boundary=2,learning_rate=0.1", "ic0p1_fwb3_lr0p1:initial_conditions_scale=0.1,failure_weight_boundary=3,learning_rate=0.1", "ic0p1_fwb4_lr0p1:initial_conditions_scale=0.1,failure_weight_boundary=4,learning_rate=0.1", "ic0p7_fwb1_lr0p1:initial_conditions_scale=0.7,failure_weight_boundary=1,learning_rate=0.1", "ic0p7_fwb2_lr0p1:initial_conditions_scale=0.7,failure_weight_boundary=2,learning_rate=0.1", "ic0p7_fwb3_lr0p1:initial_conditions_scale=0.7,failure_weight_boundary=3,learning_rate=0.1", "ic0p7_fwb4_lr0p1:initial_conditions_scale=0.7,failure_weight_boundary=4,learning_rate=0.1"]
+
+# --- jobs ------------------------------------------------------------------------
+# TRAINING: 144 points / 37 tasks = 4 per task (the last four tasks 3) = one wave of
+# the profile's train_jobs = 4 sharing the card. 37, not 36: the split is interleaved
+# (task t runs lines t+1, t+1+37, ...) and the list alternates tanh / enriched, so an
+# odd width gives every card 2 tanh + 2 enriched points -- the mix measured on
+# Trillium on 2026-10-27, 41-43 min per task -- where 36 would give some cards 4
+# enriched points (unmeasured). Estimate: 900 s startup + 10 epochs x 300 s = 65 min.
+train_array_tasks = 37
+train_wall_time  = "2:00:00"
+# TESTING: one test at a time per card; 144 tests / 18 tasks = 8 per task.
+# Estimate: 900 s + 8 x 150 s = 35 min (on Trillium 8 tests took 13-18 min).
+test_array_tasks = 18
+test_wall_time   = "1:00:00"

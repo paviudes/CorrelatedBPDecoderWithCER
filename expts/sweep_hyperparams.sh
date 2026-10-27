@@ -188,8 +188,18 @@ if [ -n "$SUBMIT_HOST" ]; then
 fi
 echo "submit — TRAIN, then TEST chained on it (both GPU, $ACCOUNT_SHOWN$SUBMIT_FROM):"
 echo
+# Off the submit host the block starts with the hop there, so it can be pasted whole.
+if ! on_submit_host; then
+    echo "    ssh $SUBMIT_HOST      # this is $(this_host_name): sbatch refuses GPU jobs from here"
+    echo "    cd $(pwd)"
+fi
+# --kill-on-invalid-dep only where the cluster's sbatch takes it (kill_on_invalid_dep).
+TEST_DEPENDENCY="--dependency=afterok:\$TRAIN_ID"
+if [ "$KILL_ON_INVALID_DEP" = "true" ]; then
+    TEST_DEPENDENCY="$TEST_DEPENDENCY --kill-on-invalid-dep=yes"
+fi
 echo "    TRAIN_ID=\$(sbatch --parsable $SLURM_TRAIN)"
-echo "    sbatch --dependency=afterok:\$TRAIN_ID --kill-on-invalid-dep=yes $SLURM_TEST"
+echo "    sbatch $TEST_DEPENDENCY $SLURM_TEST"
 echo
 echo "  Or one at a time, checking the models trained before testing them:"
 echo "    sbatch $SLURM_TRAIN"
@@ -199,10 +209,18 @@ echo "    # ~ initial_conditions_scale / sqrt(3) => never trained; larger => tra
 echo "    sbatch $SLURM_TEST"
 echo
 echo "  afterok on an array is ALL-OR-NOTHING: every one of the $TRAIN_ARRAY train tasks must"
-echo "  exit 0, so one failed point stops all $N_TEST_POINTS tests. --kill-on-invalid-dep=yes"
-echo "  then cancels the test job outright instead of parking it in the queue as"
-echo "  DependencyNeverSatisfied. A NaN-rolled-back epoch is NOT a failure (the"
-echo "  point still exits 0 and writes weights), so rollbacks do not block testing."
+if [ "$KILL_ON_INVALID_DEP" = "true" ]; then
+    echo "  exit 0, so one failed point stops all $N_TEST_POINTS tests. --kill-on-invalid-dep=yes"
+    echo "  then cancels the test job outright instead of parking it in the queue as"
+    echo "  DependencyNeverSatisfied. A NaN-rolled-back epoch is NOT a failure (the"
+    echo "  point still exits 0 and writes weights), so rollbacks do not block testing."
+else
+    echo "  exit 0, so one failed point stops all $N_TEST_POINTS tests. $CLUSTER_NAME's sbatch has no"
+    echo "  --kill-on-invalid-dep, so the test job then stays in the queue as"
+    echo "  DependencyNeverSatisfied until you scancel it. A NaN-rolled-back epoch is NOT"
+    echo "  a failure (the point still exits 0 and writes weights), so rollbacks do not"
+    echo "  block testing."
+fi
 
 if [ "$LOCAL" -eq 1 ]; then
     write_local_smoke_test "$SMOKE_N"

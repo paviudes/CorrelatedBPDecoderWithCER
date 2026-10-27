@@ -25,10 +25,22 @@ A config is <decoder>:<prior>:<max_iter>:
   decoder   bp, osd0, osd_e<order> (e.g. osd_e2) or osd_cs<order> (e.g. osd_cs10)
   prior     cer  -- each qubit at its own single-qubit rate from the CER file
             mean -- every qubit at the mean of those rates
+            rescaled[<t>] -- the CER rates scaled so their median is t (default 0.1):
+                    the Neural BP's own priors (single_qubit_rescale = 0.1)
             a number -- every qubit at that rate
   max_iter  BP iterations (BP stops early once its output matches the syndrome)
 BP is product-sum with the parallel schedule unless --bp-method / --schedule say
 otherwise.
+
+--backend ldpc runs ldpc's decoders; --backend numpy runs misc/numpy_bposd.py, the
+same algorithms written out in numpy (product-sum, parallel schedule only), for
+machines where ldpc cannot be installed; auto (the default) takes ldpc when it is
+importable. Checked against ldpc on p_0.0015_sig_0.0_s_1 (2026-10-27): bp:rescaled:90
+2019 = 2019, bp:0.1:90 23483 = 23483, osd_cs10:rescaled:90 1383 = 1383,
+osd_cs10:0.1:90 1454 vs 1449 (uniform priors tie bits in OSD's sort, which ldpc does
+with an unstable std::sort). At 500 iterations with a uniform prior BP is chaotic:
+a one-ulp change of tanh moves bp:0.1:500 from 21049 to 20065 (ldpc: 20493), so
+long uniform-prior runs are not reproducible across implementations or libm's.
 
 THE SHIPPED TABLES (results/72q_BB_<key>_BP_failure_rates.txt and
 72q_BB_<key>BP+OSD_failure_rates_OSD_E_order_2.txt) are `bp:0.1:500` and
@@ -63,8 +75,34 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 RERUN_FILE_NAME = "reference_decoders_rerun.csv"
 RERUN_COLUMNS = ["test_key", "test_p", "test_sigma", "test_sample", "config", "decoder", "prior", "max_iter",
                  "osd_method", "osd_order", "bp_method", "schedule", "num_failures", "num_not_converged",
-                 "num_samples", "average_logical_error_rate", "label"]
+                 "num_samples", "average_logical_error_rate", "label", "backend"]
 KEY_PATTERN = re.compile(r"^p_(?P<p>[^_]+)_sig_(?P<sigma>[^_]+)_s_(?P<sample>\d+)$")
+RESCALED_PRIOR = re.compile(r"^rescaled(?P<median>[0-9.]+(?:[eE][+-]?\d+)?)?$")
+DEFAULT_RESCALED_MEDIAN = 0.1
+
+
+def rescaled_median(prior: str) -> float:
+    """The median of a `rescaled[<t>]` prior (0 when the prior is not of that form)."""
+    prior_match = RESCALED_PRIOR.match(prior)
+    if prior_match is None:
+        return 0.0
+    median = DEFAULT_RESCALED_MEDIAN
+    if prior_match["median"]:
+        median = float(prior_match["median"])
+    return median
+
+
+def channel_probabilities(prior: str, rates: np.ndarray) -> np.ndarray:
+    """The per-qubit prior a config's <prior> field names, from the key's CER rates."""
+    n_qubits = rates.size
+    channel = rates.copy()
+    if prior == "mean":
+        channel = np.full(n_qubits, rates.mean())
+    elif rescaled_median(prior) > 0:
+        channel = rates * (rescaled_median(prior) / np.median(rates))
+    elif prior != "cer":
+        channel = np.full(n_qubits, float(prior))
+    return channel
 
 
 def load_ldpc_decoders():
@@ -121,11 +159,14 @@ def parse_config(config: str) -> Tuple[str, str, int, str, int]:
     if len(parts) != 3:
         raise SystemExit(f"config {config!r}: write <decoder>:<prior>:<max_iter>, e.g. osd_cs10:cer:500")
     decoder_text, prior, max_iter_text = parts
-    if prior not in ("cer", "mean"):
+    if RESCALED_PRIOR.match(prior):
+        if not 0.0 < rescaled_median(prior) < 0.5:
+            raise SystemExit(f"config {config!r}: the median of a rescaled prior must lie in (0, 0.5)")
+    elif prior not in ("cer", "mean"):
         try:
             prior_value = float(prior)
         except ValueError:
-            raise SystemExit(f"config {config!r}: prior is cer, mean or a number")
+            raise SystemExit(f"config {config!r}: prior is cer, mean, rescaled[<median>] or a number")
         if not 0.0 < prior_value < 0.5:
             raise SystemExit(f"config {config!r}: a numeric prior must lie in (0, 0.5)")
     if not max_iter_text.isdigit() or int(max_iter_text) < 1:
@@ -152,6 +193,8 @@ def config_label(decoder_kind: str, prior: str, max_iter: int, osd_method: str, 
         if osd_method != "osd0":
             decoder_text = f"BP+OSD-{osd_method.split('_')[1].upper()}{osd_order}"
     prior_text = {"cer": "CER rates", "mean": "mean rate"}.get(prior, f"prior {prior}")
+    if rescaled_median(prior) > 0:
+        prior_text = f"CER rates, median -> {rescaled_median(prior):g}"
     label = f"{decoder_text}, {prior_text}, {max_iter} it"
     return label
 
@@ -194,6 +237,27 @@ def decode_failures(decoder, patterns: np.ndarray, counts: np.ndarray, check_mat
     return n_failures, n_not_converged, len(corrections)
 
 
+def decode_failures_numpy(patterns: np.ndarray, counts: np.ndarray, check_matrix: np.ndarray,
+                          checks_and_logicals: np.ndarray, channel: np.ndarray, max_iter: int,
+                          decoder_kind: str, osd_method: str, osd_order: int) -> Tuple[int, int, int]:
+    """decode_failures with misc/numpy_bposd.py: every distinct syndrome in one batch."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from numpy_bposd import bposd_decode
+    syndromes = (patterns.astype(np.int64) @ check_matrix.T.astype(np.int64)) % 2
+    packed = np.packbits(syndromes.astype(np.uint8), axis=1)
+    _, first_rows, inverse = np.unique(packed.view(np.dtype((np.void, packed.shape[1]))).ravel(),
+                                       return_index=True, return_inverse=True)
+    inverse = inverse.ravel()
+    method = osd_method if decoder_kind == "BP+OSD" else ""
+    corrections, converged = bposd_decode(check_matrix, syndromes[first_rows].astype(np.uint8), channel,
+                                          max_iter, method, osd_order)
+    residuals = (patterns.astype(np.int64) + corrections[inverse]) % 2
+    failed = ((residuals @ checks_and_logicals.T) % 2).any(axis=1)
+    n_failures = int(counts[failed].sum())
+    n_not_converged = int(counts[failed & ~converged[inverse]].sum())
+    return n_failures, n_not_converged, int(first_rows.size)
+
+
 def read_rerun_rows(path: str) -> List[Dict[str, str]]:
     if not os.path.isfile(path):
         return []
@@ -212,7 +276,18 @@ def main(argv: List[str]) -> int:
     parser.add_argument("--testing-dir", default="", help="where the test files are (default: <run>/testing_data)")
     parser.add_argument("--bp-method", default="product_sum", choices=["product_sum", "minimum_sum"])
     parser.add_argument("--schedule", default="parallel", choices=["parallel", "serial"])
+    parser.add_argument("--backend", default="auto", choices=["auto", "ldpc", "numpy"],
+                        help="ldpc, or misc/numpy_bposd.py (default: ldpc when importable)")
     arguments = parser.parse_args(argv)
+    backend: str = arguments.backend
+    if backend == "auto":
+        backend = "ldpc"
+        if importlib.util.find_spec("ldpc") is None:
+            backend = "numpy"
+            print("ldpc is not installed: using misc/numpy_bposd.py (--backend numpy)", file=sys.stderr)
+    if backend == "numpy" and (arguments.bp_method != "product_sum" or arguments.schedule != "parallel"):
+        print("--backend numpy has product-sum BP with the parallel schedule only", file=sys.stderr)
+        return 1
 
     run_directory: str = arguments.workdir
     if not os.path.isdir(run_directory):
@@ -238,7 +313,8 @@ def main(argv: List[str]) -> int:
             return 1
     configs = [(config, *parse_config(config)) for config in arguments.configs]
 
-    BpDecoder, BpOsdDecoder = load_ldpc_decoders()
+    if backend == "ldpc":
+        BpDecoder, BpOsdDecoder = load_ldpc_decoders()
     check_matrix = np.loadtxt(os.path.join(run_directory, "code", "HZ.txt"), dtype=np.uint8)
     logicals = np.loadtxt(os.path.join(run_directory, "code", "LZ.txt"), dtype=np.uint8)
     checks_and_logicals = np.vstack([check_matrix, logicals]).astype(np.int64)
@@ -265,19 +341,20 @@ def main(argv: List[str]) -> int:
               flush=True)
         key_match = KEY_PATTERN.match(key)
         for config, decoder_kind, prior, max_iter, osd_method, osd_order in configs:
-            channel = rates.copy()
-            if prior == "mean":
-                channel = np.full(n_qubits, rates.mean())
-            elif prior != "cer":
-                channel = np.full(n_qubits, float(prior))
-            settings = dict(error_channel=list(channel), max_iter=max_iter, bp_method=arguments.bp_method,
-                            schedule=arguments.schedule)
-            decoder = BpDecoder(check_matrix, **settings)
-            if decoder_kind == "BP+OSD":
-                decoder = BpOsdDecoder(check_matrix, osd_method=osd_method, osd_order=osd_order, **settings)
+            channel = channel_probabilities(prior, rates)
             start = time.time()
-            n_failures, n_not_converged, n_syndromes = decode_failures(decoder, patterns, counts, check_matrix,
-                                                                       checks_and_logicals)
+            if backend == "numpy":
+                n_failures, n_not_converged, n_syndromes = decode_failures_numpy(
+                    patterns, counts, check_matrix, checks_and_logicals, channel, max_iter, decoder_kind,
+                    osd_method, osd_order)
+            else:
+                settings = dict(error_channel=list(channel), max_iter=max_iter, bp_method=arguments.bp_method,
+                                schedule=arguments.schedule)
+                decoder = BpDecoder(check_matrix, **settings)
+                if decoder_kind == "BP+OSD":
+                    decoder = BpOsdDecoder(check_matrix, osd_method=osd_method, osd_order=osd_order, **settings)
+                n_failures, n_not_converged, n_syndromes = decode_failures(decoder, patterns, counts, check_matrix,
+                                                                           checks_and_logicals)
             label = config_label(decoder_kind, prior, max_iter, osd_method, osd_order)
             print(f"   {config:<20} {label:<34} failures {n_failures:>7}  (BP not converged on {n_not_converged}; "
                   f"{n_syndromes} syndromes, {time.time() - start:.1f} s)", flush=True)
@@ -286,7 +363,8 @@ def main(argv: List[str]) -> int:
                                  max_iter=max_iter, osd_method=osd_method, osd_order=osd_order,
                                  bp_method=arguments.bp_method, schedule=arguments.schedule,
                                  num_failures=n_failures, num_not_converged=n_not_converged, num_samples=n_samples,
-                                 average_logical_error_rate=n_failures / n_samples, label=label))
+                                 average_logical_error_rate=n_failures / n_samples, label=label,
+                                 backend=backend))
 
     replaced = {(row["test_key"], row["config"], row["bp_method"], row["schedule"]) for row in new_rows}
     kept_rows = [row for row in read_rerun_rows(rerun_path)
@@ -299,7 +377,7 @@ def main(argv: List[str]) -> int:
         writer = csv.DictWriter(handle, fieldnames=RERUN_COLUMNS)
         writer.writeheader()
         for row in all_rows:
-            writer.writerow({column: row[column] for column in RERUN_COLUMNS})
+            writer.writerow({column: row.get(column, "") for column in RERUN_COLUMNS})
     print(f"wrote {len(new_rows)} row(s), {len(all_rows)} in all -> {rerun_path}")
     return 0
 

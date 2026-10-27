@@ -72,6 +72,11 @@ jobs_write_under  = ""
 # submit_host: the login node GPU jobs must be submitted from (a glob; Trillium:
 # "trig-login01"); the generator warns elsewhere. "" = any login node.
 submit_host       = ""
+# kill_on_invalid_dep: true = the printed test sbatch line carries
+# --kill-on-invalid-dep=yes, which cancels the test job when a training task fails;
+# false where sbatch refuses the option (Trillium), and the test job then waits in
+# the queue as DependencyNeverSatisfied until scancel.
+kill_on_invalid_dep = true
 
 # --- measured costs, for the walltime preflight --------------------------------
 # One epoch of one WAVE of train_jobs trainings sharing an A100, at 90 layers and

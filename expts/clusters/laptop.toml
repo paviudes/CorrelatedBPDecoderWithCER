@@ -34,6 +34,7 @@ test_cpus         = 4
 
 jobs_write_under  = ""
 submit_host       = ""
+kill_on_invalid_dep = true
 
 seconds_per_epoch_tanh_wave     = 144
 seconds_per_epoch_enriched_wave = 300

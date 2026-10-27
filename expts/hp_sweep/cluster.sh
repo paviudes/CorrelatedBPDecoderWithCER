@@ -17,7 +17,7 @@
 # Every key a cluster profile holds; all of them are required (account_gpu,
 # stdenv_module, vram_per_gpu, jobs_write_under and submit_host may be ""). Described
 # in clusters/narval.toml; clusters/trillium.toml uses the site-specific ones.
-CLUSTER_KEYS="account_gpu email stdenv_module julia_module cuda_module heap_size_hint gpu_type gpu_request_style n_gpus_per_node request_cpus_and_memory mem_per_gpu vram_per_gpu train_jobs train_cpus test_jobs test_cpus jobs_write_under submit_host seconds_per_epoch_tanh_wave seconds_per_epoch_enriched_wave seconds_per_test job_startup_seconds"
+CLUSTER_KEYS="account_gpu email stdenv_module julia_module cuda_module heap_size_hint gpu_type gpu_request_style n_gpus_per_node request_cpus_and_memory mem_per_gpu vram_per_gpu train_jobs train_cpus test_jobs test_cpus jobs_write_under submit_host kill_on_invalid_dep seconds_per_epoch_tanh_wave seconds_per_epoch_enriched_wave seconds_per_test job_startup_seconds"
 
 cluster_value() { settings_value "$CLUSTER_FILE" "$1"; }
 
@@ -31,8 +31,8 @@ megabytes_of() {   # <size like 4G, 32G, 2048M>
 # checks that one array task can hold what the jobs put on it. Sets ACCOUNT_GPU,
 # EMAIL, STDENV_MODULE, JULIA_MODULE, CUDA_MODULE, HEAP, GPU_TYPE, GPU_REQUEST_STYLE,
 # N_GPUS, REQUEST_CPUS_AND_MEMORY, MEM_PER_GPU, VRAM_PER_GPU, TRAIN_JOBS, TRAIN_CPUS,
-# TEST_JOBS, TEST_CPUS, JOBS_WRITE_UNDER, SUBMIT_HOST, the measured costs, and the
-# derived GPU_SBATCH_LINE, GPU_MEMORY_MB and JOB_DEPOT_PATH.
+# TEST_JOBS, TEST_CPUS, JOBS_WRITE_UNDER, SUBMIT_HOST, KILL_ON_INVALID_DEP, the
+# measured costs, and the derived GPU_SBATCH_LINE, GPU_MEMORY_MB and JOB_DEPOT_PATH.
 read_cluster_profile() {
     check_settings_keys "$CLUSTER_FILE" "cluster profile" "$CLUSTER_KEYS" "$CLUSTER_KEYS" \
         "$SWEEP_KEYS" "the sweep file ($SWEEP_FILE)" "clusters/narval.toml"
@@ -54,6 +54,7 @@ read_cluster_profile() {
     TEST_CPUS="$(cluster_value test_cpus)"
     JOBS_WRITE_UNDER="$(cluster_value jobs_write_under)"
     SUBMIT_HOST="$(cluster_value submit_host)"
+    KILL_ON_INVALID_DEP="$(cluster_value kill_on_invalid_dep)"
     SECONDS_PER_EPOCH_TANH_WAVE="$(cluster_value seconds_per_epoch_tanh_wave)"
     SECONDS_PER_EPOCH_ENRICHED_WAVE="$(cluster_value seconds_per_epoch_enriched_wave)"
     SECONDS_PER_TEST="$(cluster_value seconds_per_test)"
@@ -62,6 +63,10 @@ read_cluster_profile() {
     case "$REQUEST_CPUS_AND_MEMORY" in
         true|false) ;;
         *) echo "request_cpus_and_memory = '$REQUEST_CPUS_AND_MEMORY' in $CLUSTER_PROFILE: use true or false." >&2; exit 1 ;;
+    esac
+    case "$KILL_ON_INVALID_DEP" in
+        true|false) ;;
+        *) echo "kill_on_invalid_dep = '$KILL_ON_INVALID_DEP' in $CLUSTER_PROFILE: use true or false." >&2; exit 1 ;;
     esac
     if [ -n "$JOBS_WRITE_UNDER" ] && ! echo "$JOBS_WRITE_UNDER" | grep -qE '^[A-Za-z_][A-Za-z0-9_]*$'; then
         echo "jobs_write_under = '$JOBS_WRITE_UNDER' in $CLUSTER_PROFILE: the NAME of an environment variable, e.g. SCRATCH." >&2
@@ -258,20 +263,29 @@ check_job_write_locations() {
     fi
 }
 
-# Some clusters take GPU jobs only from one login node (Trillium: trig-login01).
-check_submit_host() {
+# Some clusters take GPU jobs only from one login node (Trillium: trig-login01; its
+# CPU login nodes refuse them: "GPU resources requested from a CPU login node").
+this_host_name() {
+    hostname -s 2>/dev/null || hostname
+}
+
+# True on the submit host, or when the profile names none.
+on_submit_host() {
     if [ -z "$SUBMIT_HOST" ]; then
         return 0
     fi
-    local this_host
-    this_host="$(hostname -s 2>/dev/null || hostname)"
-    case "$this_host" in
-        $SUBMIT_HOST) ;;
-        *)
-            echo "[hp_sweep] note: $CLUSTER_NAME takes these GPU jobs from $SUBMIT_HOST; this is $this_host." >&2
-            echo "           Run the sbatch lines (and misc/precompile_depot.sh) there." >&2
-            ;;
+    case "$(this_host_name)" in
+        $SUBMIT_HOST) return 0 ;;
     esac
+    return 1
+}
+
+check_submit_host() {
+    if on_submit_host; then
+        return 0
+    fi
+    echo "[hp_sweep] note: $CLUSTER_NAME takes these GPU jobs from $SUBMIT_HOST; this is $(this_host_name)." >&2
+    echo "           Run the sbatch lines (and misc/precompile_depot.sh) there." >&2
 }
 
 # ------------------------------------------------------- stage-in lists ---

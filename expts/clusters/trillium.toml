@@ -58,6 +58,9 @@ test_cpus         = 24
 # --- site rules ------------------------------------------------------------------
 jobs_write_under  = "SCRATCH"
 submit_host       = "trig-login01"
+# Trillium's sbatch refuses --kill-on-invalid-dep ("option ... not recognized"); a test
+# job whose training failed waits as DependencyNeverSatisfied until scancel.
+kill_on_invalid_dep = false
 
 # --- costs, for the walltime preflight ----------------------------------------------
 # NOT MEASURED on Trillium: Narval's A100 figures (clusters/narval.toml), kept as the

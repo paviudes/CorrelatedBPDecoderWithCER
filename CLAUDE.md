@@ -307,7 +307,8 @@ end
 
   `afterok` on an array is **all-or-nothing** — every task must exit 0, so one bad
   point stops every test — and `--kill-on-invalid-dep=yes` cancels the test job
-  rather than parking it as `DependencyNeverSatisfied`. A NaN-**rolled-back** epoch
+  rather than parking it as `DependencyNeverSatisfied` (where sbatch takes the option:
+  not on Trillium, profile key `kill_on_invalid_dep`). A NaN-**rolled-back** epoch
   is not a failure: the point exits 0 and writes weights, so rollbacks do not block
   testing. Behind the dependency the test job also **refuses a partial model set**
   (exits 1), which covers what the dependency cannot see: training never submitted,
@@ -2105,7 +2106,7 @@ blocks; enriched models coset exact, convergence ±10%.
   plus 240 synthetic `_cer_enr` / `_cer_bethe` ones (mirror of the selection: 360 /
   480 kept, `cer_seed`, `CER`, `enr` refused) and a synthetic 4-arm figure.
 
-## Matched train and test at sigma = 0 (prepared 2026-10-27, not yet run)
+## Matched train and test at sigma = 0 (prepared 2026-10-27; run on Trillium the same day, results below)
 
 - **Why** (the user's observation, 2026-10-27): a dataset (p, sig, s) draws one
   depolarizing rate per CNOT gate (and idle) from N(p, sig), so at sig > 0 a training
@@ -2165,6 +2166,170 @@ blocks; enriched models coset exact, convergence ±10%.
   refused, a numeric α still written as is. Regression: sweeps/enriched_vs_nocer.toml
   (test_keys set, no-CER arm) on a fake trainable_alpha: 20 models, 80 results, all
   tasks exit 0.
+
+### Measured 2026-10-27: the σ = 0 matched sweep against no-CER, BP and BP+OSD
+
+Run `hp_2026-10-27_06-36-17` on Trillium (H100), `data/72q_BB_cycles_1_sweep_filtered/`:
+CER-tanh and CER-enriched (pairwise, α* of the training key, learned) × ramp + first /
+ramp + last × 5 seeds, each model tested on its own key's 10⁶ test shots. Figure:
+`plots/sig0_decoder_comparison.{png,pdf}` (the four CER arms, both readouts; top row
+failure rate, bottom row failures / BP+OSD-CS10's; left alone, right with the OSD
+fallback; the no-CER proxy is left out at the user's request, since it was not
+trained on these keys); classical re-runs in `results/reference_decoders_rerun.csv`
+(numpy backend, below).
+
+- **Health**: 60/60 trainings 10/10 epochs, 0 NaN skips; the first/last arms' weights
+  are identical in all 30 pairs (GPU training deterministic on the H100 too). Learned α
+  moved up from α*: 0.420 → 0.425–0.458, 0.457 → 0.476–0.493, 0.488 → 0.500–0.545. All
+  15 train tasks took 41–43 min for one wave (2 tanh + 2 enriched, 10 epochs: ~240 s
+  per epoch-wave, against the profile's 300 s A100 figure) and the 8 test tasks 13–18
+  min for 8 tests each (~1.5–2 min per test with startup).
+- Failures per 10⁶ shots at p = 0.0007 / 0.0011 / 0.0015 (NBP: mean of 5 seeds):
+
+  | decoder | p.0007 | p.0011 | p.0015 |
+  |---|---|---|---|
+  | BP, shipped table (prior 0.1, 500 it) | 10861 | 15885 | 20493 |
+  | BP+OSD-E2, shipped table (prior 0.1, 500 it) | 4343 | 6673 | 8701 |
+  | BP, prior 0.1, 90 it | 12100 | 17891 | 23483 |
+  | BP, NBP's priors (CER rates, median → 0.1), 90 it | 358 | 1017 | 2019 |
+  | BP+OSD-CS10, prior 0.1, 90 it | 245 | 742 | 1454 |
+  | BP+OSD-CS10, NBP's priors, 90 it | **221** | **681** | **1383** |
+  | NBP CER-tanh, last / first | 347 / 331 | 1018 / 959 | 1966 / 1868 |
+  | NBP CER-enriched α*, last / first | 291 / 298 | 861 / 868 | 1704 / 1710 |
+  | NBP CER-tanh last / first + BP+OSD-CS10 fallback | 213 / 208 | 664 / 650 | 1359 / 1344 |
+  | NBP CER-enriched last / first + fallback | 227 / 235 | 687 / 699 | 1378 / 1395 |
+  | (proxy, not in the figure) NBP no-CER, 2026-10-20 models trained on p_0.0015_sig_0.003: first (mirror) / last (Julia) / last + fallback (prior 0.1) | 387 / 467 / 228 | 1095 / 1264 / 692 | 2113 / 2354 / 1365 |
+
+- **Enriched vs tanh (matched, paired by seed)**: −16.1 / −15.4 / −13.3% at commit last
+  (5/5 seeds, t −4.4 / −7.8 / −9.7), −12 / −10 / −9% against tanh's better readout
+  (first). All convergence; coset +41 / +38 / +30% (937 vs 666, 2620 vs 1904, 5438 vs
+  4169 over 5 seeds). Readout: tanh first −4.7 / −5.8 / −4.9% (5/5, t −6 to −17);
+  enriched first +2.3% (0/5, t +4.2) / +0.8 / +0.4% (n.s.), i.e. last for enriched.
+- **Training buys little over BP with the same priors**: CER-tanh first is −7.5 / −5.7 /
+  −7.5% against ldpc-style BP with the NBP's priors and budget (first-to-clear both);
+  enriched last −19 / −15 / −16%.
+- **Every NBP alone loses to BP+OSD-CS10** with the same priors and 90 iterations:
+  enriched last +32 / +27 / +23%, tanh first +50 / +41 / +35%, no-CER first +75 / +61 /
+  +53%; the best single seed too (enriched 275 / 847 / 1680). Even uniform-prior
+  BP+OSD-CS10 beats every NBP. Against the shipped tables the NBP looks 5–15× better
+  (enriched vs shipped BP+OSD: ×14.9 / ×7.7 / ×5.1), but those are 500 iterations of
+  uniform-prior BP with OSD-E2: stopping that BP at 90 iterations takes the same OSD-E2
+  from 4035 to 349 (p.0007) and 8109 to 1905 (p.0015) (numpy backend) — the long
+  uniform-prior run leaves OSD a useless ordering.
+- **CER vs no-CER is confounded here.** The only no-CER models are the 2026-10-20 ones,
+  trained on p_0.0015_sig_0.003_s_1 (same settings otherwise: ramp, warmup 0, 10 epochs,
+  init 0.1, Poisson(3) 10k). Against their first-to-clear: CER-tanh first −14.5 / −12.5 /
+  −11.6%, enriched last −24.7 / −21.4 / −19.3%. But matched training ALONE moved the
+  CER-tanh arm −33.7 / −23.8 / −21.9% (commit last; the 2026-10-20 CER-tanh, trained on
+  that key, was +12 / +6 / +7% WORSE than no-CER at σ = 0, its seed spread 367–745 at
+  p.0007 against the matched arm's 320–377). So
+  a matched no-CER arm could close the gap; not run. (The generator cannot emit only the
+  no-CER arm: an empty check_node_arms defaults to tanh.) Same samples in both sweeps:
+  every failing sample of the old per-sample files has the local test file's weight.
+- **With OSD downstream** (BP+OSD-CS10, 90 it, run from scratch on each NBP
+  convergence failure; coset failures stay failures): CER-tanh first + fallback is
+  below plain BP+OSD-CS10 in 15/15 (key, seed) cells, −5.9 / −4.6 / −2.8% (per-seed
+  McNemar z −1.0 to −3.2); enriched + fallback +2.7 / +0.9 / −0.3% (its extra coset
+  failures cancel its convergence gain); no-CER + uniform fallback −6.9 / −6.7 / −6.1%
+  vs uniform BP+OSD-CS10 (+3 / +2 / −1% vs the NBP-prior one). The fallback fixes
+  52–74% of the NBP's convergence failures.
+- The no-CER mirror (`nbp_mirror.py --arm nocer --rules last first`) agrees with Julia's
+  commit-last totals to +0.3 / −0.5 / −0.1%. Method for the fallback and McNemar
+  numbers: session scratch (outputs/sig0_fallback.py, sig0_summary.py), from the
+  per-sample failure files and the numpy BP+OSD's per-sample outcome.
+
+#### Is training stuck in a local minimum? (asked 2026-10-27, same run; outputs/sig0_minimum_diagnostics.py)
+
+- **Trained ≈ untrained.** The same decoder with every weight 1 (`nbp_mirror.py
+  --unit-weights`, enriched at α*): tanh first 360 / 1017 / 2024 vs trained 331 / 959 /
+  1868 (−8 / −6 / −8%), tanh last 357 / 1005 / 2021 vs 347 / 1018 / 1966 (−3 / +1 /
+  −3%); enriched first 276 / 852 / 1656 vs trained (mirror, mean of seeds) 296 / 858 /
+  1698 (+7 / +1 / +3%: training makes it no better). Enriched last at p.0007 is the
+  exception: untrained 586 (315 weight-3 knife-edge blocks), trained 290.
+- **Seeds end far apart and equally good**: final c2v_v2c weights 0.117–0.122 RMS apart
+  between seeds (0.082 at init, U(1 ± 0.1)); weight sd 0.058 → 0.084–0.089; failure
+  counts within ±5–10%. Half of a seed's failures (49–58%) are failed by all 5 seeds;
+  the union over 5 seeds is ~1.75× one seed's. A broad flat region, not a pit.
+- **Failures are on patterns never trained on**: 1.3–2.4% of failing test patterns are
+  in the model's own 10k training set, 12–25% anywhere in the 1e6 training file.
+- **The training set is not fitted**: batches holding a failing sample at layer 90,
+  epoch 1 → 10: tanh 8.8 → 6.0% / 12.4 → 9.3% / 14.1 → 12.7%; enriched flat (7.7 → 6.8,
+  10.2 → 10.3, 11.1 → 11.6%).
+- **The diversity is usable at decode time**: retrying a non-converged shot with a
+  second seed's model (tanh first) −21 / −17 / −13%; a cascade over all 5 seeds −32 /
+  −28 / −22% (225 / 689 / 1461, against BP+OSD-CS10's 221 / 681 / 1383); enriched last
+  −14 / −12 / −11% and −17 / −16 / −15%.
+- **Two optimizer facts found on the way** (src/train.jl): with `weight_decay > 0`
+  (every base TOML: 1e-4) the message weights use `AdamW(η, β, weight_decay)`, whose
+  ε is Optimisers.jl 0.4.9's default 1e-8 — `adam_eps = 1e-4` reaches only α's leaf
+  (the AdamW decay itself is coupled, η·λ = 1e-7 per step: negligible, medians stay
+  ~1.0). And `max_grad_norm` builds `ClipGrad(2)`, a per-component clamp at ±2 that
+  never triggers, not norm clipping (`ClipNorm`); `clip_grad!` is defined but unused.
+
+#### The follow-up sweep: `sweeps/sig0_lr_init_fwb.toml` (prepared 2026-10-27, not yet run)
+
+- The user's grid: `initial_conditions_scale` {0.1, 0.7} (weights U(1 − s, 1 + s);
+  `random_values_around_one`, so the base TOML's "Gaussian … σ" comment is wrong) ×
+  `failure_weight_boundary` {1, 2, 3, 4} × `learning_rate` {0.001, 0.01, 0.1} = 24
+  optimizer arms × {CER-tanh, CER-enriched at α* = 0.4875, learned} × seeds 1–3 = 144
+  trainings, each tested once. Ramp (warmup 0, k = 3) + commit first (top-level keys of
+  the sweep file), trained and tested on p_0.0015_sig_0.0_s_1 (the σ = 0 key with the
+  most failures; seed CV 2.2% tanh, 1.1% enriched), everything else the run's
+  hyperparams_baseline.toml; Trillium, 37 train tasks (odd, so the interleaved split
+  gives 33 cards 2 tanh + 2 enriched, the measured mix; est 65 min of 2 h) and 18 test
+  tasks of 8 (est 35 min of 1 h); ~33 H100-hours (5 seeds: ~55). Run tags
+  `_cer[_enr]_ic<s>_fwb<λ>_lr<lr>` ("." → "p").
+- **Why both nodes** (the user, 2026-10-27): the pair couplings enter only through the
+  enriched node, and at σ = 0 the tanh arm's per-qubit priors are nearly flat (max/min
+  ~1.3). The first draft was tanh-only, on the grounds that tanh was the node whose
+  training did anything; but the enriched node is the better decoder and the one where
+  training currently adds nothing, which is where the optimizer question matters.
+- The first arm, `ic0p1_fwb3_lr0p001`, has the baseline's settings: its point TOMLs
+  differ from the 2026-10-27 `_cer_rampfirst` / `_cer_enr_rampfirst` ones at this key
+  only in run_tag and comments, so its models should equal those bit for bit; the
+  sweep file's AFTERWARDS lines run compare_sweep_arms.py per node with the existing
+  arm as the reference and the 24 new arms after it.
+- **The enriched GPU forward's limit matters here**: `apply_enriched_checks_gpu`
+  (training and testing) still stabilises with one maximum per (check, sample), exact
+  only while every |m_v2c| < ~70, i.e. message weights below ~2. The lr 1e-3 models
+  reach 1.35 (c2v_v2c max, both nodes); lr 0.01 and 0.1 will likely pass 2, so check
+  each enriched model's largest weight before reading its count, and re-score on the
+  CPU kernel or the mirror above ~2. (Stabilising per class, as
+  `backward_enriched_checks_gpu` does, would remove the limit but change enriched
+  numerics at round-off, ending bit-for-bit reproduction of earlier enriched models.)
+- Expected scale of the moves, if the updates stay noise-directed (the measured
+  ~0.06 RMS per weight at lr 1e-3 is what a random walk of the normalised Adam steps
+  gives): ~0.6 at lr 0.01 and ~6 at 0.1, i.e. lr 0.1 tests whether there is a
+  coherent direction at all. The coupled AdamW decay shrinks weights ~5% over
+  training at lr 0.1 (0.05% at 1e-3). Rollbacks at lr 0.1 do not block testing.
+- Verified 2026-10-27 with stubs on a fake run directory: generation exits 0 (the
+  ramp-warmup note and the depot warning only); 144 point TOMLs, no duplicate keys,
+  the enriched ones with coupling_scale_init = 0.4875; 37/37 train and 18/18 test
+  tasks exit 0, 72 + 72 models, 144 results, every test on the training key; both
+  AFTERWARDS commands run on 25 arms (synthetic results, seeds 1–3) and report only
+  the baseline arm's weights identical. (The first, tanh-only draft — 120 points, 30 +
+  15 tasks — passed the same checks.)
+
+### `misc/numpy_bposd.py` and `reference_decoders.py --backend numpy` (added 2026-10-27)
+
+- ldpc cannot be installed in the sandbox (PyPI blocked), so `numpy_bposd.py` writes
+  ldpc 2.x's product-sum BP (parallel schedule) and its OSD (OSD-0, OSD-E, OSD-CS) in
+  numpy, operation for operation (prefix/suffix products along rows, prefix/suffix sums
+  along columns, no clamp, decision LLR <= 0, stop at the first converged iteration;
+  OSD: stable sort of the posterior, greedy pivots, candidates in ldpc's order, weight
+  Σ log(1/p) summed in index order, first strict minimum), batched over distinct
+  syndromes. `reference_decoders.py --backend {auto,ldpc,numpy}` (auto = ldpc when
+  importable) and a new prior `rescaled[<median>]` (CER rates × median/median(rates),
+  default 0.1 = the NBP's own priors); the rerun CSV gained a `backend` column.
+- **Checked against ldpc's own numbers** on p_0.0015_sig_0.0_s_1: bp:rescaled:90 2019 =
+  2019, bp:0.1:90 23483 = 23483, osd_cs10:rescaled:90 1383 = 1383 (log-odds weights
+  would give 1384), osd_cs10:0.1:90 1454 vs 1449 (uniform priors tie bits in OSD's sort;
+  ldpc's std::sort is unstable).
+- **Uniform-prior BP at 500 iterations is chaotic**: a one-ulp change of tanh
+  (an expm1 form) moves bp:0.1:500 on p.0015 from 21049 to 20065 (ldpc: 20493) and
+  osd_e2:0.1:500 from 8109 to 7671 (ldpc 8701); at 90 iterations nothing moves. So the
+  shipped tables are reproducible only to ±5–10% outside ldpc on the same libm; the
+  90-iteration configs are exact.
 
 ## `sweep_hyperparams.sh`: a sweep file and a cluster profile (restructured 2026-10-27)
 
@@ -2254,7 +2419,9 @@ blocks; enriched models coset exact, convergence ±10%.
   lines; train_cpus / test_cpus = 24 and mem_per_gpu = "188G" then only feed the
   checks), `jobs_write_under` ("SCRATCH": refuses a run directory or depot elsewhere,
   notes a submit directory elsewhere), `submit_host` ("trig-login01": warns on any
-  other host); `gpu_request_style = "count"`; `account_gpu = ""` omits `--account`.
+  other host), `kill_on_invalid_dep` (false: the printed test sbatch line drops
+  `--kill-on-invalid-dep=yes`; see below); `gpu_request_style = "count"`;
+  `account_gpu = ""` omits `--account`.
   Costs are Narval's A100 figures until measured there.
 - **The depot is now written into the job scripts**: JULIA_DEPOT_PATH of the
   generating shell, else `$SCRATCH/.julia:` (trailing ":" = Julia's bundled depots
@@ -2306,6 +2473,26 @@ blocks; enriched models coset exact, convergence ±10%.
   that shell. Checked with stubs (HOME outside the fake SCRATCH): ":" and
   ":$SCRATCH/.julia" refused by both scripts, "$SCRATCH/.julia:", "$SCRATCH/.julia::",
   unset, a trailing-slash $SCRATCH and a linked $SCRATCH pass; 15/15 + 8/8 jobs exit 0.
+- **sbatch from a CPU login node is refused** (2026-10-27, tri-login02): "GPU resources
+  requested from a CPU login node; please submit from trig-login01", after a warning
+  that the CPU filter defaulted to 192 tasks per node (a CPU-node default; the header
+  is the Quickstart's single-GPU example: nodes 1, gpus-per-node 1, no ntasks). The
+  generated scripts do not depend on the host they were written on (byte-identical
+  from tri-login02 and trig-login01), so they are submitted as they are from
+  trig-login01, from expts/. The generator's note about the host went to stderr ahead
+  of the report and was missed, so off the submit host the printed submit block now
+  starts with `ssh trig-login01` and `cd <expts>`.
+- **Trillium's sbatch refuses `--kill-on-invalid-dep`** (2026-10-27, trig-login01:
+  "ERROR: option --kill-on-invalid-dep not recognized" and a trimmed usage list — a
+  site wrapper with its own option list, not Slurm's own message). Profile key
+  `kill_on_invalid_dep` (every profile states it; narval and laptop true, trillium
+  false): when false the printed test line is `sbatch --dependency=afterok:$TRAIN_ID
+  <test>.sh` and the report says a test job whose training failed stays queued as
+  DependencyNeverSatisfied until `scancel`. The test job's model-by-name check still
+  refuses a partial model set. Checked with stubs: the Narval report and stderr are
+  byte-identical to before; "maybe" and a missing key are refused; 15/15 + 8/8 jobs
+  exit 0. (batch_run.jl's `submit_<ts>.sh` still passes the option; it has no
+  Trillium profile.)
 
 ## Run tags (changed 2026-10-09)
 
