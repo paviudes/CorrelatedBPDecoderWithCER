@@ -1,112 +1,73 @@
-[debankan@narval3 expts]$ bash submit.sh
-[submit] wrote defaults to: /scratch/debankan/CorrelatedBPDecoderWithCER/expts/scripts/submission_settings_2026-10-20_01-11-12.toml
-[submit] opening /scratch/debankan/CorrelatedBPDecoderWithCER/expts/scripts/submission_settings_2026-10-20_01-11-12.toml in nano...
+[debankan@trig-login01 expts]$ bash sweep_hyperparams.sh sweeps/sig0_lr_init_fwb.toml
+[hp_sweep] enriched:alpha_star:learn starts each point from alpha* of its training key:
+             p_0.0015_sig_0.0_s_1 -> 0.4875
+[hp_sweep] note: loss_layer_selection=ramp with warmup_layers=0:
+           the ramp weights the BP transient (layers 1-5) too. Measured knee is 5.
+[hp_sweep] test sets: test_keys = [], so each model is scored on the test set of its own
+           training key only:
+             train_p_0.0015_sig_0.0_s_1.txt -> test_p_0.0015_sig_0.0_s_1.txt   (144 test(s))
 
-[submit] Will run (from /scratch/debankan/CorrelatedBPDecoderWithCER/expts):
-  julia --project=./../ batch_run.jl --settings /scratch/debankan/CorrelatedBPDecoderWithCER/expts/scripts/submission_settings_2026-10-20_01-11-12.toml 
+[hp_sweep] walltime preflight (trillium: 900s startup, 150s per test;
+           a training wave of 4 = 10 epochs x 300s (enriched) = 3000s)
+  train     4 per task   est 1h05m of 2:00:00   (54% of budget)
+  test      8 per task   est 0h35m of 1:00:00   (58% of budget)
 
-[settings] loading /scratch/debankan/CorrelatedBPDecoderWithCER/expts/scripts/submission_settings_2026-10-20_01-11-12.toml
+[hp_sweep] 144 training point(s), 144 test point(s)
+  test sets -> each model on its own training key's test set (test_keys = [])
+  datasets  -> p_0.0015_sig_0.0_s_1
+  seeds     -> 1 2 3
+  check node-> tanh enriched:alpha_star:learn   (no-CER baseline: false)
+  optimizer -> ic0p1_fwb3_lr0p001:initial_conditions_scale=0.1,failure_weight_boundary=3,learning_rate=0.001
+               ic0p1_fwb1_lr0p001:initial_conditions_scale=0.1,failure_weight_boundary=1,learning_rate=0.001
+               ic0p1_fwb2_lr0p001:initial_conditions_scale=0.1,failure_weight_boundary=2,learning_rate=0.001
+               ic0p1_fwb4_lr0p001:initial_conditions_scale=0.1,failure_weight_boundary=4,learning_rate=0.001
+               ic0p7_fwb1_lr0p001:initial_conditions_scale=0.7,failure_weight_boundary=1,learning_rate=0.001
+               ic0p7_fwb2_lr0p001:initial_conditions_scale=0.7,failure_weight_boundary=2,learning_rate=0.001
+               ic0p7_fwb3_lr0p001:initial_conditions_scale=0.7,failure_weight_boundary=3,learning_rate=0.001
+               ic0p7_fwb4_lr0p001:initial_conditions_scale=0.7,failure_weight_boundary=4,learning_rate=0.001
+               ic0p1_fwb1_lr0p01:initial_conditions_scale=0.1,failure_weight_boundary=1,learning_rate=0.01
+               ic0p1_fwb2_lr0p01:initial_conditions_scale=0.1,failure_weight_boundary=2,learning_rate=0.01
+               ic0p1_fwb3_lr0p01:initial_conditions_scale=0.1,failure_weight_boundary=3,learning_rate=0.01
+               ic0p1_fwb4_lr0p01:initial_conditions_scale=0.1,failure_weight_boundary=4,learning_rate=0.01
+               ic0p7_fwb1_lr0p01:initial_conditions_scale=0.7,failure_weight_boundary=1,learning_rate=0.01
+               ic0p7_fwb2_lr0p01:initial_conditions_scale=0.7,failure_weight_boundary=2,learning_rate=0.01
+               ic0p7_fwb3_lr0p01:initial_conditions_scale=0.7,failure_weight_boundary=3,learning_rate=0.01
+               ic0p7_fwb4_lr0p01:initial_conditions_scale=0.7,failure_weight_boundary=4,learning_rate=0.01
+               ic0p1_fwb1_lr0p1:initial_conditions_scale=0.1,failure_weight_boundary=1,learning_rate=0.1
+               ic0p1_fwb2_lr0p1:initial_conditions_scale=0.1,failure_weight_boundary=2,learning_rate=0.1
+               ic0p1_fwb3_lr0p1:initial_conditions_scale=0.1,failure_weight_boundary=3,learning_rate=0.1
+               ic0p1_fwb4_lr0p1:initial_conditions_scale=0.1,failure_weight_boundary=4,learning_rate=0.1
+               ic0p7_fwb1_lr0p1:initial_conditions_scale=0.7,failure_weight_boundary=1,learning_rate=0.1
+               ic0p7_fwb2_lr0p1:initial_conditions_scale=0.7,failure_weight_boundary=2,learning_rate=0.1
+               ic0p7_fwb3_lr0p1:initial_conditions_scale=0.7,failure_weight_boundary=3,learning_rate=0.1
+               ic0p7_fwb4_lr0p1:initial_conditions_scale=0.7,failure_weight_boundary=4,learning_rate=0.1
+  layers    -> loss_layer_selection=ramp  commit_layer_rule=first  (the default; an optimizer arm may override either)
+  cluster   -> trillium (clusters/trillium.toml)
+  network   -> 90 layers (fixed), manual_backprop = true (hand-written gradient)
+  train     -> the default account: array 0-36 (37 tasks x 1x h100, 24 cpu,
+               188G host ram, both with the card), 4 trainings at a time per card, USE_GPU=1, 2:00:00
+  test      -> the default account: array 0-17 (18 tasks x 1x h100 (80G vram), 24 cpu),
+               188G host ram, both with the card, GPU_MEMORY=69632M, 1 at a time, USE_GPU=1, 1:00:00
+  depot     -> JULIA_DEPOT_PATH=/scratch/debankan/.julia: (written into the jobs)
+  commands  -> ./../data/72q_BB_cycles_1_sweep_filtered/cluster/hp_sweep_train_2026-10-27_13-04-21.txt
+               ./../data/72q_BB_cycles_1_sweep_filtered/cluster/hp_sweep_test_2026-10-27_13-04-21.txt
 
-[72q_BB_cycles_1_sweep] submission 2026-10-20_01-12-59: training job, then the test job chained on it
-  trained on : train_p_0.0015_sig_0.003_s_1.txt
-  tested on  : 24 dataset(s) = 24 (p, sigma) pair(s) at sample(s) 1, 0 not in the data
-  arms       : cer (run_tag _cer), nocer (run_tag _nocer)
-  seeds      : 1, 2, 3, 4, 5
-  models     : 10, e.g. neuralbp_weights_nlayers_90_epochs_10_trained_using_train_p_0.0015_sig_0.003_s_1_cer_seed_1.json
-  settings   : ./../data/72q_BB_cycles_1_sweep/models/submissions/2026-10-20_01-12-59/
-[72q_BB_cycles_1_sweep] wrote 10 train command(s) to ./../data/72q_BB_cycles_1_sweep/cluster/commands_train_2026-10-20_01-12-59.txt
+submit — TRAIN, then TEST chained on it (both GPU, the default account, from trig-login01 and from this directory):
 
-=== Job Details ===
-  Job              : train_2026-10-20_01-12-59  (train)
-  Target codename  : 72q_BB_cycles_1_sweep
-  Commands         : 10
-  Devices          : GPU (a100), 1 card(s) per task, 4 process(es) per card
-  Array tasks      : 3, 4 command(s) each, 4 at a time
-  CPUs per task    : 12
-  Memory           : 32G per GPU (host RAM)
-  Wall time        : 1:00:00
-  Estimate         : ~34m per task (1 round(s) of 24m + 10m startup), 57% of 1:00:00
+    TRAIN_ID=$(sbatch --parsable ./../data/72q_BB_cycles_1_sweep_filtered/cluster/hp_sweep_train_2026-10-27_13-04-21.sh)
+    sbatch --dependency=afterok:$TRAIN_ID ./../data/72q_BB_cycles_1_sweep_filtered/cluster/hp_sweep_test_2026-10-27_13-04-21.sh
 
-=== Output Files ===
-  Commands file    : ./../data/72q_BB_cycles_1_sweep/cluster/commands_train_2026-10-20_01-12-59.txt
-  SLURM script     : ./../data/72q_BB_cycles_1_sweep/cluster/train_2026-10-20_01-12-59.sh
-[72q_BB_cycles_1_sweep] wrote 240 test command(s) to ./../data/72q_BB_cycles_1_sweep/cluster/commands_test_2026-10-20_01-12-59.txt
+  Or one at a time, checking the models trained before testing them:
+    sbatch ./../data/72q_BB_cycles_1_sweep_filtered/cluster/hp_sweep_train_2026-10-27_13-04-21.sh
+    julia -e 'using JSON, Statistics; w=JSON.parsefile("./../data/72q_BB_cycles_1_sweep_filtered/models/neuralbp_weights_nlayers_90_epochs_10_trained_using_train_p_0.0015_sig_0.0_s_1_cer_ic0p1_fwb3_lr0p001_seed_1.json");
+              println(std(vcat(w["weights_c2v_v2c"],w["weights_llrs"],w["weights_c2v_readout"])))'
+    # ~ initial_conditions_scale / sqrt(3) => never trained; larger => trained.
+    sbatch ./../data/72q_BB_cycles_1_sweep_filtered/cluster/hp_sweep_test_2026-10-27_13-04-21.sh
 
-=== Job Details ===
-  Job              : test_2026-10-20_01-12-59  (test)
-  Target codename  : 72q_BB_cycles_1_sweep
-  Commands         : 240
-  Devices          : GPU (a100), 1 card(s) per task, 1 process(es) per card
-  Array tasks      : 24, 10 command(s) each, 1 at a time
-  CPUs per task    : 12
-  Memory           : 32G per GPU (host RAM)
-  GPU_MEMORY       : 34816M (85% of the card, for the batch sizer)
-  Wall time        : 1:00:00
-  Estimate         : ~35m per task (10 round(s) of 2m + 10m startup), 58% of 1:00:00
-
-=== Output Files ===
-  Commands file    : ./../data/72q_BB_cycles_1_sweep/cluster/commands_test_2026-10-20_01-12-59.txt
-  Models file      : ./../data/72q_BB_cycles_1_sweep/cluster/models_test_2026-10-20_01-12-59.txt  (checked by every task before it tests)
-  SLURM script     : ./../data/72q_BB_cycles_1_sweep/cluster/test_2026-10-20_01-12-59.sh
-
-=== Submission (from expts/, after `bash misc/precompile_depot.sh` on a login node) ===
-  bash ./../data/72q_BB_cycles_1_sweep/cluster/submit_2026-10-20_01-12-59.sh
-  It submits the training job, then the test job with --dependency=afterok on it: testing
-  starts when EVERY training task has exited 0, and is cancelled if any has not.
-
-[debankan@narval3 expts]$ 
-
-====================================================================================
-
-[debankan@narval2 expts]$ julia --project="./../" batch_run.jl --settings sweeps/enriched_submission.toml
-[settings] loading sweeps/enriched_submission.toml
-
-[72q_BB_cycles_1_sweep] submission 2026-10-21_05-16-34: training job, then the test job chained on it
-  trained on : train_p_0.0015_sig_0.003_s_1.txt
-  tested on  : 24 dataset(s) = 24 (p, sigma) pair(s) at sample(s) 1, 0 not in the data
-  arms       : cer (run_tag _cer_enr)
-  seeds      : 1, 2, 3, 4, 5
-  models     : 5, e.g. neuralbp_weights_nlayers_90_epochs_10_trained_using_train_p_0.0015_sig_0.003_s_1_cer_enr_seed_1.json
-  settings   : ./../data/72q_BB_cycles_1_sweep/models/submissions/2026-10-21_05-16-34/
-[72q_BB_cycles_1_sweep] wrote 5 train command(s) to ./../data/72q_BB_cycles_1_sweep/cluster/commands_train_2026-10-21_05-16-34.txt
-
-=== Job Details ===
-  Job              : train_2026-10-21_05-16-34  (train)
-  Target codename  : 72q_BB_cycles_1_sweep
-  Commands         : 5
-  Devices          : GPU (a100), 1 card(s) per task, 2 process(es) per card
-  Array tasks      : 3, 2 command(s) each, 2 at a time
-  CPUs per task    : 12
-  Memory           : 32G per GPU (host RAM)
-  Wall time        : 2:00:00
-  Estimate         : ~1h00m per task (1 round(s) of 50m + 10m startup), 50% of 2:00:00
-
-=== Output Files ===
-  Commands file    : ./../data/72q_BB_cycles_1_sweep/cluster/commands_train_2026-10-21_05-16-34.txt
-  SLURM script     : ./../data/72q_BB_cycles_1_sweep/cluster/train_2026-10-21_05-16-34.sh
-[72q_BB_cycles_1_sweep] wrote 120 test command(s) to ./../data/72q_BB_cycles_1_sweep/cluster/commands_test_2026-10-21_05-16-34.txt
-
-=== Job Details ===
-  Job              : test_2026-10-21_05-16-34  (test)
-  Target codename  : 72q_BB_cycles_1_sweep
-  Commands         : 120
-  Devices          : GPU (a100), 1 card(s) per task, 1 process(es) per card
-  Array tasks      : 24, 5 command(s) each, 1 at a time
-  CPUs per task    : 12
-  Memory           : 32G per GPU (host RAM)
-  GPU_MEMORY       : 34816M (85% of the card, for the batch sizer)
-  Wall time        : 2:00:00
-  Estimate         : ~22m per task (5 round(s) of 2m + 10m startup), 19% of 2:00:00
-
-=== Output Files ===
-  Commands file    : ./../data/72q_BB_cycles_1_sweep/cluster/commands_test_2026-10-21_05-16-34.txt
-  Models file      : ./../data/72q_BB_cycles_1_sweep/cluster/models_test_2026-10-21_05-16-34.txt  (checked by every task before it tests)
-  SLURM script     : ./../data/72q_BB_cycles_1_sweep/cluster/test_2026-10-21_05-16-34.sh
-
-=== Submission (from expts/, after `bash misc/precompile_depot.sh` on a login node) ===
-  bash ./../data/72q_BB_cycles_1_sweep/cluster/submit_2026-10-21_05-16-34.sh
-  It submits the training job, then the test job with --dependency=afterok on it: testing
-  starts when EVERY training task has exited 0, and is cancelled if any has not.
-
-[debankan@narval2 expts]$ 
-
+  afterok on an array is ALL-OR-NOTHING: every one of the 37 train tasks must
+  exit 0, so one failed point stops all 144 tests. trillium's sbatch has no
+  --kill-on-invalid-dep, so the test job then stays in the queue as
+  DependencyNeverSatisfied until you scancel it. A NaN-rolled-back epoch is NOT
+  a failure (the point still exits 0 and writes weights), so rollbacks do not
+  block testing.
+[debankan@trig-login01 expts]$ 
