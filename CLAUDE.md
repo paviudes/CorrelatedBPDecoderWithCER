@@ -2266,7 +2266,7 @@ trained on these keys); classical re-runs in `results/reference_decoders_rerun.c
   ~1.0). And `max_grad_norm` builds `ClipGrad(2)`, a per-component clamp at ±2 that
   never triggers, not norm clipping (`ClipNorm`); `clip_grad!` is defined but unused.
 
-#### The follow-up sweep: `sweeps/sig0_lr_init_fwb.toml` (prepared 2026-10-27, not yet run)
+#### The follow-up sweep: `sweeps/sig0_lr_init_fwb.toml` (prepared 2026-10-27; run on Trillium 2026-10-27/28, results in the next subsection)
 
 - The user's grid: `initial_conditions_scale` {0.1, 0.7} (weights U(1 − s, 1 + s);
   `random_values_around_one`, so the base TOML's "Gaussian … σ" comment is wrong) ×
@@ -2309,6 +2309,79 @@ trained on these keys); classical re-runs in `results/reference_decoders_rerun.c
   AFTERWARDS commands run on 25 arms (synthetic results, seeds 1–3) and report only
   the baseline arm's weights identical. (The first, tanh-only draft — 120 points, 30 +
   15 tasks — passed the same checks.)
+- **How it ran** (`hp_2026-10-27_13-04-21`): tasks 26 and 27 failed the CUDA gate twice
+  with `CUDA_ERROR_MPS_CONNECTION_FAILED` (805, "Failed to connect to control daemon";
+  task 25 hit it once and passed the 60 s retry); the next morning the whole array was
+  resubmitted (job 1184670), tasks 0–12 reproduced their models byte for byte, the
+  duplicates were cancelled and the tests chained to `afterok:1184670_26:1184670_27`.
+  `sq` on a CPU login node (tri-login*) does not list GPU-subcluster jobs: check on
+  trig-login01. Slurm mails an array's END once, after its last task.
+
+#### Measured 2026-10-28: lr × init × fwb on p_0.0015_sig_0.0_s_1 (3 seeds, commit first)
+
+Failures per 10⁶ (mean of seeds 1–3). "+ OSD" = BP+OSD-CS10 (NBP's priors, 90 it, numpy
+backend) run from scratch on every shot the NBP does not converge on; coset failures stay
+failures. References: BP+OSD-CS10 alone 1383 (OSD on 1210 shots); unit-weight tanh 2024
+(+ OSD 1382); unit-weight enriched at α* 1654 (+ OSD 1331) — mirror, exact.
+
+- **Determinism**: the baseline arm (lr 1e-3, ic 0.1, fwb 3) reproduced the 2026-10-27
+  `_cer_rampfirst` counts exactly (1839 / 1861 / 1929) and the `_cer_enr_rampfirst`
+  models' α (0.5449 / 0.5253 / 0.5004).
+- **Health**: lr 1e-3 and 1e-2 complete 10/10 epochs in every point, but at lr 1e-2 the
+  TRAINING loss rises 30–100× between epoch 1 and 10 (diverges without NaNs; weights
+  spread to −3.8…5, 2–11% of c2v_v2c above 2, mean committed layer 7–29 instead of
+  1.3–2.5). lr 0.1: tanh rolls back every epoch (the saved models ARE the random init:
+  sd 0.058 / 0.405, identical across λ), enriched keeps 0–2 divergent epochs (weights
+  ±10–14, α → 0.07–0.37, up to 83k failures). The enriched GPU kernel limit (weights
+  above ~2) did not matter: the float64 mirror reproduces lr 1e-2 enriched models to
+  ±2% (pipeline 1226 / 1228 / 1294 vs GPU 1232 / 1228 / 1274).
+- **NBP alone — best is lr 1e-3, ic 0.1** (the defaults). tanh: fwb 4 1817 (1817 / 1822
+  / 1813), −3.1% vs fwb 3 (3/3 seeds, t −2.1), monotone in λ (2003 / 1961 / 1876 / 1817
+  for λ = 1–4; at ic 0.7 2758 / 2310 / 2010 / 1856, not yet saturated). enriched: λ
+  does not matter (1703 / 1712 / 1708; λ = 4 1872 only because seed 2 fails one
+  weight-3 pattern on all 509 of its occurrences; per distinct pattern all four equal),
+  −6.3% vs the best tanh, but no better than the UNTRAINED enriched node (1654).
+  ic 0.7: +15% (tanh) / +29% (enriched), geometric mean over λ. Every NBP alone still
+  loses to BP+OSD-CS10 by ≥ 23%.
+- **Untrained random init is worse than unit weights**: the tanh lr 0.1 models (= init)
+  fail 2526 (3203 / 2233 / 2141) at U(1 ± 0.1) and 4041 at U(1 ± 0.7), against 2024
+  with every weight 1. So lr 1e-3 training gains 26% over its own init but 7% over
+  plain BP; ic = 0 (start AT BP) is untested.
+- **With OSD downstream — best is lr 1e-2, λ = 4**: enriched ic 0.1 **1245** (1232 /
+  1228 / 1274; −10.0% vs BP+OSD-CS10, McNemar z +5.9…+8.0 per seed; −7.3% vs tanh lr
+  1e-3 fwb 3 + OSD, 1343, the previous best pipeline), tanh ic 0.7 1266 (−8.5%). λ 3–4 >
+  2 > 1 at lr 1e-2; at lr 1e-3 the pipeline is flat in λ (tanh 1327–1343, enriched
+  1387–1397 ≈ BP+OSD). Mechanism: the lr 1e-2 decoders converge late but rarely to a
+  wrong codeword (enriched coset 387 vs 1112 at lr 1e-3, 1074 untrained), hand ~2,300
+  shots per 10⁶ to OSD, and still fix 230–360 of BP+OSD's own failures (n10) for
+  110–260 they break (n01, all NBP coset). A commit-by-layer-L cutoff on the lr 1e-3
+  models does NOT reproduce it (pipeline 1330 → 1383 as L falls from 90 to 2): the
+  deferred shots are mostly ones BP+OSD's own BP also gets wrong.
+- Method (session scratch `outputs/sig0_grid/`): results CSVs + per-sample files,
+  debug logs, models; `numpy_bposd.bposd_decode` per distinct syndrome for the
+  fallback; `nbp_mirror` functions for the exact re-score and the cutoff curve.
+
+#### The start-at-BP sweep: `sweeps/sig0_init_at_bp.toml` (prepared 2026-10-29, not yet run)
+
+- `initial_conditions_scale = 0.0` starts the network exactly at BP:
+  `random_values_around_one` returns 1 + s(2u − 1), so every message, channel and
+  readout weight is 1 (no code path checks s > 0; the TOML value is converted to
+  Float32). α still starts at `coupling_scale_init` (α* = 0.4875). Training re-seeds
+  before it draws the 10k set, so at one (seed, λ) the set and batch order equal the
+  ic 0.1 / 0.7 arms' (checked: identical selection files across ic, lr and node), and
+  those arms of `sig0_lr_init_fwb.toml` are the paired controls — not rerun, so the
+  run directory must keep them (no cleanup.py).
+- Grid: ic 0.0 × lr {1e-3, 1e-2} × λ {1, 2, 3, 4} × {tanh, enriched:alpha_star:learn} ×
+  seeds 1–3 = 48 trainings, each tested on p_0.0015_sig_0.0_s_1; lr 0.1 left out (it
+  rolled back / diverged everywhere). Trillium, 13 train tasks (odd: 9 cards 2 tanh + 2
+  enriched, 4 with 3 points; est 65 min of 2 h), 6 test tasks of 8 (est 35 min of 1 h).
+  Run tags `_cer[_enr]_ic0p0_fwb<λ>_lr<lr>`.
+- Verified 2026-10-29 with stubs (harness rebuilt in /tmp/tr: julia, parallel, module,
+  hostname, date) on a fake run directory holding the 144 previous models: generation
+  exits 0 (ramp-warmup note and empty-depot warning only); the point TOMLs differ from
+  the ic 0.1 controls' only in run_tag, `initial_conditions_scale = 0.0` and comments;
+  13/13 train and 6/6 test tasks exit 0, 48 new models, the 144 old ones untouched,
+  48 results on the training key; the sweep file's AFTERWARDS loop runs.
 
 ### `misc/numpy_bposd.py` and `reference_decoders.py --backend numpy` (added 2026-10-27)
 
