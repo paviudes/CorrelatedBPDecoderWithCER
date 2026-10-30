@@ -2361,7 +2361,7 @@ failures. References: BP+OSD-CS10 alone 1383 (OSD on 1210 shots); unit-weight ta
   debug logs, models; `numpy_bposd.bposd_decode` per distinct syndrome for the
   fallback; `nbp_mirror` functions for the exact re-score and the cutoff curve.
 
-#### The start-at-BP sweep: `sweeps/sig0_init_at_bp.toml` (prepared 2026-10-29, not yet run)
+#### The start-at-BP sweep: `sweeps/sig0_init_at_bp.toml` (prepared 2026-10-29; run on Trillium 2026-10-29/30, results in the next subsection)
 
 - `initial_conditions_scale = 0.0` starts the network exactly at BP:
   `random_values_around_one` returns 1 + s(2u − 1), so every message, channel and
@@ -2382,6 +2382,151 @@ failures. References: BP+OSD-CS10 alone 1383 (OSD on 1210 shots); unit-weight ta
   the ic 0.1 controls' only in run_tag, `initial_conditions_scale = 0.0` and comments;
   13/13 train and 6/6 test tasks exit 0, 48 new models, the 144 old ones untouched,
   48 results on the training key; the sweep file's AFTERWARDS loop runs.
+- **How it ran (2026-10-29, `hp_2026-10-29_16-54-09`, job 1193423)**: 12 of the 13
+  training tasks COMPLETED in 39:51–44:35 each (one wave of 2 tanh + 2 enriched, 10
+  epochs) and wrote every model of their slice (Trillium clock: tasks 0–7
+  17:19–18:59, tasks 9–12 22:36–23:02). Task 8 wrote none: sacct says CANCELLED
+  (exit 0:54) after 5 s on trig0033, and it has no .err file, so it was stopped
+  before the job script ran — not the CUDA gate, nothing in the sweep; task 9 later
+  ran on trig0033 normally. Its points are command lines 9, 22, 35, 48:
+  `_cer_ic0p0_fwb1_lr0p01` seed 1, `_cer_enr_ic0p0_fwb2_lr0p001` seed 2,
+  `_cer_ic0p0_fwb1_lr0p001` seed 3, `_cer_enr_ic0p0_fwb4_lr0p01` seed 3. (Line L of
+  the command list — order seed → optimizer arm → check node — runs in task
+  (L − 1) mod train_array_tasks.) The afterok test job cannot start (Trillium leaves
+  it as DependencyNeverSatisfied); the fix is `scancel` it, rerun `--array=8` alone
+  and chain the test job on that (the sweep file's header). All 144 models of
+  `sig0_lr_init_fwb.toml` are still in models/. Done on 2026-10-30: task 8 alone as
+  job 1196196 (trig0051, 42 min, exit 0), then the test job 1196197 chained on it
+  (6 tasks, 15–17 min each, exit 0): 48/48 models, 48/48 results.
+- **A train/test .out prints "first failing point's stderr" even when every point
+  exited 0** (task 8: "4/4 point(s) exited 0", then the @info lines of
+  parse_cer_data). hp_sweep/cluster.sh prints the first NON-EMPTY stderr, and Julia's
+  @info goes to stderr, so the label is wrong whenever nothing failed. Cosmetic, not
+  fixed; trust the "N/N point(s) exited 0" line and sacct.
+
+#### Measured 2026-10-30: starting at BP (ic 0) against the ic 0.1 controls, p_0.0015_sig_0.0_s_1
+
+Failures per 10⁶, mean of seeds 1–3, GPU (Julia) counts; "+ OSD" = BP+OSD-CS10 (NBP
+priors, 90 it, numpy backend) from scratch on every shot the NBP does not converge on,
+coset failures kept. References: BP+OSD-CS10 alone 1383; the START of the ic 0 arms,
+i.e. every weight 1 (float64 mirror, α* = 0.4875 for enriched): tanh 2024 (809 | 1215),
++ OSD 1382; enriched 1656 (1067 | 589), + OSD 1342.
+
+- **Health**: 48/48 points 10/10 epochs, 0 NaN skips. lr 1e-2 diverges as before from
+  BP too (epoch-mean loss 0.06–0.75 at epoch 1 → 4.7–13 at epoch 10, except two tanh
+  seeds at 0.15 / 0.71; weights spread to sd 0.43–0.86, 0.5–10% of c2v_v2c above 2, mean
+  committed layer 2–53). The float64 mirror reproduces the lr 1e-2 enriched λ 4 models
+  (2777 / 3529 / 3046 vs GPU 2764 / 3546 / 3034; + OSD 1242 / 1329 / 1286 vs 1243 / 1308 /
+  1306), so the GPU kernel's weight limit did not matter.
+- **The start does not matter.** NBP alone, ic 0 / ic 0.1 (λ = 1, 2, 3, 4):
+  tanh lr 1e-3 2025 / 2003, 1956 / 1961, 1919 / 1876, 1844 / 1817; enriched lr 1e-3
+  1719 / 1703, 1702 / 1712, 1686 / 1708, 1690 / 1872 (the control's λ 4 has the seed-2
+  block). Over the 24 (arm, seed) pairs at lr 1e-3: −0.7% alone (ic 0 lower in 10/24),
+  +0.7% with OSD (8/24); no arm's seed-paired difference is significant (|t| ≤ 3.6,
+  df 2). At lr 1e-2: alone +4.2% (9/24, sd of the log ratio 0.24), + OSD +2.4% (8/24);
+  best ic 0 pipeline enriched
+  λ 4 1286 (1243 / 1308 / 1306; McNemar z +6.4 / +4.5 / +4.2 vs BP+OSD-CS10) against
+  ic 0.1's 1245 (+3.3%, 0/3 lower, t +2.0); enriched λ 3 1296 vs 1272, tanh λ 3 1328 vs
+  1299 (tanh ic 0.7 λ 4: 1266).
+- **Against its own start**: tanh gains only through λ (2025 at λ 1 = the start, 1844 at
+  λ 4, −9%; + OSD 1338–1369, −1 to −3%); enriched trained (1686–1719) is no better than
+  untrained (1656), and + OSD it is WORSE (1382–1405 vs 1342, +3–5%): training adds ~5%
+  coset failures (1067 → ~1125) and removes almost no convergence failures (589 → ~575).
+  Mirror on the trained enriched λ 3 models, + OSD 1414 / 1399 / 1392 against GPU 1411 /
+  1406 / 1392 (alone the mirror is off on knife-edge blocks: seed 3 2237 vs GPU 1688).
+- **Why: training forgets where it started.** Final weights of an ic 0 and an ic 0.1
+  model trained on the SAME data (seed, λ, lr) are 0.10 RMS apart (lr 1e-3, both
+  nodes) — further apart than the two starts were (U(1 ± 0.1) is 0.058 RMS from 1); two
+  ic 0 models on different data are 0.09 apart; an ic 0 model is 0.07 RMS from 1. So the
+  updates are a noise-driven walk whose end point is set by neither the start nor the
+  data, and every end point decodes about equally well. The one coherent change is the
+  SHARED readout weights (mean 1.5–1.6 at lr 1e-3 — 1.15 for tanh λ 4 — and 4–6 at lr
+  1e-2; per-layer weights stay at mean 1.00): the loss saturates σ(μ) on solved shots
+  through them. On its own it does nothing: the untrained decoder with readout r
+  (mirror) fails tanh 1988 / 2008 / 2044 at r = 1.5 / 2 / 4, enriched 1652 / 1647 / 1636
+  at r = 1.5 / 3 / 6 (vs 2024 / 1656), + OSD within ±1.5%. Uniform damping (message weights
+  0.95, 0.9: 2012, 2029) or channel weights 1.05 / 1.1 (2023, 2272) do not reproduce the
+  tanh λ 4 gain either.
+- **The useful part is in the LATE layers** (mirror probes, lr 1e-3): resetting layers
+  2–45 of a trained tanh λ 4 model to 1 IMPROVES it (ic 0 seeds 1807 → 1773, 1839 →
+  1784, 1896 → 1855; ic 0.1 seed 1 1819 → 1766), resetting layers 46–90 makes it worse
+  than untrained (2234, 2231, 2136; 2079); enriched λ 3 seed 1: layers 2–45 reset 1612
+  (coset 1134 → 1092; below the untrained 1656), layers 46–90 reset 1702 (coset 1162). So
+  the early layers' trained weights only add noise (wrong-coset commits: first-to-clear
+  commits in layers 1–3) and the gain is learnt where the stuck shots are. With OSD the
+  early-layer reset is worth −2 to +1% for tanh (1312–1345 vs 1330–1346) and leaves
+  enriched 1% above untrained (1356 vs 1342). The lr 1e-2 enriched λ 4 model is
+  different: resetting either half loses its pipeline gain (1226 → 1361 for layers 2–45,
+  1406 for 46–90;
+  coset 411 → 1024 / 1040) — its "do not commit early" behaviour (mean committed layer
+  11) needs the whole network. Untrained random weights near that spread (the lr 0.1
+  tanh ic 0.7 models = their init U(1 ± 0.7), sd 0.40) + OSD give 1362–1400, so it is not
+  mere disorder.
+- **Seed diversity is the data order's, not the init's**: a 3-seed decode-time cascade
+  (next seed's model while not converged) gains the same from ic 0 as from ic 0.1 (tanh
+  lr 1e-3 −18 to −20% vs −16 to −21%; enriched −11 to −15% vs −11 to −20%, the −20% the
+  block arm); failing SHOTS shared by all 3 seeds 68–72% / 61–71% of one seed's.
+  Cascade then OSD on the shots no seed converged on: **enriched ic 0.1 lr 1e-2 λ 4 1137
+  (−18% vs BP+OSD-CS10; 1114–1139 over the 6 seed orders)**, ic 0 1193 (1180–1209), tanh
+  ic 0.7 lr 1e-2 λ 4 1203 (1131–1211) — the best numbers so far on this key (single model
+  + OSD: 1245). The arm was picked on this test set, so confirm on another key.
+- Method (session scratch `outputs/sig0_grid/`): table2.py (pipelines, McNemar),
+  table3.py (weight distances, cascade), drift.py, readout_probe.py / tanh_probe.py /
+  probe2.py (mirror probes), cascade_osd.py; mirror and probe outputs in
+  mirror_results.txt / probe_results.txt.
+
+## Spatially varying gate rates: `data/sigma_10p` (sweep prepared 2026-10-30, not yet run)
+
+- **Why** (the user, 2026-10-30): at σ = 0 the 72 per-qubit rates are nearly flat, so
+  the trained weights may have nothing in space to learn — the suspected reason why
+  training barely beats the untrained decoder there.
+- **The data** (Trillium, `data/sigma_10p`; the laptop has `data/sigma_10p.zip`, a
+  TRUNCATED archive of 64.5 MB with no central directory — its readable part holds
+  code/, logs/ and 22 of the 40 training files; read with a local-header scanner, not
+  unzip): keys `p_<p>_sig_<10p>_s_<1-5>` for p = 1e-4 … 1.5e-3. Each CNOT rate is drawn
+  from N(p, 10p) and clipped at 0 (logs/setup_*: min 0, mean 4.7p, max ~30p at s_1),
+  ONE draw per (p, sample), used for both train_<key> and test_<key> (logs/cer_*: one
+  rate line, then the training and the testing shots), so matched train/test is the
+  same device. code/ is byte-identical to the σ = 0 run's; `code/clique_edges.txt` is
+  exactly the 540 within-check pairs of the σ = 0 CER files; the CER file format is the
+  same ("k:rate", then "(i,j):J"). Extra folders (`correlated_weights(couplings)`,
+  `_raw`, `_threshold` (396 of the 540 pairs), `two_qubit_marginals`,
+  `cnot_error_rates`) are not read by anything here; the jobs stage only
+  `correlated_weights/`.
+- **Per-qubit rates and the shipped baselines (s_1)**: median flip rate 0.0036 /
+  0.0100 / 0.0168 / 0.0233 / 0.0296 / 0.0359 / 0.0423 / 0.0483 at p = 1, 3, 5, 7, 9, 11,
+  13, 15 × 1e-4, each with max/min ~5–7 (σ = 0: ~1.3); shipped BP (uniform 0.1, 500 it)
+  7476 / 19631 / 29867 / 40456 / 52493 / 66965 / 85049 / 105406 and BP+OSD-E2 3003 /
+  8449 / 13928 / 20583 / 29640 / 41001 / 55871 / 73421 per 10⁶. So
+  **p_0.0003_sig_0.003_s_1 matches the σ = 0 key p_0.0015_sig_0.0_s_1 in average
+  noise** (median 0.0100 vs 0.0109, mean error weight 0.76 vs ~0.8, shipped BP / BP+OSD
+  19631 / 8449 vs 20493 / 8701) with qubit rates 0.0027–0.0196 (7.3×) instead of
+  ~1.3× apart; α* 0.4785 (σ = 0 key 0.4875). p_0.0015_sig_0.015 is ~4.5× noisier
+  (the shipped BP+OSD fails 7.3%).
+- **`sweeps/sigma10p_lr_init_fwb.toml`** (the user's choice of key and grid):
+  p_0.0003_sig_0.003_s_1, test_keys = [] (each model on its own key); ic {0.1, 0.0} ×
+  lr {1e-3, 1e-2} × λ {1, 2, 3, 4} × {tanh, enriched:alpha_star:learn} × seeds 1–3 = 96
+  trainings, ramp + commit first; i.e. the start-at-BP sweep with its ic 0.1 controls,
+  without lr 0.1. Trillium, 25 train tasks (odd: 21 cards 2 tanh + 2 enriched, 4 with
+  3 points; est 65 min of 2 h), 12 test tasks of 8 (est 35 min of 1 h) — the data set
+  does not change the cost (same file size, same number of steps). Its point TOMLs equal
+  the σ = 0 sweeps' (same arm, same seed) except `coupling_scale_init` 0.4785 vs 0.4875,
+  PROVIDED `data/sigma_10p/models/hyperparams_baseline.toml` is the σ = 0 run's (the
+  sweep file's header has the diff to run first; unseen from here, the zip stops before
+  models/).
+- Verified 2026-10-30 with stubs (rebuilt in /tmp/tr: julia, parallel, module,
+  hostname; a fake `sigma_10p` under a fake $SCRATCH with the real code/, the real
+  single-qubit block of the key's CER file, decoy keys and the extra folders):
+  generation exits 0 (ramp-warmup note, empty-depot warning), prints α* 0.4785; 25/25
+  train tasks exit 0 (4-point tasks 2 tanh + 2 enriched), 96 models; 12/12 test tasks
+  8/8 each, 96 results, every one on the training key with its CER file, 12 per (node,
+  ic, lr) cell; only the key's training (train job) or test file (test job) staged;
+  one model removed → every test task exits 1 naming it, no results; the AFTERWARDS
+  `compare_sweep_arms.py` call runs on the new codename (σ = 0 results renamed in).
+- **Found on the way: a test task exits 0 even when its points fail** (hp_sweep/
+  cluster.sh's test script ends on the "done" echo; only the missing-model check exits
+  1). The .out lists each failure as "FAILED (exit n): <command>", and the results
+  count shows it (96 expected); sacct says COMPLETED. Not fixed.
 
 ### `misc/numpy_bposd.py` and `reference_decoders.py --backend numpy` (added 2026-10-27)
 

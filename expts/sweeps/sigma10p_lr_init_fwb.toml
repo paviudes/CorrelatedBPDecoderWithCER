@@ -1,0 +1,97 @@
+# =============================================================================
+# sigma10p_lr_init_fwb.toml -- sweep_hyperparams.sh settings: does training help
+# when the gate error rates vary in space?
+#
+# Why (2026-10-30): on p_0.0015_sig_0.0_s_1 (every CNOT at rate p) training barely
+# beats the untrained decoder whatever the learning rate, start or training-set
+# weighting (sig0_lr_init_fwb.toml, sig0_init_at_bp.toml). There the 72 per-qubit
+# flip rates are nearly flat (max/min ~1.3), so there may be nothing in space for
+# the weights to learn. data/sigma_10p draws each CNOT rate from N(p, 10p), clipped
+# at 0 (logs/setup_*: min 0, mean 4.7p at p_0.0003 s_1); one draw per (p, sample),
+# used for both train_<key> and test_<key> (logs/cer_*: one rate line, then the
+# training and the testing shots).
+#
+# THE KEY, p_0.0003_sig_0.003_s_1, has the same AVERAGE noise as the sigma = 0 key
+# and 7x the spatial spread:
+#                                   p_0.0015_sig_0.0_s_1    p_0.0003_sig_0.003_s_1
+#     median qubit flip rate        0.0109                  0.0100
+#     qubit rates, min - max        ~1.3x apart             0.0027 - 0.0196 (7.3x)
+#     shipped BP / BP+OSD-E2        20493 / 8701            19631 / 8449 per 10^6
+# alpha* of the key: 0.4785 (median raw rate 0.01003; the sigma = 0 key: 0.4875).
+# Each model is tested on its own key only.
+#
+# POINTS: initial_conditions_scale {0.1, 0.0} x learning_rate {0.001, 0.01} x
+# failure_weight_boundary {1, 2, 3, 4} = 16 optimizer arms x {tanh,
+# enriched:alpha_star:learn} x seeds 1-3 = 96 trainings: the start-at-BP sweep
+# (sig0_init_at_bp.toml) with its ic 0.1 controls. lr 0.1 is left out (it rolled
+# back or diverged everywhere at sigma = 0). Everything else as on sigma = 0: ramp loss
+# (warmup 0, k = 3), commit first, 10 epochs x 500 updates x batch 20, the 10k
+# training set, weight_decay 1e-4, the hand-written gradient on the GPU -- PROVIDED
+# data/sigma_10p/models/hyperparams_baseline.toml is the sigma = 0 run's (check with
+# the diff below before generating).
+#
+# On Trillium's GPU login node (ssh trillium-gpu.alliancecan.ca, i.e. trig-login01),
+# from expts/ of the repository under $SCRATCH:
+#     diff ../data/sigma_10p/models/hyperparams_baseline.toml \
+#          ../data/72q_BB_cycles_1_sweep_filtered/models/hyperparams_baseline.toml
+#         (no output = the same settings; otherwise copy the second over the first)
+#     module load StdEnv/2023 julia/1.12.5 cuda/12.6
+#     export JULIA_DEPOT_PATH="$SCRATCH/.julia:"
+#     bash sweep_hyperparams.sh sweeps/sigma10p_lr_init_fwb.toml
+# then the two sbatch lines it prints. It should print alpha* 0.4785 for the key.
+# Watch the jobs with sq ON trig-login01. If a task fails at the CUDA check or is
+# cancelled before it starts, rerun only it:
+#     TRAIN_ID=$(sbatch --parsable --array=<task> ../data/sigma_10p/cluster/hp_sweep_train_<ts>.sh)
+#     sbatch --dependency=afterok:$TRAIN_ID ../data/sigma_10p/cluster/hp_sweep_test_<ts>.sh
+# (after scancel of the test job stuck as DependencyNeverSatisfied).
+#
+# NAMES: run tags _cer_ic<s>_fwb<lambda>_lr<lr> (tanh) and _cer_enr_ic<s>_fwb<lambda>_lr<lr>
+# (enriched), after train_p_0.0003_sig_0.003_s_1, in data/sigma_10p.
+#
+# AFTERWARDS, each start at BP against the ic 0.1 arm with the same lr and lambda:
+#     for node in _cer_ _cer_enr_; do for lr in 0p001 0p01; do for f in 1 2 3 4; do
+#         python3 misc/compare_sweep_arms.py --workdir sigma_10p \
+#             --train-key p_0.0003_sig_0.003_s_1 --arms ${node}ic0p1_fwb${f}_lr${lr} ${node}ic0p0_fwb${f}_lr${lr}
+#     done; done; done
+# For the untrained-decoder and BP+OSD references the laptop needs, besides the
+# results, testing_data/test_p_0.0003_sig_0.003_s_1.txt and correlated_weights/.
+#
+# KEEP EACH ARRAY ON ONE LINE: the generator reads a key with grep | head -1.
+# =============================================================================
+
+cluster          = "trillium"        # clusters/trillium.toml: one H100 (a quarter node) per task
+workdir          = "./../data"
+codename         = "sigma_10p"
+
+# --- dataset: train on it, test on the same key ------------------------------------
+datasets         = ["p_0.0003_sig_0.003_s_1"]
+ref_datasets     = []
+test_keys        = []                # [] = each model is tested on its own training key only
+
+base_hyperparams = "hyperparams_baseline.toml"
+seeds            = [1, 2, 3]
+
+# --- arms ----------------------------------------------------------------------
+include_nocer    = false
+single_qubit_rescale = 0.1
+check_node_arms  = ["tanh", "enriched:alpha_star:learn"]
+# The layer pair of every arm (no arm names its own).
+loss_layer_selection = "ramp"
+commit_layer_rule    = "first"
+# <tag>:<overrides>; tag = ic<s>_fwb<lambda>_lr<lr> with "." -> "p". The baseline's
+# settings first (ic 0.1, lambda 3, lr 0.001), then the rest of ic 0.1, then ic 0.0.
+optimizer_arms   = ["ic0p1_fwb3_lr0p001:initial_conditions_scale=0.1,failure_weight_boundary=3,learning_rate=0.001", "ic0p1_fwb1_lr0p001:initial_conditions_scale=0.1,failure_weight_boundary=1,learning_rate=0.001", "ic0p1_fwb2_lr0p001:initial_conditions_scale=0.1,failure_weight_boundary=2,learning_rate=0.001", "ic0p1_fwb4_lr0p001:initial_conditions_scale=0.1,failure_weight_boundary=4,learning_rate=0.001", "ic0p1_fwb1_lr0p01:initial_conditions_scale=0.1,failure_weight_boundary=1,learning_rate=0.01", "ic0p1_fwb2_lr0p01:initial_conditions_scale=0.1,failure_weight_boundary=2,learning_rate=0.01", "ic0p1_fwb3_lr0p01:initial_conditions_scale=0.1,failure_weight_boundary=3,learning_rate=0.01", "ic0p1_fwb4_lr0p01:initial_conditions_scale=0.1,failure_weight_boundary=4,learning_rate=0.01", "ic0p0_fwb3_lr0p001:initial_conditions_scale=0.0,failure_weight_boundary=3,learning_rate=0.001", "ic0p0_fwb1_lr0p001:initial_conditions_scale=0.0,failure_weight_boundary=1,learning_rate=0.001", "ic0p0_fwb2_lr0p001:initial_conditions_scale=0.0,failure_weight_boundary=2,learning_rate=0.001", "ic0p0_fwb4_lr0p001:initial_conditions_scale=0.0,failure_weight_boundary=4,learning_rate=0.001", "ic0p0_fwb1_lr0p01:initial_conditions_scale=0.0,failure_weight_boundary=1,learning_rate=0.01", "ic0p0_fwb2_lr0p01:initial_conditions_scale=0.0,failure_weight_boundary=2,learning_rate=0.01", "ic0p0_fwb3_lr0p01:initial_conditions_scale=0.0,failure_weight_boundary=3,learning_rate=0.01", "ic0p0_fwb4_lr0p01:initial_conditions_scale=0.0,failure_weight_boundary=4,learning_rate=0.01"]
+
+# --- jobs ------------------------------------------------------------------------
+# TRAINING: 96 points / 25 tasks = 4 per task (the last four tasks 3) = one wave of
+# the profile's train_jobs = 4 sharing the card. 25, not 24: the interleaved split
+# alternates tanh / enriched, so an odd width gives each card 2 tanh + 2 enriched
+# points, the mix measured on Trillium (40-45 min a task on 2026-10-27/29). The data
+# set does not change the cost: same file size, same number of gradient steps.
+# Estimate: 900 s startup + 10 epochs x 300 s = 65 min of the 2 h wall.
+train_array_tasks = 25
+train_wall_time  = "2:00:00"
+# TESTING: one test at a time per card; 96 tests / 12 tasks = 8 per task.
+# Estimate: 900 s + 8 x 150 s = 35 min of the 1 h wall (measured: 15-17 min for 8).
+test_array_tasks = 12
+test_wall_time   = "1:00:00"
